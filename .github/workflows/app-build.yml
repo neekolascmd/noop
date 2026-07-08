@@ -53,9 +53,19 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
-      - name: Install watchOS platform
+      - name: Prepare sideload iOS build
         if: matrix.scheme == 'NOOPiOS'
-        run: xcodebuild -downloadPlatform watchOS
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("project.yml")
+          text = path.read_text()
+          needle = "\n      - target: NOOPWatch\n"
+          if needle not in text:
+              raise SystemExit("NOOPWatch dependency not found in project.yml")
+          path.write_text(text.replace(needle, "\n", 1))
+          PY
 
       - name: Generate Xcode project
         run: xcodegen generate

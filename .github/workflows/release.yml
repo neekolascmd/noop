@@ -36,9 +36,6 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
-      - name: Install watchOS platform
-        run: xcodebuild -downloadPlatform watchOS
-
       - name: Generate Xcode project
         run: xcodegen generate
 
@@ -62,6 +59,17 @@ jobs:
       - name: Build unsigned iOS IPA
         run: |
           set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("project.yml")
+          text = path.read_text()
+          needle = "\n      - target: NOOPWatch\n"
+          if needle not in text:
+              raise SystemExit("NOOPWatch dependency not found in project.yml")
+          path.write_text(text.replace(needle, "\n", 1))
+          PY
+          xcodegen generate
           rm -rf build/ios-dd build/ios-stage
           xcodebuild -scheme NOOPiOS -configuration Release \
             -destination 'generic/platform=iOS' \
