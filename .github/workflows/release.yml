@@ -2,11 +2,6 @@ name: Release artifacts
 
 on:
   workflow_dispatch:
-    inputs:
-      version:
-        description: "Release version without leading v. Defaults to project.yml MARKETING_VERSION."
-        required: false
-        type: string
   push:
     tags:
       - "v*"
@@ -29,10 +24,7 @@ jobs:
       - name: Resolve version
         run: |
           set -euo pipefail
-          input_version="${{ github.event.inputs.version }}"
-          if [ -n "$input_version" ]; then
-            version="$input_version"
-          elif [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
+          if [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
             version="${GITHUB_REF_NAME#v}"
           else
             version="$(sed -n 's/.*MARKETING_VERSION:[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}.*/\1/p' project.yml | head -n 1)"
@@ -103,10 +95,7 @@ jobs:
       - name: Resolve version
         run: |
           set -euo pipefail
-          input_version="${{ github.event.inputs.version }}"
-          if [ -n "$input_version" ]; then
-            version="$input_version"
-          elif [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
+          if [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
             version="${GITHUB_REF_NAME#v}"
           else
             version="$(sed -n 's/.*MARKETING_VERSION:[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}.*/\1/p' project.yml | head -n 1)"
@@ -157,10 +146,7 @@ jobs:
       - name: Resolve version
         run: |
           set -euo pipefail
-          input_version="${{ github.event.inputs.version }}"
-          if [ -n "$input_version" ]; then
-            version="$input_version"
-          elif [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
+          if [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
             version="${GITHUB_REF_NAME#v}"
           else
             version="$(sed -n 's/.*MARKETING_VERSION:[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}.*/\1/p' project.yml | head -n 1)"
