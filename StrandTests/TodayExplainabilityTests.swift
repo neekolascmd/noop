@@ -37,23 +37,25 @@ final class TodayExplainabilityTests: XCTestCase {
 
     func testScoreState_carryWithinCap_isFreshLastNight() {
         // #779: a recent carry keeps the "Last night" framing.
+        let date = "14 Jun"
         let s = MetricTileState.resolve(hasTodayValue: false,
                                    calibratingNightsRemaining: nil,
-                                   carriedDate: "14 Jun",
+                                   carriedDate: date,
                                    carriedStale: false)
-        XCTAssertEqual(s, .carriedLastNight(date: "14 Jun", stale: false))
-        XCTAssertEqual(s.title, "Last night · 14 Jun")
+        XCTAssertEqual(s, .carriedLastNight(date: date, stale: false))
+        XCTAssertEqual(s.title, "Last night · \(date)")
     }
 
     func testScoreState_staleCarry_relabelsLatestSleep() {
         // #779: a weeks-old carry is still shown (not a bare blank) but relabelled so the number is never
         // passed off as "Last night".
+        let date = "14 May"
         let s = MetricTileState.resolve(hasTodayValue: false,
                                    calibratingNightsRemaining: nil,
-                                   carriedDate: "14 May",
+                                   carriedDate: date,
                                    carriedStale: true)
-        XCTAssertEqual(s, .carriedLastNight(date: "14 May", stale: true))
-        XCTAssertEqual(s.title, "Latest sleep · 14 May")
+        XCTAssertEqual(s, .carriedLastNight(date: date, stale: true))
+        XCTAssertEqual(s.title, "Latest sleep · \(date)")
         XCTAssertEqual(s.accessibilityText,
                        "Latest sleep, 14 May. This is your last scored session. Wear the strap overnight for a fresh score.")
     }
