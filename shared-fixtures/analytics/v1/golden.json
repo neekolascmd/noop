@@ -1,0 +1,178 @@
+{
+  "schemaVersion": 1,
+  "tolerances": {
+    "score": 0.01,
+    "metric": 0.000001,
+    "sleepMinutes": 0.000001
+  },
+  "recovery": [
+    {
+      "id": "baseline-centered",
+      "input": {
+        "hrv": 60,
+        "rhr": 50,
+        "resp": 15,
+        "hrvBaseline": { "mean": 60, "spread": 8 },
+        "rhrBaseline": { "mean": 50, "spread": 4 },
+        "respBaseline": { "mean": 15, "spread": 1.5 },
+        "sleepPerf": 0.85,
+        "skinTempDev": null,
+        "hrvBaselineUsable": true
+      },
+      "expectedScore": 57.93242521487495
+    },
+    {
+      "id": "strong-night-with-temperature-penalty",
+      "input": {
+        "hrv": 72,
+        "rhr": 46,
+        "resp": 14,
+        "hrvBaseline": { "mean": 60, "spread": 8 },
+        "rhrBaseline": { "mean": 50, "spread": 4 },
+        "respBaseline": { "mean": 15, "spread": 1.5 },
+        "sleepPerf": 0.95,
+        "skinTempDev": 0.3,
+        "hrvBaselineUsable": true
+      },
+      "expectedScore": 86.38242791700465
+    },
+    {
+      "id": "cold-start-has-no-score",
+      "input": {
+        "hrv": 60,
+        "rhr": 50,
+        "resp": null,
+        "hrvBaseline": { "mean": 60, "spread": 8 },
+        "rhrBaseline": null,
+        "respBaseline": null,
+        "sleepPerf": null,
+        "skinTempDev": null,
+        "hrvBaselineUsable": false
+      },
+      "expectedScore": null
+    }
+  ],
+  "strain": [
+    { "id": "zero-load-boundary", "trimp": 0, "expectedScore": 0 },
+    { "id": "representative-load", "trimp": 60, "expectedScore": 46.28 },
+    { "id": "daily-ceiling", "trimp": 7200, "expectedScore": 100 },
+    { "id": "negative-load-is-rejected", "trimp": -10, "expectedScore": 0 }
+  ],
+  "hrv": [
+    {
+      "id": "alternating-clean-intervals",
+      "rrMs": [1000, 1050, 1000, 1050, 1000, 1050, 1000, 1050, 1000, 1050, 1000, 1050, 1000, 1050, 1000, 1050, 1000, 1050, 1000, 1050],
+      "expected": {
+        "rmssd": 50,
+        "sdnn": 25.649458802128855,
+        "meanNN": 1025,
+        "pnn50": 0,
+        "nInput": 20,
+        "nClean": 20
+      }
+    },
+    {
+      "id": "insufficient-boundary",
+      "rrMs": [900],
+      "expected": {
+        "rmssd": null,
+        "sdnn": null,
+        "meanNN": null,
+        "pnn50": null,
+        "nInput": 1,
+        "nClean": 0
+      }
+    },
+    {
+      "id": "out-of-range-input-is-rejected",
+      "rrMs": [250, 250, 250, 250, 250, 250, 250, 250, 250, 250, 250, 250, 250, 250, 250, 250, 250, 250, 250, 250],
+      "expected": {
+        "rmssd": null,
+        "sdnn": null,
+        "meanNN": null,
+        "pnn50": null,
+        "nInput": 20,
+        "nClean": 0
+      }
+    }
+  ],
+  "sleep": [
+    {
+      "id": "imported-stage-minutes",
+      "stagesJSON": "{\"awake\":30,\"light\":210,\"deep\":90,\"rem\":90}",
+      "expected": {
+        "awake": 30,
+        "light": 210,
+        "deep": 90,
+        "rem": 90,
+        "asleep": 390,
+        "inBed": 420,
+        "efficiency": 0.9285714285714286
+      }
+    },
+    {
+      "id": "computed-stage-boundaries",
+      "stagesJSON": "[{\"start\":0,\"end\":600,\"stage\":\"wake\"},{\"start\":600,\"end\":2400,\"stage\":\"light\"},{\"start\":2400,\"end\":4200,\"stage\":\"deep\"},{\"start\":4200,\"end\":6000,\"stage\":\"rem\"}]",
+      "expected": {
+        "awake": 10,
+        "light": 30,
+        "deep": 30,
+        "rem": 30,
+        "asleep": 90,
+        "inBed": 100,
+        "efficiency": 0.9
+      }
+    },
+    {
+      "id": "malformed-stage-json",
+      "stagesJSON": "{not-json",
+      "expected": null
+    }
+  ],
+  "wearableImports": [
+    {
+      "id": "oura-normal-export",
+      "brand": "oura",
+      "files": {
+        "oura.json": "{\"sleep\":[{\"day\":\"2026-06-01\",\"bedtime_start\":\"2026-05-31T23:15:00+00:00\",\"bedtime_end\":\"2026-06-01T06:30:00+00:00\",\"total_sleep_duration\":25200,\"deep_sleep_duration\":5400,\"light_sleep_duration\":13800,\"rem_sleep_duration\":6000,\"awake_time\":900,\"efficiency\":92,\"lowest_heart_rate\":48,\"average_hrv\":65,\"average_breath\":14.2}],\"daily_readiness\":[{\"day\":\"2026-06-01\",\"score\":81,\"temperature_deviation\":-0.2,\"contributors\":{\"resting_heart_rate\":49}}],\"daily_activity\":[{\"day\":\"2026-06-01\",\"steps\":8421,\"active_calories\":520}]}"
+      },
+      "expected": {
+        "dayCount": 1,
+        "sleepCount": 1,
+        "firstDay": {
+          "day": "2026-06-01",
+          "restingHr": 49,
+          "avgHrvMs": 65,
+          "respRateBpm": 14.2,
+          "skinTempDevC": -0.2,
+          "steps": 8421,
+          "activeKcal": 520,
+          "totalSleepMin": 420,
+          "readinessScore": 81
+        },
+        "firstSleep": {
+          "totalSleepMin": 420,
+          "deepMin": 90,
+          "remMin": 100,
+          "lowestHr": 48,
+          "avgHrvMs": 65,
+          "respRateBpm": 14.2
+        }
+      }
+    },
+    {
+      "id": "raw-heart-rate-csv-has-no-daily-rollup",
+      "brand": "oura",
+      "files": {
+        "heartrate.csv": "timestamp,heart_rate\n2026-06-01T09:00:00+00:00,62\n2026-06-01T09:01:00+00:00,64"
+      },
+      "expected": { "dayCount": 0, "sleepCount": 0 }
+    },
+    {
+      "id": "malformed-export-is-empty",
+      "brand": "oura",
+      "files": { "oura.json": "{not-json" },
+      "expected": { "dayCount": 0, "sleepCount": 0 }
+    }
+  ]
+}

@@ -1,4 +1,5 @@
 import java.util.Properties
+import org.gradle.api.tasks.PathSensitivity
 
 plugins {
     id("com.android.application")
@@ -13,6 +14,7 @@ val keystorePropsFile = rootProject.file("keystore.properties")
 val keystoreProps = Properties().apply {
     if (keystorePropsFile.exists()) keystorePropsFile.inputStream().use { load(it) }
 }
+val analyticsFixtures = rootProject.file("../shared-fixtures/analytics/v1/golden.json")
 
 android {
     namespace = "com.noop"
@@ -112,6 +114,16 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+    }
+
+    testOptions {
+        unitTests.all {
+            it.inputs.file(analyticsFixtures).withPathSensitivity(PathSensitivity.RELATIVE)
+            it.systemProperty(
+                "noop.analyticsFixtures",
+                analyticsFixtures.absolutePath,
+            )
         }
     }
 }
