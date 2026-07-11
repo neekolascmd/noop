@@ -5,35 +5,15 @@
 # tests macOS and compiles every Apple app target on relevant changes so a shared-code
 # change can't silently break iOS, watchOS, or macOS. It is anonymity-safe:
 # CODE_SIGNING_ALLOWED=NO, no secrets, no signing identity, and no uploaded artifacts.
+# It intentionally reports on every PR so branch protection never blocks documentation-only
+# changes while waiting for a path-filtered check that GitHub did not schedule.
 name: App CI (macOS + iOS + watchOS)
 
 on:
   pull_request:
     branches: [main]
-    paths:
-      - 'Strand/**'
-      - 'StrandTests/**'
-      - 'StrandiOS/**'
-      - 'StrandiOSShared/**'
-      - 'StrandiOSWidgets/**'
-      - 'NOOPWatch/**'
-      - 'NOOPWatchComplications/**'
-      - 'Packages/**'
-      - 'project.yml'
-      - '.github/workflows/app-build.yml'
   push:
     branches: [main]
-    paths:
-      - 'Strand/**'
-      - 'StrandTests/**'
-      - 'StrandiOS/**'
-      - 'StrandiOSShared/**'
-      - 'StrandiOSWidgets/**'
-      - 'NOOPWatch/**'
-      - 'NOOPWatchComplications/**'
-      - 'Packages/**'
-      - 'project.yml'
-      - '.github/workflows/app-build.yml'
   workflow_dispatch:
 
 concurrency:
