@@ -114,6 +114,15 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+
+    testOptions {
+        unitTests.all {
+            it.systemProperty(
+                "noop.analyticsFixtures",
+                rootProject.file("../shared-fixtures/analytics/v1/golden.json").absolutePath,
+            )
+        }
+    }
 }
 
 dependencies {

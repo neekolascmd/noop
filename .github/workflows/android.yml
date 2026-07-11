@@ -11,11 +11,13 @@ on:
     branches: [main]
     paths:
       - 'android/**'
+      - 'shared-fixtures/analytics/**'
       - '.github/workflows/android.yml'
   push:
     branches: [main]
     paths:
       - 'android/**'
+      - 'shared-fixtures/analytics/**'
       - '.github/workflows/android.yml'
   workflow_dispatch:
 
