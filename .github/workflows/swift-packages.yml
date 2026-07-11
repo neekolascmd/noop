@@ -5,19 +5,15 @@
 # release is produced and anonymized by hand. The packages, by contrast, build
 # and test on their own with plain SwiftPM — no Xcode project, no signing, no
 # secrets — which makes them a safe, self-contained CI check that leaks nothing.
+# It intentionally reports on every PR so branch protection never blocks documentation-only
+# changes while waiting for a path-filtered check that GitHub did not schedule.
 name: Swift Packages CI
 
 on:
   pull_request:
     branches: [main]
-    paths:
-      - 'Packages/**'
-      - '.github/workflows/swift-packages.yml'
   push:
     branches: [main]
-    paths:
-      - 'Packages/**'
-      - '.github/workflows/swift-packages.yml'
   workflow_dispatch:
 
 concurrency:
