@@ -188,6 +188,7 @@ xcodebuild -project Strand.xcodeproj -scheme Strand \
 
 # per-package iteration (much faster than the full app):
 cd Packages/WhoopProtocol && swift build && swift test
+cd Packages/OuraProtocol  && swift build && swift test
 cd Packages/WhoopStore    && swift build && swift test
 cd Packages/StrandImport  && swift build && swift test
 ```
@@ -226,7 +227,7 @@ isn't yet fully validated. It shares the same analytics packages, so once data i
 macOS.
 
 The `NOOPiOS` app target (plus the `NOOPiOSWidgets` WidgetKit / Live Activity extension) already
-exists in `project.yml` — you don't need to add it. All five packages target `.iOS(.v16)`, so the
+exists in `project.yml` — you don't need to add it. All six shared application packages target `.iOS(.v16)`, so the
 protocol, storage, analytics, import, and design cores compile for iOS unmodified; the iOS app
 shell lives in `StrandiOS/` with shared iOS code in `StrandiOSShared/`.
 
@@ -269,7 +270,7 @@ Notes:
 
 Android ships as a **full, native client** — a separate Kotlin/Gradle module rather than a port of
 the Swift app. It lives under **`android/`** with its own `README`, and a pre-built APK
-(`NOOP-vX.apk`) is published in [Releases](https://github.com/ParthJadhav/noop/releases). A sample-data **demo** flavour still
+(`NOOP-vX.apk`) is published in [Releases](https://github.com/neekolascmd/noop/releases). A sample-data **demo** flavour still
 exists for exploring every screen with no strap, but it's now **build-from-source only**
 (`./gradlew assembleDemoDebug`) — it is no longer published as a release asset.
 
@@ -296,10 +297,12 @@ Gradle sync, and run on a device with Bluetooth (an emulator cannot reach a phys
 ```bash
 # Package test suites (no Xcode project needed):
 cd Packages/WhoopProtocol && swift test
+cd Packages/OuraProtocol  && swift test
 cd Packages/WhoopStore    && swift test
 cd Packages/StrandAnalytics && swift test
 cd Packages/StrandImport  && swift test
 cd Packages/StrandDesign  && swift test
+cd Packages/NoopLocalAccess && swift test
 
 # macOS app + integration tests via Xcode:
 xcodegen generate

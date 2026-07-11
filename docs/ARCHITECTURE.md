@@ -92,17 +92,19 @@ Strand/                         macOS SwiftUI app target (the reference implemen
 ├── MenuBar/                    glanceable menu-bar extra
 └── System/                     macOS integrations (lock screen, Shortcuts)
 
-Packages/                       Cross-platform Swift packages (iOS 16+ / macOS 13+)
+Packages/                       Swift packages (shared app packages: iOS 16+ / macOS 13+)
 ├── WhoopProtocol/              BLE frame parsing, CRC, command/event/packet decode
+├── OuraProtocol/               Clean-room Oura BLE framing, auth, and event decode
 ├── WhoopStore/                 GRDB/SQLite persistence (actor)
 ├── StrandAnalytics/            HRV/recovery/strain/sleep/correlation math
 ├── StrandImport/               WHOOP CSV + Apple Health importers
-└── StrandDesign/               SwiftUI design system (palette, components, charts)
+├── StrandDesign/               SwiftUI design system (palette, components, charts)
+└── NoopLocalAccess/            macOS read-only automation access
 
 Tools/Backfill/                 CLI offload/replay tool
 ```
 
-The app target (`Strand/`) is the **macOS reference implementation**. The same five packages back the
+The app target (`Strand/`) is the **macOS reference implementation**. The six shared application packages back the
 **iOS** app (`StrandiOS/`, `StrandiOSShared/`, `StrandiOSWidgets/` — **build-from-source only**, no
 App Store/TestFlight; see [`IOS.md`](./IOS.md)) and the **Android** app (`android/`, Room/Kotlin). The
 packages already declare `.iOS(.v16)` and `.macOS(.v13)` and keep all UI-framework code behind

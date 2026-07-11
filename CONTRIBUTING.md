@@ -29,10 +29,10 @@ packages — they build and test on their own, no Xcode project and no strap nee
 cd Packages/WhoopProtocol && swift build && swift test
 ```
 
-The five packages are `WhoopProtocol` (BLE framing / decode), `WhoopStore`
-(SQLite persistence), `StrandAnalytics` (recovery / strain / HRV / sleep math),
-`StrandImport` (WHOOP CSV + Apple Health importers), and `StrandDesign` (the
-SwiftUI design system).
+The seven packages are `WhoopProtocol` and `OuraProtocol` (BLE framing / decode),
+`WhoopStore` (SQLite persistence), `StrandAnalytics` (recovery / strain / HRV /
+sleep math), `StrandImport` (health-data importers), `StrandDesign` (the SwiftUI
+design system), and `NoopLocalAccess` (read-only local automation access).
 
 ### macOS app
 
@@ -60,13 +60,14 @@ cd android
 
 ## What CI checks
 
-Two GitHub Actions workflows run on every PR and push to `main`. They compile and
-run unit tests only — no code signing, no secrets, no release.
+Three verification workflows run on relevant PRs and pushes to `main`. They use
+no release signing identities or application secrets.
 
 | Workflow | Trigger | What it does |
 |---|---|---|
 | **Swift Packages CI** (`.github/workflows/swift-packages.yml`) | changes under `Packages/**` | `swift build` + `swift test` for each package |
 | **Android CI** (`.github/workflows/android.yml`) | changes under `android/**` | `assembleFullDebug` + `testFullDebugUnitTest` (JDK 17) |
+| **App build** (`.github/workflows/app-build.yml`) | Apple app, package, or project changes | macOS and iOS compile checks |
 
 If CI fails on your PR, fix the cause rather than working around it. Never commit
 generated output (`Strand.xcodeproj/`) or any secrets, keystores, or `local.properties`.

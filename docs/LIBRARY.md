@@ -36,13 +36,16 @@ interoperability work:
 | Package | Purpose | Pure / portable? | UI deps | External deps |
 |---|---|---|---|---|
 | **WhoopProtocol** | BLE frame parsing, CRC, command/event/packet decode (the reverse-engineering core) | ✅ Pure Foundation | none | none |
+| **OuraProtocol** | Clean-room Oura BLE framing, auth, command, and event decode | ✅ Pure Foundation | none | none |
 | **WhoopStore** | GRDB/SQLite persistence: migrations, decoded streams, raw outbox, metric caches | ✅ Pure (server-free) | none | GRDB |
 | **StrandAnalytics** | HRV / recovery / strain / sleep / correlation math | ✅ Pure, deterministic | none | (WhoopProtocol, WhoopStore types) |
 | **StrandImport** | WHOOP CSV + Apple Health (`export.xml`, streaming) importers | ✅ Pure Foundation/XML | none | ZIPFoundation |
 | **StrandDesign** | SwiftUI design system (palette, components, charts) | SwiftUI only | SwiftUI | none |
+| **NoopLocalAccess** | Read-only local database automation library and CLI | macOS | none | GRDB |
 
-All five packages declare the same platforms — **iOS 16+ and macOS 13+** — and
-build with **swift-tools-version 5.9**. The first four are platform-pure: they
+The six shared application packages declare **iOS 16+ and macOS 13+**;
+`NoopLocalAccess` is macOS-only. All build with **swift-tools-version 5.9**. The
+protocol, storage, analytics, and import packages are platform-pure: they
 never import `CoreBluetooth`, `UIKit`, or `AppKit`, so they run unchanged in CLI
 tools, tests, and on any platform. `StrandDesign` is the only SwiftUI package;
 it builds on both iOS and macOS, bridging through `UIColor`/`NSColor` only where
@@ -51,7 +54,7 @@ unavoidable, guarded with `#if canImport(UIKit)` / `#if canImport(AppKit)`.
 ### Dependency graph
 
 ```
-WhoopProtocol  (no internal deps)
+WhoopProtocol / OuraProtocol  (no internal deps)
       │
       ├──────────────► WhoopStore        (+ GRDB)
       │                     │
