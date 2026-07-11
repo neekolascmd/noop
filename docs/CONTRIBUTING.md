@@ -82,10 +82,12 @@ Strand/
 ├── Packages/
 │   ├── WhoopProtocol/          # BLE frame parsing, CRC, command/event/packet decode
 │   │                           #   (also builds the `whoop-decode` CLI — runs on Linux)
+│   ├── OuraProtocol/           # Clean-room Oura BLE framing, auth, and event decode
 │   ├── WhoopStore/             # GRDB/SQLite persistence (migrations, streams, caches)
 │   ├── StrandAnalytics/        # HRV / recovery / strain / sleep / correlation math
 │   ├── StrandImport/           # WHOOP CSV + Apple Health importers
-│   └── StrandDesign/           # SwiftUI design system (palette, components, charts)
+│   ├── StrandDesign/           # SwiftUI design system (palette, components, charts)
+│   └── NoopLocalAccess/        # Read-only local automation/MCP access for macOS
 ├── Tools/
 │   └── Backfill/               # `swift run backfill` — re-runs importers into the on-device DB
 ├── tools/
@@ -99,6 +101,7 @@ Strand/
 | If your change is about… | It belongs in… | Notes |
 |---|---|---|
 | Decoding strap bytes, CRC, framing, packet/event types | `Packages/WhoopProtocol` | **Platform-pure — no CoreBluetooth.** Runs in tests/CLI unchanged. |
+| Decoding Oura bytes, auth, framing, and event types | `Packages/OuraProtocol` | **Platform-pure — no CoreBluetooth.** Experimental hardware support. |
 | Persisting decoded data, migrations, caches, reads | `Packages/WhoopStore` | GRDB/SQLite only. |
 | Computing recovery / strain / HRV / sleep / correlations | `Packages/StrandAnalytics` | Pure, database-free analyzers. |
 | Parsing WHOOP CSV or Apple Health `export.xml` | `Packages/StrandImport` | Header-name-driven CSV; streaming SAX XML. |
@@ -106,6 +109,7 @@ Strand/
 | CoreBluetooth, bonding, offload, live state | `Strand/BLE`, `Strand/Collect` | macOS-app layer — wraps the pure packages. |
 | A screen, sidebar item, menu-bar UI, automation | `Strand/Screens`, `Strand/App`, `Strand/System` | App layer. |
 | Capturing strap frames on Linux for protocol RE | `tools/linux-capture` | Python/bleak capture → `whoop-decode`; no Mac/CoreBluetooth. See its [README](../tools/linux-capture/README.md). |
+| Read-only automation access to a local NOOP database | `Packages/NoopLocalAccess` | macOS-only CLI/library; never mutates the database. |
 
 **Rule of thumb:** the more "wire-level" or "math-level" a change is, the deeper into `Packages/` it
 should live, and the more it should be covered by a `swift test` suite that runs without an app, a
@@ -156,10 +160,12 @@ the whole app and needs no strap:
 
 ```bash
 cd Packages/WhoopProtocol && swift build && swift test
+cd Packages/OuraProtocol && swift build && swift test
 cd Packages/WhoopStore     && swift build && swift test
 cd Packages/StrandAnalytics && swift build && swift test
 cd Packages/StrandImport   && swift build && swift test
 cd Packages/StrandDesign   && swift build && swift test
+cd Packages/NoopLocalAccess && swift build && swift test
 ```
 
 ### Linux (protocol RE)
@@ -516,7 +522,7 @@ Contributions toward these are welcome — open an issue to coordinate first.
 - **Android (shipped).** A full, native Kotlin/Gradle client lives under `android/`, re-implementing
   the same wire protocol against Android's BLE stack — it pairs, offloads, persists and scores
   on-device, and imports WHOOP / Apple Health / Health Connect. Pre-built APKs are in
-  [Releases](https://github.com/ParthJadhav/noop/releases). Continued real-hardware testing across more devices is always welcome
+  [Releases](https://github.com/neekolascmd/noop/releases). Continued real-hardware testing across more devices is always welcome
   (an emulator can't reach a physical strap).
 - **iOS (build-from-source target on `main`).** iOS was folded into `main` in v1.94 as a first-class
   build-from-source target — the `NOOPiOS` and `NOOPiOSWidgets` schemes (app target plus widgets, a

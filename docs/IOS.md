@@ -1,7 +1,7 @@
 # iOS — Install & Build
 
 > **iOS is now a direct download (v1.96).** Grab **`NOOP-v<version>-ios.ipa`** from the
-> [Releases](https://github.com/ParthJadhav/noop/releases) page and install it with **AltStore** or **SideStore** — see
+> [Releases](https://github.com/neekolascmd/noop/releases) page and install it with **AltStore** or **SideStore** — see
 > **[Install (sideload)](#install-sideload)** below. No Mac, no Xcode, no App Store, and no Apple
 > Developer account needed — **and NOOP stays anonymous**, because the `.ipa` we ship is *unsigned*
 > and **you** sign it on your own iPhone with your own free Apple ID. The app target (`NOOPiOS` +
@@ -18,7 +18,7 @@ Nothing about this touches NOOP's identity or Apple's servers on our side.
 1. **Install a sideloader on your computer** — [AltStore](https://altstore.io) or
    [SideStore](https://sidestore.io) (both free). Follow their one-time setup (it installs a helper +
    AltStore/SideStore onto your iPhone using your own Apple ID).
-2. **Download `NOOP-v<version>-ios.ipa`** from [Releases](https://github.com/ParthJadhav/noop/releases) to your iPhone (or your
+2. **Download `NOOP-v<version>-ios.ipa`** from [Releases](https://github.com/neekolascmd/noop/releases) to your iPhone (or your
    computer, then AirDrop/transfer it).
 3. **Open the `.ipa` with AltStore/SideStore** (Share → AltStore, or the app's "+" button). It signs
    and installs NOOP. First launch may need **Settings → General → VPN & Device Management → trust
@@ -29,7 +29,7 @@ Nothing about this touches NOOP's identity or Apple's servers on our side.
 So you never have to manually re-download, add NOOP's **source** to AltStore/SideStore once — new
 releases then show up (and re-sign) automatically:
 
-**Source URL:** `https://raw.githubusercontent.com/ParthJadhav/noop/main/altstore-source.json`
+**Source URL:** `https://raw.githubusercontent.com/neekolascmd/noop/main/altstore-source.json`
 
 > Make sure you copy the **raw** URL above exactly. If a sideloader says **"given data not valid
 > JSON"** when you add the source, you've pasted a normal web page URL (which returns HTML) instead of
@@ -107,11 +107,11 @@ the WHOOP 5.0 / MG protocol from **`b-nnett/goose`**. See [`../ATTRIBUTION.md`](
 
 ## TL;DR
 
-- **All five shared packages already build for iOS.** Every `Package.swift` declares
+- **All six shared application packages already build for iOS.** Every relevant `Package.swift` declares
   `.iOS(.v16)` alongside `.macOS(.v13)`, and the only UI-framework-specific code is
   guarded with `#if canImport(UIKit)` / `#if canImport(AppKit)`.
 - The work to ship on iOS is **app-layer only**: a new iOS app target that reuses
-  `WhoopProtocol`, `WhoopStore`, `StrandAnalytics`, `StrandImport`, and `StrandDesign`
+  `WhoopProtocol`, `OuraProtocol`, `WhoopStore`, `StrandAnalytics`, `StrandImport`, and `StrandDesign`
   unchanged, plus iOS variants of the handful of macOS-only app-layer services
   (menu bar, screen lock, Shortcuts, pasteboard).
 - **CoreBluetooth is fully available on iOS** and the BLE engine is already written
@@ -124,19 +124,20 @@ the WHOOP 5.0 / MG protocol from **`b-nnett/goose`**. See [`../ATTRIBUTION.md`](
 
 ## Current platform support in the packages
 
-The shared logic lives in five SwiftPM packages under [`Packages/`](../Packages/). Each
+The shared application logic lives in six SwiftPM packages under [`Packages/`](../Packages/). Each
 declares both platforms in its manifest:
 
 | Package | Role | Platforms declared | iOS-relevant notes |
 |---|---|---|---|
 | `WhoopProtocol` | BLE frame parsing, CRC, command/event/packet decode — the reverse-engineering core | `.iOS(.v16)`, `.macOS(.v13)` | Platform-pure. **Never imports CoreBluetooth or any UI framework.** Exposes GATT UUIDs as plain *strings* (see `DeviceFamily.swift`); the app wraps them in `CBUUID`. |
+| `OuraProtocol` | Clean-room Oura BLE framing, auth, command, and event decode | `.iOS(.v16)`, `.macOS(.v13)` | Platform-pure and experimental; transport remains in the app layer. |
 | `WhoopStore` | GRDB/SQLite persistence (migrations, decoded streams, metric caches) | `.iOS(.v16)`, `.macOS(.v13)` | Depends on `WhoopProtocol` + GRDB.swift `6.0.0+`. GRDB supports iOS first-class. |
 | `StrandAnalytics` | HRV / recovery / strain / sleep / correlation math | `.macOS(.v13)`, `.iOS(.v16)` | Pure computation; no platform APIs. |
 | `StrandImport` | WHOOP CSV + Apple Health (`export.xml`, streaming) importers | `.macOS(.v13)`, `.iOS(.v16)` | Depends on `WhoopProtocol`, `WhoopStore`, ZIPFoundation `0.9.0+`. Uses a streaming `XMLParser` (SAX), so it stays memory-bounded even on iOS for multi-hundred-MB exports. |
 | `StrandDesign` | SwiftUI design system (palette, components, charts) | `.macOS(.v13)`, `.iOS(.v16)` | The one package with a platform branch: `Palette.swift` resolves `Color` → sRGB components via `NSColor` under `#if canImport(AppKit)` and `UIColor` under `#elseif canImport(UIKit)`. |
 
 > **Verify:** see each `Packages/<Name>/Package.swift`. The `platforms:` array carries
-> both `.iOS(.v16)` and `.macOS(.v13)` in all five.
+> both `.iOS(.v16)` and `.macOS(.v13)` in all six shared application packages.
 
 ### The one cross-platform shim that already exists
 
@@ -429,7 +430,7 @@ the static-export importer and the live HealthKit importer converge on one schem
 
 ## Concrete iOS target structure
 
-The recommended layout keeps the five packages untouched and adds a sibling iOS app
+The recommended layout keeps the shared application packages untouched and adds a sibling iOS app
 target. The bulk of `Strand/`'s SwiftUI screens move into a shared app layer; only the
 platform-specific services are duplicated per OS.
 
@@ -462,7 +463,7 @@ platform-specific service shims.
 
 ### Package dependencies for the iOS target
 
-The iOS app target depends on exactly the same five local packages the macOS target
+The iOS app target depends on the same six local application packages as the macOS target
 already lists in [`project.yml`](../project.yml). Expressed as a SwiftPM target (e.g.
 in an Xcode project generated by XcodeGen / Tuist, or a `Package.swift` app target):
 
@@ -475,6 +476,7 @@ let package = Package(
     platforms: [.iOS(.v16)],
     dependencies: [
         .package(path: "Packages/WhoopProtocol"),
+        .package(path: "Packages/OuraProtocol"),
         .package(path: "Packages/WhoopStore"),
         .package(path: "Packages/StrandAnalytics"),
         .package(path: "Packages/StrandImport"),
@@ -485,6 +487,7 @@ let package = Package(
             name: "NOOPiOS",
             dependencies: [
                 "WhoopProtocol",
+                "OuraProtocol",
                 "WhoopStore",
                 "StrandAnalytics",
                 "StrandImport",
@@ -496,7 +499,7 @@ let package = Package(
 ```
 
 Equivalent XcodeGen stanza (mirroring the existing macOS `Strand` target in
-`project.yml`, which already declares these five packages under `packages:` and lists
+`project.yml`, which declares these six application packages under `packages:` and lists
 them under the target's `dependencies:`):
 
 ```yaml
