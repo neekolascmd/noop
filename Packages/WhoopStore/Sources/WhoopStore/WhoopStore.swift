@@ -5,8 +5,12 @@ import WhoopProtocol
 /// OpenWhoop persistence library — decoded streams are durable; raw frames are a
 /// transient, compressed, prunable outbox. Built on GRDB/SQLite.
 public enum WhoopStoreInfo {
-    /// Bumped whenever the migrator gains a new migration.
-    public static let schemaVersion = 18
+    /// Registered migrations in the exact order GRDB applies them. Deriving this from the production
+    /// migrator prevents the public version marker from drifting when a migration is added.
+    public static var migrationIdentifiers: [String] { WhoopStore.makeMigrator().migrations }
+
+    /// Number of registered migrations. Kept as the cross-platform schema marker used by diagnostics.
+    public static var schemaVersion: Int { migrationIdentifiers.count }
 }
 
 /// WhoopStore is an `actor`: its public API is `async`, and all GRDB work runs on the

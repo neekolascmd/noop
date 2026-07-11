@@ -146,9 +146,23 @@ enum DataBackup {
     /// entry) and deflate compression match the Android exporter byte-for-byte at the container level,
     /// so a `.noopbak` produced on either platform imports on the other. `settingsJSON == nil` writes
     /// the legacy single-entry ZIP. Mirrors the `Archive` idiom in `WhoopCsvExporter`.
-    private static func writeBackupZip(dbURL: URL, to dest: URL, settingsJSON: Data?) throws {
+    private static func writeBackupZip(dbURL: URL, to dest: URL, settingsJSON: Data?,
+                                       normalizeForArchive: Bool = true) throws {
+        // A checkpoint folds every committed WAL frame into the main file, but SQLite deliberately
+        // leaves that file's header in WAL journal mode. Once extracted from ZIP, a read-only verifier
+        // may then try to open a non-existent `-wal`/`-shm` beside it and reject an otherwise healthy
+        // backup. Archive a throwaway copy switched to DELETE journal mode so the entry is genuinely
+        // self-contained; never mutate the live database's journal mode or connection pool.
+        let archivedDB = normalizeForArchive ? try standaloneDatabaseCopy(of: dbURL) : dbURL
+        defer {
+            if archivedDB != dbURL {
+                for suffix in ["", "-wal", "-shm"] {
+                    try? FileManager.default.removeItem(atPath: archivedDB.path + suffix)
+                }
+            }
+        }
         let archive = try Archive(url: dest, accessMode: .create)
-        try archive.addEntry(with: backupEntryName, fileURL: dbURL, compressionMethod: .deflate)
+        try archive.addEntry(with: backupEntryName, fileURL: archivedDB, compressionMethod: .deflate)
         guard let settingsJSON else { return }
         // Stage the JSON through a temp file so the settings entry uses the exact same file-URL
         // addEntry idiom as the DB entry (one container code path, no provider-API variant to drift).
@@ -203,11 +217,13 @@ enum DataBackup {
     /// legacy single-entry ZIP — tests cover both shapes. Not used by app code; production goes
     /// through `writeBackup(checkpoint:to:)`.
     static func writeBackupForTesting(databaseAt dbURL: URL, to dest: URL,
-                                      settings: [String: Any]? = nil) throws {
+                                      settings: [String: Any]? = nil,
+                                      normalizeForArchive: Bool = true) throws {
         let fm = FileManager.default
         if fm.fileExists(atPath: dest.path) { try fm.removeItem(at: dest) }
         try writeBackupZip(dbURL: dbURL, to: dest,
-                           settingsJSON: settings.flatMap { BackupSettings.encode($0) })
+                           settingsJSON: settings.flatMap { BackupSettings.encode($0) },
+                           normalizeForArchive: normalizeForArchive)
     }
 
     // MARK: - Import
@@ -321,6 +337,22 @@ enum DataBackup {
         let holdsData = backupTables.contains("device") || backupTables.contains("hrSample")
         if origin == .android || (origin == .unknown && holdsData) {
             return .failure(String(localized: "This isn't a NOOP backup from this app. It's missing the migration bookkeeping a NOOP backup carries (it looks like an Android backup or another app's database), and restoring it would strand your store. To move your history across platforms, export the WHOOP-format CSV on the other device (Settings → Export data) and import that here, or import your original WHOOP / Apple Health export."))
+        }
+
+        // A GRDB marker alone is not enough: a backup from a newer NOOP build can contain migrations
+        // this build does not understand, while a damaged/tampered ledger can contain gaps. GRDB would
+        // only discover that incompatibility on the NEXT launch, after the live file had already been
+        // replaced. Require the applied identifiers to be an exact prefix of this build's production
+        // migration history before touching the current store.
+        if origin == .mac {
+            guard let applied = sqliteMigrationIdentifiers(at: source) else {
+                return .failure(String(localized: "This backup's migration history couldn't be read. Your current data was left untouched."))
+            }
+            let supported = WhoopStoreInfo.migrationIdentifiers
+            let expectedPrefix = Set(supported.prefix(applied.count))
+            guard applied == expectedPrefix else {
+                return .failure(String(localized: "This backup was created by a newer or incompatible NOOP database schema. Update NOOP and try again. Your current data was left untouched."))
+            }
         }
 
         // #1014 defence-in-depth: both gates above read only the FIRST pages of the file — the
@@ -443,6 +475,61 @@ enum DataBackup {
         return f.string(from: Date())
     }
 
+    /// Copy a checkpointed database and switch ONLY the copy out of WAL mode. The returned file is
+    /// safe to read without sidecars after ZIP extraction. A second quick-check verifies the copy
+    /// itself, catching a torn/disk-full copy before it becomes an artifact.
+    private static func standaloneDatabaseCopy(of source: URL) throws -> URL {
+        let fm = FileManager.default
+        let staged = fm.temporaryDirectory
+            .appendingPathComponent("noop-standalone-\(UUID().uuidString).sqlite")
+        do {
+            try fm.copyItem(at: source, to: staged)
+            var db: OpaquePointer?
+            guard sqlite3_open_v2(staged.path, &db, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else {
+                let message = db.map { String(cString: sqlite3_errmsg($0)) } ?? "open failed"
+                sqlite3_close(db)
+                throw StandaloneCopyFailure(complaint: message)
+            }
+
+            var stmt: OpaquePointer?
+            let prepared = sqlite3_prepare_v2(db, "PRAGMA journal_mode=DELETE", -1, &stmt, nil)
+            let stepped = prepared == SQLITE_OK ? sqlite3_step(stmt) : prepared
+            let mode: String
+            if stepped == SQLITE_ROW, let text = sqlite3_column_text(stmt, 0) {
+                mode = String(cString: text).lowercased()
+            } else {
+                mode = ""
+            }
+            sqlite3_finalize(stmt)
+            let closeResult = sqlite3_close(db)
+            guard stepped == SQLITE_ROW, mode == "delete", closeResult == SQLITE_OK else {
+                throw StandaloneCopyFailure(
+                    complaint: "couldn't switch the staged database out of WAL mode")
+            }
+
+            // PRAGMA may have created temporary sidecars while changing modes; they never belong in
+            // the container and the DELETE-mode main file no longer needs them.
+            try? fm.removeItem(atPath: staged.path + "-wal")
+            try? fm.removeItem(atPath: staged.path + "-shm")
+            if let complaint = DatabaseIntegrity.quickCheckFailure(atPath: staged.path) {
+                throw StandaloneCopyFailure(complaint: complaint)
+            }
+            return staged
+        } catch {
+            for suffix in ["", "-wal", "-shm"] {
+                try? fm.removeItem(atPath: staged.path + suffix)
+            }
+            throw error
+        }
+    }
+
+    private struct StandaloneCopyFailure: LocalizedError {
+        let complaint: String
+        var errorDescription: String? {
+            "Couldn't prepare a self-contained SQLite backup (\(complaint))."
+        }
+    }
+
     /// Content types accepted by the export/import panels. Includes the new `.noopbak` (ZIP),
     /// generic ZIP, and legacy `.sqlite` / `.database` types so older backups keep working.
     private static func backupContentTypes() -> [UTType] {
@@ -496,6 +583,29 @@ enum DataBackup {
             }
         }
         return names
+    }
+
+    /// Applied GRDB migration identifiers from a staged backup. `nil` means the bookkeeping table
+    /// could not be queried; callers reject that state rather than replacing a live database with a
+    /// file whose upgrade path is unknown.
+    private static func sqliteMigrationIdentifiers(at url: URL) -> Set<String>? {
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+            sqlite3_close(db)
+            return nil
+        }
+        defer { sqlite3_close(db) }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            db, "SELECT identifier FROM grdb_migrations", -1, &stmt, nil) == SQLITE_OK
+        else { return nil }
+        defer { sqlite3_finalize(stmt) }
+        var identifiers: Set<String> = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            guard let c = sqlite3_column_text(stmt, 0) else { return nil }
+            identifiers.insert(String(cString: c))
+        }
+        return identifiers
     }
 
     /// Read the first 4 bytes and check for the ZIP PK magic (`PK\x03\x04`).

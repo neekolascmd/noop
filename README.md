@@ -367,7 +367,7 @@ offload, and live notifications.
 
 Everything is stored on-device in SQLite (using
 [GRDB.swift](https://github.com/groue/GRDB.swift)). The schema is a versioned
-migrator (`Database.swift`, currently through `v9`). Examples of decoded-stream
+migrator (`Database.swift`, currently through `v22`). Examples of decoded-stream
 tables created in `v1`–`v3`:
 
 ```sql

@@ -1,5 +1,7 @@
 import XCTest
 import SQLite3
+import WhoopProtocol
+import WhoopStore
 @testable import Strand
 
 /// Real file-I/O tests for the Backup & Sync restore path - not string logic (must-fix #5).
@@ -57,6 +59,97 @@ final class BackupSyncRoundTripTests: XCTestCase {
         }
         XCTAssertEqual(try deviceRows(in: liveDB), ["my-whoop", "watch"],
                        "Restored DB should hold exactly the backed-up rows")
+    }
+
+    func testPopulatedStoreRoundTripPreservesHealthRowsWithoutDuplicates() async throws {
+        let sourceDB = tmp.appendingPathComponent("populated-source.sqlite")
+        let backup = tmp.appendingPathComponent("populated.noopbak")
+        let liveDB = tmp.appendingPathComponent("populated-restored.sqlite")
+        let deviceId = "fixture-whoop"
+        let base = 1_780_000_000
+        let streams = Streams(
+            hr: [HRSample(ts: base, bpm: 61), HRSample(ts: base + 1, bpm: 62)],
+            rr: [RRInterval(ts: base, rrMs: 980), RRInterval(ts: base, rrMs: 990)],
+            spo2: [SpO2Sample(ts: base, red: 120, ir: 240)],
+            skinTemp: [SkinTempSample(ts: base, raw: 3_250)],
+            resp: [RespSample(ts: base, raw: 17)],
+            gravity: [GravitySample(ts: base, x: 0.1, y: -0.2, z: 0.98)],
+            steps: [StepSample(ts: base, counter: 42, activityClass: 1)],
+            sleepState: [SleepStateSample(ts: base, state: 2)],
+            events: [WhoopEvent(ts: base, kind: "fixture", payload: ["source": .string("backup-test")])],
+            battery: [BatterySample(ts: base, soc: 73.5, mv: 3_910)])
+        let sleep = CachedSleepSession(
+            startTs: base - 28_800, endTs: base, efficiency: 0.91,
+            restingHr: 51, avgHrv: 68.5, stagesJSON: "[{\"stage\":\"deep\"}]")
+        let daily = DailyMetric(
+            day: "2026-05-27", totalSleepMin: 445, efficiency: 0.91,
+            deepMin: 95, remMin: 105, lightMin: 245, disturbances: 3,
+            restingHr: 51, avgHrv: 68.5, recovery: 82, strain: 9.4,
+            exerciseCount: 1, spo2Pct: 97.2, skinTempDevC: 0.2,
+            respRateBpm: 14.5, steps: 8_432, activeKcalEst: 612)
+
+        do {
+            let store = try await WhoopStore(path: sourceDB.path)
+            try await store.upsertDevice(id: deviceId, mac: "AA:BB", name: "Fixture strap")
+            _ = try await store.insert(streams, deviceId: deviceId)
+            _ = try await store.upsertSleepSessions([sleep], deviceId: deviceId)
+            _ = try await store.upsertDailyMetrics([daily], deviceId: deviceId)
+            try await store.checkpointWAL()
+        }
+
+        try DataBackup.writeBackupForTesting(databaseAt: sourceDB, to: backup)
+        let result = DataBackup.restore(from: backup, toDatabaseAt: liveDB.path)
+        guard case .imported = result else {
+            return XCTFail("A populated current-schema store should restore, got \(result)")
+        }
+
+        let restored = try await WhoopStore(path: liveDB.path)
+        let restoredHR = try await restored.hrSamples(
+            deviceId: deviceId, from: base - 1, to: base + 2, limit: 10)
+        let restoredRR = try await restored.rrIntervals(
+            deviceId: deviceId, from: base - 1, to: base + 2, limit: 10)
+        let restoredEvents = try await restored.events(
+            deviceId: deviceId, from: base - 1, to: base + 2, limit: 10)
+        let restoredBattery = try await restored.batterySamples(
+            deviceId: deviceId, from: base - 1, to: base + 2, limit: 10)
+        let restoredSleep = try await restored.sleepSessions(
+            deviceId: deviceId, from: base - 90_000, to: base + 1, limit: 10)
+        let restoredDaily = try await restored.dailyMetrics(
+            deviceId: deviceId, from: daily.day, to: daily.day)
+        let restoredStepCount = try await restored.stepCountForTest()
+        let restoredSleepState = try await restored.sleepStateSamples(
+            deviceId: deviceId, from: base, to: base, limit: 10)
+        XCTAssertEqual(restoredHR, streams.hr)
+        XCTAssertEqual(restoredRR, streams.rr)
+        XCTAssertEqual(restoredEvents, streams.events)
+        XCTAssertEqual(restoredBattery, streams.battery)
+        XCTAssertEqual(restoredSleep, [sleep])
+        XCTAssertEqual(restoredDaily, [daily])
+        XCTAssertEqual(restoredStepCount, 1)
+        XCTAssertEqual(restoredSleepState, streams.sleepState)
+
+        let counts = try await restored.storageStats_rowCountsForTest()
+        XCTAssertEqual(counts.hr, 2)
+        XCTAssertEqual(counts.rr, 2)
+        XCTAssertEqual(counts.events, 1)
+        XCTAssertEqual(counts.battery, 1)
+        XCTAssertEqual(counts.spo2, 1)
+        XCTAssertEqual(counts.skinTemp, 1)
+        XCTAssertEqual(counts.resp, 1)
+        XCTAssertEqual(counts.gravity, 1)
+
+        let duplicateInsert = try await restored.insert(streams, deviceId: deviceId)
+        XCTAssertEqual(duplicateInsert.hr, 0)
+        XCTAssertEqual(duplicateInsert.rr, 0)
+        XCTAssertEqual(duplicateInsert.events, 0)
+        XCTAssertEqual(duplicateInsert.battery, 0)
+        XCTAssertEqual(duplicateInsert.spo2, 0)
+        XCTAssertEqual(duplicateInsert.skinTemp, 0)
+        XCTAssertEqual(duplicateInsert.resp, 0)
+        XCTAssertEqual(duplicateInsert.gravity, 0)
+        let stepCountAfterDuplicate = try await restored.stepCountForTest()
+        XCTAssertEqual(stepCountAfterDuplicate, 1,
+                       "restoring and re-inserting natural keys must not duplicate rows")
     }
 
     // MARK: - Settings round trip (#1000: restore brings back weight/height/settings)
@@ -157,6 +250,36 @@ final class BackupSyncRoundTripTests: XCTestCase {
         XCTAssertEqual(try deviceRows(in: liveDB), ["original"])
     }
 
+    func testFutureOrGappedMigrationHistoryIsRejectedAndLiveDbIntact() throws {
+        let cases: [(name: String, migrations: [String])] = [
+            ("future", ["v1", "v999-future"]),
+            ("gapped", ["v1", "v3"]),
+        ]
+
+        for fixture in cases {
+            let incompatible = tmp.appendingPathComponent("\(fixture.name).sqlite")
+            try makeNoopDatabase(
+                at: incompatible, deviceRows: ["incompatible"],
+                migrationIdentifiers: fixture.migrations)
+            let backup = tmp.appendingPathComponent("\(fixture.name).noopbak")
+            try DataBackup.writeBackupForTesting(databaseAt: incompatible, to: backup)
+
+            let liveDB = tmp.appendingPathComponent("\(fixture.name)-live.sqlite")
+            try makeNoopDatabase(at: liveDB, deviceRows: ["original"])
+            let before = try Data(contentsOf: liveDB)
+
+            let result = DataBackup.restore(from: backup, toDatabaseAt: liveDB.path)
+            guard case let .failure(message) = result else {
+                XCTFail("\(fixture.name) migration history must be rejected, got \(result)")
+                continue
+            }
+            XCTAssertTrue(message.localizedCaseInsensitiveContains("schema"))
+            XCTAssertEqual(try Data(contentsOf: liveDB), before,
+                           "\(fixture.name) backup must leave the live DB byte-for-byte intact")
+            XCTAssertEqual(try deviceRows(in: liveDB), ["original"])
+        }
+    }
+
     // MARK: - Corrupt file is rejected, live DB untouched
 
     func testCorruptFileIsRejectedAndLiveDbIntact() throws {
@@ -188,7 +311,8 @@ final class BackupSyncRoundTripTests: XCTestCase {
         bytes.append(Data(repeating: 0x5A, count: 8192))
         try bytes.write(to: fake)
         let backup = tmp.appendingPathComponent("damaged.noopbak")
-        try DataBackup.writeBackupForTesting(databaseAt: fake, to: backup)
+        try DataBackup.writeBackupForTesting(
+            databaseAt: fake, to: backup, normalizeForArchive: false)
         XCTAssertTrue(isZip(backup), "precondition: the damaged payload rides in a real ZIP")
 
         let liveDB = tmp.appendingPathComponent("live.sqlite")
@@ -270,14 +394,18 @@ final class BackupSyncRoundTripTests: XCTestCase {
 
     /// Build a minimal valid GRDB-origin NOOP DB: a `grdb_migrations` bookkeeping table (so the origin
     /// gate accepts it as this app's backup) plus a `device` table holding the given identifiers.
-    private func makeNoopDatabase(at url: URL, deviceRows: [String]) throws {
+    private func makeNoopDatabase(
+        at url: URL, deviceRows: [String], migrationIdentifiers: [String] = ["v1"]
+    ) throws {
         var db: OpaquePointer?
         guard sqlite3_open(url.path, &db) == SQLITE_OK else {
             throw TestError("open failed: \(url.path)")
         }
         defer { sqlite3_close(db) }
         try exec(db, "CREATE TABLE grdb_migrations (identifier TEXT NOT NULL PRIMARY KEY)")
-        try exec(db, "INSERT INTO grdb_migrations (identifier) VALUES ('v1')")
+        for identifier in migrationIdentifiers {
+            try exec(db, "INSERT INTO grdb_migrations (identifier) VALUES ('\(identifier)')")
+        }
         try exec(db, "CREATE TABLE device (id TEXT NOT NULL PRIMARY KEY)")
         for id in deviceRows {
             try exec(db, "INSERT INTO device (id) VALUES ('\(id)')")
