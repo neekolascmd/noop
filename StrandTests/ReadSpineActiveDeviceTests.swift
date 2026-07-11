@@ -145,7 +145,8 @@ final class ReadSpineActiveDeviceTests: XCTestCase {
         try await store.upsertDevice(id: newId, mac: nil, name: "WHOOP")
         let now = Int(Date().timeIntervalSince1970)
         let liveBase = now - 90 * 60   // 1.5h ago → today
-        try await store.insert(Streams(hr: (0..<600).map { HRSample(ts: liveBase + $0, bpm: 72) }), deviceId: newId)
+        let liveSampleCount = 600
+        try await store.insert(Streams(hr: (0..<liveSampleCount).map { HRSample(ts: liveBase + $0, bpm: 72) }), deviceId: newId)
         repo.adoptActiveDeviceId(newId)
         await repo.refresh()
 
@@ -156,12 +157,13 @@ final class ReadSpineActiveDeviceTests: XCTestCase {
         }
 
         // (ii) the re-added strap's live HR surfaces under the new id.
-        let liveSamples = await repo.hrSamples(from: liveBase, to: liveBase + 600)
+        let liveSamples = await repo.hrSamples(from: liveBase, to: liveBase + liveSampleCount)
         XCTAssertTrue(liveSamples.contains { $0.bpm == 72 }, "the re-added strap's live HR must surface")
 
         // (iii) Today does NOT snap to a stale day: the auto-land anchor is the fresh live day.
         let landDay = await repo.latestDataDayStart()
-        XCTAssertEqual(landDay, Repository.logicalDayStart(Date(timeIntervalSince1970: TimeInterval(liveBase))),
+        let latestLiveTs = liveBase + liveSampleCount - 1
+        XCTAssertEqual(landDay, Repository.logicalDayStart(Date(timeIntervalSince1970: TimeInterval(latestLiveTs))),
                        "Today must anchor on the fresh live day, not a stale imported day")
     }
 

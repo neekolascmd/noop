@@ -1,21 +1,23 @@
-# Compile-only verification for the macOS and iOS app targets.
+# Test and compile verification for the macOS, iOS, and watchOS app targets.
 #
 # Why this exists: the iOS app is a build-from-source community port (no App Store —
 # NOOP stays anonymous), so it isn't exercised on a device by the maintainer. This job
-# compiles both app targets on every relevant change so a shared-code change can't
-# silently break iOS (or regress macOS). It is anonymity-safe: CODE_SIGNING_ALLOWED=NO,
-# no secrets, no signing identity, no artifacts uploaded — it only checks that it builds.
-# (The shipped macOS .app is still produced and anonymized by hand; this is a compile gate.)
-name: App build (macOS + iOS)
+# tests macOS and compiles every Apple app target on relevant changes so a shared-code
+# change can't silently break iOS, watchOS, or macOS. It is anonymity-safe:
+# CODE_SIGNING_ALLOWED=NO, no secrets, no signing identity, and no uploaded artifacts.
+name: App CI (macOS + iOS + watchOS)
 
 on:
   pull_request:
     branches: [main]
     paths:
       - 'Strand/**'
+      - 'StrandTests/**'
       - 'StrandiOS/**'
       - 'StrandiOSShared/**'
       - 'StrandiOSWidgets/**'
+      - 'NOOPWatch/**'
+      - 'NOOPWatchComplications/**'
       - 'Packages/**'
       - 'project.yml'
       - '.github/workflows/app-build.yml'
@@ -23,9 +25,12 @@ on:
     branches: [main]
     paths:
       - 'Strand/**'
+      - 'StrandTests/**'
       - 'StrandiOS/**'
       - 'StrandiOSShared/**'
       - 'StrandiOSWidgets/**'
+      - 'NOOPWatch/**'
+      - 'NOOPWatchComplications/**'
       - 'Packages/**'
       - 'project.yml'
       - '.github/workflows/app-build.yml'
@@ -44,8 +49,13 @@ jobs:
         include:
           - scheme: Strand
             destination: 'platform=macOS'
+            action: test
           - scheme: NOOPiOS
             destination: 'generic/platform=iOS Simulator'
+            action: build
+          - scheme: NOOPWatch
+            destination: 'generic/platform=watchOS'
+            action: build
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -70,9 +80,9 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
-      - name: Build ${{ matrix.scheme }}
+      - name: ${{ matrix.action }} ${{ matrix.scheme }}
         run: >-
           xcodebuild -scheme '${{ matrix.scheme }}' -configuration Debug
           -destination '${{ matrix.destination }}'
           CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
-          build
+          '${{ matrix.action }}'

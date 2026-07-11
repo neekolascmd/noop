@@ -32,6 +32,7 @@ jobs:
       matrix:
         package:
           - WhoopProtocol
+          - OuraProtocol
           - WhoopStore
           - StrandAnalytics
           - StrandImport
