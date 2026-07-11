@@ -99,6 +99,44 @@ Migrations are registered in `Packages/WhoopStore/Sources/WhoopStore/Database.sw
 | **v7** | Adds in-sleep signal aggregates to `dailyMetric`: `spo2Pct`, `skinTempDevC`, `respRateBpm` (all nullable). |
 | **v8** | Adds `journal`, `workout`, and `appleDaily` (Apple-Health daily aggregates). |
 | **v9** | Adds the generic long-format `metricSeries` table and its `(deviceId, key, day)` index. |
+| **v10** | Adds the WHOOP 5/MG cumulative step/motion counter table `stepSample`. |
+| **v11** | Adds nullable daily `steps` and `activeKcalEst` totals to `dailyMetric`. |
+| **v12** | Adds `ppgHrSample` for PPG-derived HR that remains separate from measured HR. |
+| **v13** | Adds `sleepSession.userEdited` so corrected sleep bounds survive re-sync. |
+| **v14** | Adds `sleepSession.startTsAdjusted` for a corrected onset without changing the natural key. |
+| **v15** | Adds the multi-device registry (`pairedDevice`) and per-day source ownership (`dayOwnership`). |
+| **v16** | Adds nullable `pairedDevice.peripheralId` for stable physical-strap identity. |
+| **v17** | Adds the user-entered `labMarker` health-record table and lookup indexes. |
+| **v18** | Adds per-session `motionJSON` and `sleepStateJSON` series to `sleepSession`. |
+| **v19** | Adds nullable `stepSample.activityClass` for the strap-reported activity class. |
+| **v20** | Adds nullable `journal.numericValue` for dose-style journal entries. |
+| **v21** | Adds the raw per-sample `sleepStateSample` table. |
+| **v22** | Adds the persisted `liveSession` coaching-session table. |
+
+`WhoopStoreInfo.schemaVersion` is derived from the production migrator's registered identifiers,
+so the public version marker and diagnostics cannot silently lag behind `Database.swift`.
+
+## Backup and restore compatibility
+
+The current `.noopbak` format is a standard ZIP container. Its first entry is the checkpointed
+SQLite database (`noop-backup.sqlite`); newer backups may also contain a whitelisted
+`settings.json`. The importer continues to accept older database-only `.noopbak` archives and
+legacy plain `.sqlite` / `.noopdb` files. A legacy plain database may travel with its `-wal` and
+`-shm` sidecars; current ZIP exports are always checkpointed and need no sidecars.
+
+Before replacing the live store, restore verifies:
+
+- the container and SQLite magic bytes;
+- that the database carries this app's GRDB migration ledger rather than Android Room metadata;
+- that the applied migrations are an exact prefix of this build's registered migration history;
+- SQLite `PRAGMA quick_check` before and after the file copy.
+
+The previous live database is preserved as a timestamped `whoop-replaced-*.sqlite` sidecar and is
+restored automatically if the landed file fails verification. Direct restore intentionally rejects
+foreign SQLite files, Android Room databases, damaged or truncated archives, gapped migration
+histories, and backups created by a newer schema this build does not understand. Cross-platform
+history should move through the WHOOP-format CSV/import path until the database schemas and
+migration ledgers are explicitly compatible.
 
 ### The vestigial `synced` column
 
