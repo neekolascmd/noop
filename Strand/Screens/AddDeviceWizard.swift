@@ -90,10 +90,13 @@ struct AddDeviceWizard: View {
     @State private var pickedMachine: FTMSSource.DiscoveredMachine?
     /// An EXPERIMENTAL Huami device (Amazfit / Zepp / Mi Band) picked from the HuamiHRSource scan.
     @State private var pickedHuami: HuamiHRSource.DiscoveredDevice?
-    /// An EXPERIMENTAL Oura ring picked from the OuraLiveSource scan, plus its detected generation
-    /// (best-effort from the advertised name; the user confirms by picking). The `gen` here defaults to
-    /// `.gen3` when the scan couldn't guess one, so the registered command set is always usable.
+    /// An EXPERIMENTAL Oura ring picked from the OuraLiveSource scan, plus its detected, previously
+    /// registered, or explicitly confirmed generation. Generic reset advertisements must never infer
+    /// a generation from serial-like digits.
     @State private var pickedOura: (ring: OuraLiveSource.DiscoveredRing, gen: OuraRingGen)?
+    /// True only when the advertisement, an existing peripheral registry row, or the user explicitly
+    /// establishes the generation. The takeover action stays disabled until then.
+    @State private var ouraGenerationConfirmed = false
 
     @State private var nameDraft = ""
     /// After registering, ask whether to make the new device active.
@@ -761,8 +764,12 @@ struct AddDeviceWizard: View {
     @ViewBuilder private var ouraPickFace: some View {
         OuraPickList(scanner: ouraScanner,
                      onSelect: { ring in
-                         let gen = ring.detectedGen ?? .gen3
+                         let knownGen = model.deviceRegistry?
+                             .device(forPeripheralId: ring.id.uuidString)
+                             .map { OuraRingGen.from(model: $0.model) }
+                         let gen = ring.detectedGen ?? knownGen ?? .gen4
                          pickedOura = (ring: ring, gen: gen)
+                         ouraGenerationConfirmed = ring.detectedGen != nil || knownGen != nil
                          clearOtherPicks(except: .oura)
                          nameDraft = String(localized: "Oura ring")
                          ouraScanner.stopScan()
@@ -817,6 +824,36 @@ struct AddDeviceWizard: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .frostedCardSurface(cornerRadius: 14)
 
+            if !ouraGenerationConfirmed {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Confirm ring generation").strandOverline()
+                    Text("The reset advertisement does not identify the model. Choose the generation printed in the Oura app or packaging before takeover.")
+                        .font(StrandFont.footnote)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Picker("Ring generation", selection: Binding(
+                        get: { pickedOura?.gen ?? .gen4 },
+                        set: { newGen in
+                            guard let current = pickedOura else { return }
+                            pickedOura = (ring: current.ring, gen: newGen)
+                        }
+                    )) {
+                        ForEach(OuraRingGen.allCases, id: \.self) { option in
+                            Text("Ring \(option.generationNumber)").tag(option)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    Button("Confirm \(gen.displayName)") {
+                        ouraGenerationConfirmed = true
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(StrandPalette.surfaceInset,
+                            in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+
             Text("Name").strandOverline()
             TextField("Oura ring", text: $nameDraft)
                 .textFieldStyle(.plain)
@@ -840,6 +877,7 @@ struct AddDeviceWizard: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(StrandPalette.accent)
+                .disabled(!ouraGenerationConfirmed)
                 .accessibilityLabel("Connect to this ring")
                 Text("Both NOOP and the Oura app can use a ring you own by key, but only one can hold the Bluetooth link at a time.")
                     .font(StrandFont.footnote)
@@ -859,6 +897,7 @@ struct AddDeviceWizard: View {
                                     in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
                 .buttonStyle(.plain)
+                .disabled(!ouraGenerationConfirmed)
                 .accessibilityLabel("Take over this ring")
             }
         }

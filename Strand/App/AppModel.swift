@@ -65,6 +65,32 @@ final class AppModel: ObservableObject {
     /// `@Published` so the Devices screen re-renders the moment the registry is wired in (it observes
     /// `model.deviceRegistry`); nested `registry.$devices` changes are observed by the screen directly.
     @Published private(set) var deviceRegistry: DeviceRegistry?
+
+    /// Registry-backed presentation for shared chrome. This prevents an active Oura ring, Apple Watch,
+    /// FTMS machine, or generic HR device from inheriting WHOOP/strap wording.
+    var activePairedDevice: PairedDevice? {
+        guard let registry = deviceRegistry else { return nil }
+        return registry.devices.first(where: { $0.id == registry.activeDeviceId })
+    }
+    var activeDeviceDisplayName: String { activePairedDevice?.displayName ?? String(localized: "WHOOP") }
+    var activeDeviceIsWhoop: Bool {
+        guard let device = activePairedDevice else { return true }
+        return device.id == "my-whoop" || device.brand.caseInsensitiveCompare("WHOOP") == .orderedSame
+    }
+    var activeDeviceNoun: String {
+        guard let device = activePairedDevice else { return String(localized: "band") }
+        switch device.sourceKind {
+        case .oura:           return String(localized: "ring")
+        case .liveAppleWatch: return String(localized: "watch")
+        case .ftms:           return String(localized: "machine")
+        case .huami:          return String(localized: "band")
+        default:              return activeDeviceIsWhoop ? String(localized: "band") : String(localized: "device")
+        }
+    }
+    /// Apple Watch does not publish a battery through HealthKit. All direct BLE sources may expose one;
+    /// the UI still waits for a real reading instead of inventing a value when the service is absent.
+    var activeDeviceSupportsLiveBattery: Bool { activePairedDevice?.sourceKind != .liveAppleWatch }
+    var activeDeviceSupportsHRV: Bool { activePairedDevice?.capabilities.contains(.hrv) ?? true }
     /// Runs exactly one device's live BLE at a time. DORMANT whenever WHOOP is active (the default and
     /// every no-strap case): it only acts when a non-WHOOP generic strap becomes the active device,
     /// pausing WHOOP and running the isolated `StandardHRSource`. nil until wired (post store-open).
@@ -429,6 +455,12 @@ final class AppModel: ObservableObject {
         coordinator.start()
         self.deviceRegistry = registry
         self.sourceCoordinator = coordinator
+        // Shared chrome observes AppModel, not DeviceRegistry directly. Forward registry mutations so an
+        // active-device switch or rename updates every device-aware label immediately rather than waiting
+        // for an unrelated heart-rate/battery publication to trigger a redraw.
+        registry.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &hrCancellables)
         // #814 READ SPINE (HIGH-1): drive the read side off the registry's `activeDeviceId` for the WHOLE
         // session, exactly as SourceCoordinator drives the WRITE side off the SAME publisher. A Devices-
         // screen switch/remove/re-add calls `registry.setActive` DIRECTLY (NOT through `registerDevice`), so

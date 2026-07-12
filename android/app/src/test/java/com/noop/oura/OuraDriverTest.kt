@@ -583,6 +583,9 @@ class OuraDriverTest {
         assertEquals(5, OuraGatt.characteristicUUIDs(OuraRingGen.GEN4).size)
         assertEquals(OuraRingGen.GEN5, OuraRingGen.from("Oura Ring 5"))
         assertEquals(OuraRingGen.GEN3, OuraRingGen.from("Oura Ring 3"))
+        assertEquals(OuraRingGen.GEN4, OuraRingGen.recognise("Oura Ring 4"))
+        assertEquals(OuraRingGen.GEN5, OuraRingGen.recognise("Oura Gen 5"))
+        assertEquals(null, OuraRingGen.recognise("Oura 9051280476123456"))
         assertTrue(OuraRingGen.GEN3.capabilities.contains(OuraMetric.HRV))
     }
 

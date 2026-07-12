@@ -20,6 +20,7 @@ struct LiquidTodayView: View {
     @EnvironmentObject var repo: Repository
     @EnvironmentObject var router: NavRouter
     @EnvironmentObject var profile: ProfileStore
+    @EnvironmentObject var model: AppModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Shared with the real Today's card-customise editor so the two stay in sync.
@@ -407,17 +408,19 @@ struct LiquidTodayView: View {
             )
         }
         .buttonStyle(LiquidPressStyle())
-        .accessibilityLabel("Start a live session. Beta. Silent strap coaching against today's Charge.")
+        .accessibilityLabel("Start a live session. Beta. Silent \(model.activeDeviceNoun) coaching against today's Charge.")
     }
 
     private var heroCard: some View {
         HStack(alignment: .top, spacing: 4) {
             HeroScoreCell(label: "Charge", score: displayDay?.recovery, tint: StrandPalette.chargeColor,
-                          pill: "WHOOP", animated: dataLoaded, onGuide: { guideSection = .charge })
+                          pill: nil, animated: dataLoaded,
+                          onGuide: { guideSection = .charge })
             HeroScoreCell(label: "Effort", score: displayDay?.strain, tint: StrandPalette.effortColor,
                           pill: nil, animated: dataLoaded, onGuide: { guideSection = .effort })
             HeroScoreCell(label: "Rest", score: restScore, tint: StrandPalette.restColor,
-                          pill: "WHOOP", animated: dataLoaded, onGuide: { guideSection = .rest })
+                          pill: nil, animated: dataLoaded,
+                          onGuide: { guideSection = .rest })
         }
         .padding(.vertical, 16)
         .padding(.horizontal, 12)
@@ -446,7 +449,9 @@ struct LiquidTodayView: View {
                         // Isolated leaf: it observes LiveState so the ~1 Hz HR notifies re-render ONLY
                         // this card, never the whole Today. Shows the current bpm live with a rolling
                         // beat-by-beat trace; falls back to today's banked 5-minute trace when idle.
-                        LiquidLiveHR(tint: liquidHeart, fallback: hrValues, animated: dataLoaded)
+                        LiquidLiveHR(tint: liquidHeart, fallback: hrValues, animated: dataLoaded,
+                                     deviceName: model.activeDeviceDisplayName,
+                                     deviceNoun: model.activeDeviceNoun)
                         HStack(spacing: 4) {
                             Spacer()
                             Text("Full day").font(StrandFont.caption).foregroundStyle(StrandPalette.accent)
@@ -1138,6 +1143,8 @@ private struct LiquidLiveHR: View {
     var tint: Color
     var fallback: [Double]        // today's banked 5-minute buckets — shown when there's no live stream
     var animated: Bool
+    var deviceName: String
+    var deviceNoun: String
 
     @EnvironmentObject private var live: LiveState
     @State private var samples: [Double] = []
@@ -1154,7 +1161,7 @@ private struct LiquidLiveHR: View {
     private var subtitle: String {
         if isLive { return "Live · beat by beat" }
         if fallback.count >= 2 { return "5-minute average · since midnight" }
-        return live.connected ? "Waiting for the strap" : "Strap not connected"
+        return live.connected ? "Waiting for the \(deviceNoun)" : "\(deviceName) not connected"
     }
 
     var body: some View {
@@ -1192,7 +1199,7 @@ private struct LiquidLiveHR: View {
                     stat("Max", series.max())
                 }
             } else {
-                Text(live.connected ? "Waiting for a live heartbeat…" : "Connect your strap to see live heart rate")
+                Text(live.connected ? "Waiting for a live heartbeat…" : "Connect \(deviceName) to see live heart rate")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -1221,12 +1228,13 @@ private struct LiquidLiveHR: View {
 private struct LiquidBatteryButton: View {
     @EnvironmentObject var live: LiveState
     @EnvironmentObject var router: NavRouter
+    @EnvironmentObject var model: AppModel
     var body: some View {
         Button { router.openDevices() } label: {
             ZStack {
                 Circle().fill(Color(.sRGB, red: 10 / 255, green: 11 / 255, blue: 16 / 255, opacity: 0.5))
                 Circle().strokeBorder(.white.opacity(0.15), lineWidth: 1)
-                if let pct = live.batteryPct {
+                if let pct = currentBattery {
                     Circle()
                         .trim(from: 0, to: max(0.02, min(1, pct / 100)))
                         .stroke(ringColor(pct), style: StrokeStyle(lineWidth: 3, lineCap: .round))
@@ -1254,8 +1262,13 @@ private struct LiquidBatteryButton: View {
         .buttonStyle(LiquidPressStyle())
         .accessibilityLabel(batteryAccessibility)
     }
+    private var currentBattery: Double? {
+        guard live.connected, model.activeDeviceSupportsLiveBattery else { return nil }
+        return live.batteryPct
+    }
     private var batteryAccessibility: String {
-        let base = live.batteryPct.map { "Strap battery \(Int($0.rounded())) percent" } ?? "Strap battery"
+        let base = currentBattery.map { "\(model.activeDeviceDisplayName) battery \(Int($0.rounded())) percent" }
+            ?? "\(model.activeDeviceDisplayName) battery"
         return live.charging == true ? base + ", charging" : base
     }
     private func ringColor(_ p: Double) -> Color {
@@ -1266,10 +1279,12 @@ private struct LiquidBatteryButton: View {
 /// The strap-battery readout inside the Data Sources card. Owns LiveState; display-only.
 private struct LiquidStrapBatteryRow: View {
     @EnvironmentObject var live: LiveState
+    @EnvironmentObject var model: AppModel
     var body: some View {
-        if live.connected, let pct = live.batteryPct {
+        if live.connected, model.activeDeviceSupportsLiveBattery, let pct = live.batteryPct {
             HStack {
-                Text("Strap battery").font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
+                Text("\(model.activeDeviceDisplayName) battery")
+                    .font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
                 Spacer()
                 // #972: append "· Charging"; #992: append the "~X days left" runtime the v8 redesign dropped.
                 Text(batteryText(pct: pct))

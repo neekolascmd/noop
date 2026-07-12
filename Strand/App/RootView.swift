@@ -520,6 +520,7 @@ struct BrandMark: View {
 /// list + detail) does not re-render on the ~1 Hz HR / frame stream.
 private struct SidebarStatus: View {
     @EnvironmentObject var live: LiveState
+    @EnvironmentObject var model: AppModel
     var body: some View {
         HStack(spacing: 9) {
             Circle()
@@ -530,7 +531,9 @@ private struct SidebarStatus: View {
                 Text(statusText)
                     .font(StrandFont.rounded(12, weight: .medium))
                     .foregroundStyle(StrandPalette.textPrimary)
-                Text(live.batteryPct.map { String(localized: "Battery \(Int($0))%") } ?? String(localized: "Strap not connected"))
+                Text(currentBattery.map { String(localized: "\(model.activeDeviceDisplayName) battery \(Int($0))%") }
+                    ?? (live.connected ? String(localized: "Waiting for \(model.activeDeviceNoun) data")
+                                       : String(localized: "\(model.activeDeviceDisplayName) not connected")))
                     .font(StrandFont.rounded(11))
                     .foregroundStyle(StrandPalette.textTertiary)
             }
@@ -538,6 +541,11 @@ private struct SidebarStatus: View {
         }
         .padding(10)
         .background(StrandPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var currentBattery: Double? {
+        guard live.connected, model.activeDeviceSupportsLiveBattery else { return nil }
+        return live.batteryPct
     }
 
     // Shares LiveState.connectionStatus* with the Settings strap card so the two never disagree (#266):

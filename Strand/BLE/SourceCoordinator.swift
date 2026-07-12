@@ -263,6 +263,7 @@ final class SourceCoordinator: ObservableObject {
 
         // Switching source→source: stop the previous non-WHOOP source before starting the new one.
         tearDownNonWhoopSource()
+        live.clearDeviceTelemetryForTransition()
 
         // Route by sourceKind: an FTMS gym machine runs FTMSSource; an EXPERIMENTAL Huami device
         // (Amazfit / Zepp / Mi Band) runs the HuamiHRSource; an EXPERIMENTAL Oura ring runs the
@@ -388,6 +389,7 @@ final class SourceCoordinator: ObservableObject {
         ftmsSource?.stop(); ftmsSource = nil
         huamiSource?.stop(); huamiSource = nil
         ouraSource?.stop(); ouraSource = nil
+        if onStrap { live.clearDeviceTelemetryForTransition() }
     }
 
     // MARK: - Identity adoption

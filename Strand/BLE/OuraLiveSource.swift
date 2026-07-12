@@ -23,7 +23,8 @@ import OuraProtocol
 ///
 /// Honest about the handshake, step by step:
 ///   1. Scan for the Oura GATT service and filter discoveries by `OuraRingGen.recognise`.
-///   2. Connect, discover the write/notify characteristics, enable notifications on ...0003.
+///   2. Connect, discover the write/notify characteristics, enable the generation's inbound
+///      notification paths (`...0003` on Gen 3, `...0003/4/5/6` on Gen 4/5).
 ///   3. Run the application auth challenge through `OuraDriver` (GetAuthNonce -> compute proof ->
 ///      Authenticate). The 16-byte install key is injected via `authKey`; when it is nil (or auth fails
 ///      because the ring is in factory reset / wrong key) we surface an HONEST `needsPairing` message and
@@ -89,6 +90,11 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     private static let service = CBUUID(string: OuraGatt.serviceUUID)
     private static let writeChar = CBUUID(string: OuraGatt.writeCharacteristicUUID)
     private static let notifyChar = CBUUID(string: OuraGatt.notifyCharacteristicUUID)
+    private static let extraNotifyChars: Set<CBUUID> = [
+        CBUUID(string: OuraGatt.extraCharacteristic4UUID),
+        CBUUID(string: OuraGatt.extraCharacteristic5UUID),
+        CBUUID(string: OuraGatt.extraCharacteristic6UUID),
+    ]
 
     /// The `0x25` SetAuthKey-response outer opcode (`25 01 <status>`, status `0x00` = OK). Per
     /// OURA_PROTOCOL.md s3.2. This is the install-ack the adopt key-install awaits.
@@ -180,6 +186,19 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     private var central: CBCentralManager!
     private var peripheral: CBPeripheral?
     private var writeCharacteristic: CBCharacteristic?
+    /// Every characteristic currently enabled as an inbound notification path. Ring 4/5 can route
+    /// responses over ...0003/4/5/6; application commands are still written only to ...0002.
+    private var inboundNotifyUUIDs: Set<CBUUID> = []
+    private var pendingNotifyUUIDs: Set<CBUUID> = []
+    private var enabledNotifyCount = 0
+
+    /// CoreBluetooth queues ATT writes, but Ring 4 firmware can still miss back-to-back Write Without
+    /// Response commands. Keep one paced queue, using both CoreBluetooth backpressure and the same 350 ms
+    /// hardware-qualified receive window as Android.
+    private var commandQueue: [OuraCommand] = []
+    private var commandWorkItem: DispatchWorkItem?
+    private var lastCommandWriteAt: TimeInterval = 0
+    private static let minimumCommandSpacing: TimeInterval = 0.350
     /// A peripheral asked to connect before `centralManagerDidUpdateState` reported `.poweredOn`.
     private var pendingConnectID: UUID?
     /// Peripherals retained by identifier so a chosen one survives until connection (exact
@@ -387,7 +406,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         guard let p else {
             // Never seen by this Mac/iPhone yet -> remember it and scan; didDiscover connects on sight.
             pendingConnectID = id
-            log("Oura: ring \(id) not cached yet - scanning to find it")
+            log("Oura: paired ring not cached yet - scanning to find it")
             scan()
             return
         }
@@ -396,10 +415,10 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         p.delegate = self
         guard central.state == .poweredOn else {
             pendingConnectID = id
-            log("Oura: Bluetooth not powered on - connect to \(id) deferred until ready")
+            log("Oura: Bluetooth not powered on - ring connection deferred until ready")
             return
         }
-        log("Oura: connecting to \(id)")
+        log("Oura: connecting to paired ring")
         central.connect(p, options: nil)
     }
 
@@ -417,6 +436,10 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         if let p = peripheral { central.cancelPeripheralConnection(p) }
         peripheral = nil
         writeCharacteristic = nil
+        resetCommandQueue()
+        inboundNotifyUUIDs.removeAll()
+        pendingNotifyUUIDs.removeAll()
+        enabledNotifyCount = 0
         // Drain BEFORE driver.stop() clears its anchor, so a pending event still gets a real anchored
         // time if one exists rather than always falling back to wall-clock at teardown.
         drainPendingAnchorEvents()
@@ -434,23 +457,56 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         batteryPct = nil
         needsPairing = nil
         flush()                       // persist anything still buffered
-        if feedsLive { live.connected = false; live.streamingLiveHR = false }
+        if feedsLive { live.clearDeviceTelemetryForTransition() }
     }
 
     // MARK: - Driver wiring
 
-    /// Write the bytes for each command the driver returned, logging the label only (never an address).
+    /// Queue commands for one-at-a-time, Ring-4-qualified Write Without Response delivery.
     private func write(_ commands: [OuraCommand]) {
-        guard let peripheral, let writeCharacteristic else { return }
-        let mtuPayload = ringGen.maxWritePayload   // gen-appropriate clamp (gen3=200, gen4/5=244)
-        for cmd in commands {
-            guard cmd.bytes.count <= mtuPayload else {
-                log("Oura: skipping \(cmd.label) - \(cmd.bytes.count)B exceeds the \(mtuPayload)B write window")
-                continue
+        commandQueue.append(contentsOf: commands)
+        drainCommandQueue()
+    }
+
+    private func resetCommandQueue() {
+        commandWorkItem?.cancel()
+        commandWorkItem = nil
+        commandQueue.removeAll()
+        lastCommandWriteAt = 0
+    }
+
+    private func drainCommandQueue() {
+        guard commandWorkItem == nil,
+              let peripheral,
+              let writeCharacteristic,
+              !commandQueue.isEmpty,
+              peripheral.canSendWriteWithoutResponse else { return }
+
+        let now = ProcessInfo.processInfo.systemUptime
+        let delay = max(0, Self.minimumCommandSpacing - (now - lastCommandWriteAt))
+        if delay > 0 {
+            let item = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.commandWorkItem = nil
+                self.drainCommandQueue()
             }
-            log("Oura: -> \(cmd.label)")
-            peripheral.writeValue(Data(cmd.bytes), for: writeCharacteristic, type: .withoutResponse)
+            commandWorkItem = item
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
+            return
         }
+
+        let cmd = commandQueue.removeFirst()
+        let mtuPayload = min(ringGen.maxWritePayload,
+                             peripheral.maximumWriteValueLength(for: .withoutResponse))
+        guard cmd.bytes.count <= mtuPayload else {
+            log("Oura: skipping \(cmd.label) - \(cmd.bytes.count)B exceeds the \(mtuPayload)B write window")
+            drainCommandQueue()
+            return
+        }
+        log("Oura: -> \(cmd.label)")
+        peripheral.writeValue(Data(cmd.bytes), for: writeCharacteristic, type: .withoutResponse)
+        lastCommandWriteAt = ProcessInfo.processInfo.systemUptime
+        drainCommandQueue()
     }
 
     /// Advance the driver with a transition and write whatever it asks for next.
@@ -476,12 +532,21 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 reachedStreaming = true
                 adoptPhase = .streaming   // re-auth after an install (or a normal auth) reached the stream: adoption complete
                 pendingInstallKey = nil   // an OK ack already persisted the key; nothing left in flight
-                if feedsLive { live.streamingLiveHR = true }   // drive the green menu-bar STREAMING pill (no WHOOP bond)
+                if feedsLive {
+                    // Authentication + live-mode acknowledgement prove the transport is connected even
+                    // while the ring is on its charger and has not produced a physiological sample yet.
+                    // Keep `bonded` false: that flag carries WHOOP encrypted-bond/haptics semantics.
+                    live.connected = true
+                    live.streamingLiveHR = true
+                }
                 log("Oura: live-HR enabled - streaming HR / IBI")
                 startReengageTimer()
                 startHistoryFetchTimer()
-                fetchHistoryIfIdle()   // pull last night's banked temp/SpO2/HRV/sleep-phase right away
-                write([OuraCommands.getBattery()])   // ask once HR streams; the 0x0D reply routes to onBattery
+                // Ask for battery BEFORE starting GetEvents. Tested Ring 4 firmware can leave an
+                // already-caught-up history request unanswered; putting battery behind that request made
+                // a healthy reconnect look battery-less even though the initial adoption read it fine.
+                write([OuraCommands.getBattery()])   // the 0x0D reply routes to onBattery
+                fetchHistoryIfIdle()   // then pull last night's banked temp/SpO2/HRV/sleep-phase
             }
         default:
             break
@@ -518,11 +583,12 @@ public final class OuraLiveSource: NSObject, ObservableObject {
 
     /// Handle the ring's `0x25` SetAuthKey ack (OURA_PROTOCOL.md s3.2: `25 01 00`, status byte `0x00` = OK).
     /// On OK: persist the freshly-provisioned key under this `deviceId` (so every future session authenticates
-    /// with it), then drive the driver's `keyInstallAcknowledged()` to re-run the auth handshake (GetAuthNonce
-    /// then Authenticate) with the NEW key. On a non-OK status (or a missing pending key) announce an honest
-    /// failure and do NOT retry the dangerous command.
+    /// with it), then reconnect because tested Ring 4 firmware requires authentication on a fresh link. On a
+    /// non-OK status (or a missing pending key) announce an honest failure and do NOT retry the dangerous command.
     private func handleKeyInstallAck(status: UInt8) {
-        guard let driver, let key = pendingInstallKey else { return }
+        guard driver?.phase == .installingKey,
+              let key = pendingInstallKey,
+              let peripheral else { return }
         guard status == 0x00 else {
             announceNeedsPairing(reason: .installFailed("the ring did not accept the key (status \(status))"))
             return
@@ -532,11 +598,13 @@ public final class OuraLiveSource: NSObject, ObservableObject {
             announceNeedsPairing(reason: .installFailed("the installed key could not be stored"))
             return
         }
-        log("Oura: key installed and stored - re-running auth with the new key")
+        log("Oura: key installed and stored - reconnecting with the new key")
         pendingInstallKey = nil
-        // Re-auth with the freshly-installed key. The driver returns enable-notify + get-nonce; the nonce
-        // response then flows through the normal handleSecure -> advance path to streaming.
-        write(driver.keyInstallAcknowledged())
+        adoptPhase = .idle
+        // Ring 4 firmware 2.12.3 acknowledges the install but does not answer a nonce request on the same
+        // link. The normal involuntary-disconnect path reconnects and constructs a fresh driver that reads
+        // the acknowledged key from Keychain.
+        central.cancelPeripheralConnection(peripheral)
     }
 
     /// A fresh 16-byte application key for the adopt install, from the system CSPRNG. Per OURA_PROTOCOL.md
@@ -758,7 +826,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         log("Oura: \(msg)")
         stopReengageTimer()
         stopHistoryFetchTimer()
-        if feedsLive { live.connected = false; live.streamingLiveHR = false }
+        if feedsLive { live.clearDeviceTelemetryForTransition() }
     }
 
     // CB delegate callbacks live in the @preconcurrency extensions below. The queue-less central delivers
@@ -782,7 +850,7 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
             }
         default:
             // Radio off / unauthorized / resetting -> the link is not live.
-            if feedsLive { live.connected = false; live.streamingLiveHR = false }
+            if feedsLive { live.clearDeviceTelemetryForTransition() }
         }
     }
 
@@ -798,7 +866,9 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         let id = peripheral.identifier
         let firstSight = seenPeripherals[id] == nil
         seenPeripherals[id] = peripheral
-        if firstSight { log("Oura: found \(name.isEmpty ? "Oura ring" : name) (\(id)) rssi \(RSSI.intValue)") }
+        // Reset-mode names can contain a ring serial. The UI may show the local advertisement so the
+        // owner can pick their ring, but the exportable strap log must never persist that identifier.
+        if firstSight { log("Oura: found candidate ring rssi \(RSSI.intValue)") }
         let ring = DiscoveredRing(id: id,
                                   name: name.isEmpty ? "Oura" : name,
                                   rssi: RSSI.intValue,
@@ -819,6 +889,10 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         log("Oura: connected - discovering services")
         failedReconnectAttempts = 0   // a real connection clears the reconnect backoff (#912)
         peripheral.delegate = self
+        resetCommandQueue()
+        inboundNotifyUUIDs.removeAll()
+        pendingNotifyUUIDs.removeAll()
+        enabledNotifyCount = 0
         // Fresh driver per connection so a new session re-runs auth (the app key is session-scoped). The
         // driver's `allowKeyInstall` is gated on this connection's adopt consent ONLY: with no consent the
         // dangerous `0x24` installKey can never be sequenced, so a read-only / Advanced-key connect stays
@@ -851,7 +925,7 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
     public func centralManager(_ central: CBCentralManager,
                                didFailToConnect peripheral: CBPeripheral, error: Error?) {
         log("Oura: WARNING failed to connect - \(error?.localizedDescription ?? "unknown error")")
-        if feedsLive { live.connected = false; live.streamingLiveHR = false }
+        if feedsLive { live.clearDeviceTelemetryForTransition() }
         // The ring wiped its bond (re-paired in the Oura app, or a firmware reset). CoreBluetooth surfaces
         // this as a stable CBError, and re-issuing connect just loops the same stale-pairing failure and
         // drains the ring, so DON'T auto-reconnect: route to the honest needs-pairing path instead, exactly
@@ -880,6 +954,10 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         driver = nil
         reassembler.reset()
         writeCharacteristic = nil
+        resetCommandQueue()
+        inboundNotifyUUIDs.removeAll()
+        pendingNotifyUUIDs.removeAll()
+        enabledNotifyCount = 0
         loggedFirstHR = false
         loggedFirstTemp = false
         loggedFirstSpo2 = false
@@ -892,7 +970,7 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         if adoptPhase == .installingKey { adoptPhase = .failed }
         batteryPct = nil
         flush()
-        if feedsLive { live.connected = false; live.streamingLiveHR = false }
+        if feedsLive { live.clearDeviceTelemetryForTransition() }
         if self.peripheral?.identifier == peripheral.identifier { self.peripheral = nil }
         // Auto-reconnect on an INVOLUNTARY drop (#912): the paired ring went out of range or the link timed
         // out. Re-issue a connect on the backoff so it comes back on its own, exactly like the WHOOP strap.
@@ -940,31 +1018,52 @@ extension OuraLiveSource: @preconcurrency CBPeripheralDelegate {
         } else {
             log("Oura: write characteristic NOT FOUND - cannot drive the ring")
         }
-        if let nc = chars.first(where: { $0.uuid == Self.notifyChar }) {
-            log("Oura: notify characteristic found - enabling notifications")
-            peripheral.setNotifyValue(true, for: nc)
-        } else {
+        let candidateUUIDs: Set<CBUUID> = ringGen.hasExtraNotifyChars
+            ? Self.extraNotifyChars.union([Self.notifyChar])
+            : [Self.notifyChar]
+        let notifyChars = chars.filter { characteristic in
+            candidateUUIDs.contains(characteristic.uuid) &&
+                (characteristic.properties.contains(.notify) || characteristic.properties.contains(.indicate))
+        }
+        guard !notifyChars.isEmpty else {
             log("Oura: notify characteristic NOT FOUND - cannot read the ring")
+            return
+        }
+        inboundNotifyUUIDs = Set(notifyChars.map(\.uuid))
+        pendingNotifyUUIDs = inboundNotifyUUIDs
+        enabledNotifyCount = 0
+        log("Oura: enabling \(notifyChars.count) inbound notification path(s)")
+        for characteristic in notifyChars {
+            peripheral.setNotifyValue(true, for: characteristic)
         }
     }
 
     public func peripheral(_ peripheral: CBPeripheral,
                            didUpdateNotificationStateFor characteristic: CBCharacteristic,
                            error: Error?) {
-        guard characteristic.uuid == Self.notifyChar else { return }
+        guard inboundNotifyUUIDs.contains(characteristic.uuid) else { return }
+        pendingNotifyUUIDs.remove(characteristic.uuid)
         if let error = error {
-            log("Oura: WARNING enabling notifications FAILED - \(error.localizedDescription) - ring will send no data")
+            log("Oura: WARNING enabling notification path FAILED - \(error.localizedDescription)")
+        } else if characteristic.isNotifying {
+            enabledNotifyCount += 1
+        }
+        guard pendingNotifyUUIDs.isEmpty else { return }
+        guard enabledNotifyCount > 0 else {
+            log("Oura: WARNING every notification path failed - ring will send no data")
             return
         }
-        log("Oura: notifications enabled (isNotifying=\(characteristic.isNotifying)) - beginning auth")
-        // Notifications are live: tell the driver we're ready. It returns the auth-nonce request (or, with
-        // no key, drives the honest needs-pairing path).
+        log("Oura: notifications enabled on \(enabledNotifyCount) inbound path(s) - beginning auth")
+        // Transport subscriptions are live: request the auth nonce directly (or, with no key, drive the
+        // honest needs-pairing path).
         advance(.ready)
     }
 
     public func peripheral(_ peripheral: CBPeripheral,
                            didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
-        guard error == nil, let value = characteristic.value, characteristic.uuid == Self.notifyChar else { return }
+        guard error == nil,
+              let value = characteristic.value,
+              inboundNotifyUUIDs.contains(characteristic.uuid) else { return }
         let bytes = [UInt8](value)
         // The notify char carries TWO framings on the same channel (OURA_PROTOCOL.md s2):
         //   - 0x2F secure-session sub-frames (auth nonce/status, enable ACKs, live-HR pushes)
@@ -1057,6 +1156,10 @@ extension OuraLiveSource: @preconcurrency CBPeripheralDelegate {
         if !tlvBytes.isEmpty {
             ingest(driver.ingest(notification: tlvBytes, reassembler: reassembler))
         }
+    }
+
+    public func peripheralIsReady(toSendWriteWithoutResponse peripheral: CBPeripheral) {
+        drainCommandQueue()
     }
 
     /// Act on what the driver resolved a 0x2F secure sub-frame to.

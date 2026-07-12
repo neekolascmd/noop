@@ -463,6 +463,9 @@ final class OuraDriverTests: XCTestCase {
         XCTAssertEqual(OuraGatt.characteristicUUIDs(for: .gen4).count, 5)
         XCTAssertEqual(OuraRingGen.from(model: "Oura Ring 5"), .gen5)
         XCTAssertEqual(OuraRingGen.from(model: "Oura Ring 3"), .gen3)
+        XCTAssertEqual(OuraRingGen.recognise(advertisedName: "Oura Ring 4"), .gen4)
+        XCTAssertEqual(OuraRingGen.recognise(advertisedName: "Oura Gen 5"), .gen5)
+        XCTAssertNil(OuraRingGen.recognise(advertisedName: "Oura 9051280476123456"))
         XCTAssertTrue(OuraRingGen.gen3.capabilities.contains(.hrv))
     }
 

@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.os.SystemClock
+import android.util.Base64
 import android.util.Log
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -16,6 +17,12 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import java.security.KeyFactory
+import java.security.spec.MGF1ParameterSpec
+import java.security.spec.X509EncodedKeySpec
+import javax.crypto.Cipher
+import javax.crypto.spec.OAEPParameterSpec
+import javax.crypto.spec.PSource
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -34,6 +41,64 @@ import org.junit.runner.RunWith
  */
 @RunWith(AndroidJUnit4::class)
 class OuraHardwareQualificationTest {
+    /** Scan-only recovery probe; never connects, bonds, authenticates, or writes to the ring. */
+    @Test
+    fun discoversRing4Advertisement() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val source = OuraLiveSource(
+            context = context,
+            deviceId = "hardware-qualification-ring4",
+            ringGen = OuraRingGen.GEN4,
+            liveSink = { _, _ -> },
+            authKey = { null },
+            persist = { _, _ -> },
+            log = ::safeLog,
+        )
+        try {
+            source.scan()
+            assertNotNull("No Ring 4 advertisement appeared", waitUntil(45_000) { source.discovered.value.firstOrNull() })
+        } finally {
+            source.stop()
+        }
+    }
+
+    /**
+     * Debug-test-only bridge for cross-host qualification. The stored ring key is encrypted to a caller-
+     * supplied ephemeral RSA public key before it leaves the Android process; plaintext, device address,
+     * and serial are never logged. Two explicit runner arguments prevent an ordinary test invocation from
+     * exporting even ciphertext.
+     */
+    @Test
+    fun exportsStoredKeyEncryptedForAppleQualification() {
+        val args = InstrumentationRegistry.getArguments()
+        assertEquals("true", args.getString("ouraEncryptedKeyExportConfirmed"))
+        val publicKeyBase64 = requireNotNull(args.getString("ouraTransferPublicKey"))
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val key = requireNotNull(OuraInstallKeyStore.load(context, "hardware-qualification-ring4"))
+        val plaintext = ByteArray(key.size) { key[it].toByte() }
+        try {
+            val publicKey = KeyFactory.getInstance("RSA").generatePublic(
+                X509EncodedKeySpec(Base64.decode(publicKeyBase64, Base64.NO_WRAP)),
+            )
+            val cipher = Cipher.getInstance("RSA/ECB/OAEPWithSHA-256AndMGF1Padding")
+            cipher.init(
+                Cipher.ENCRYPT_MODE,
+                publicKey,
+                OAEPParameterSpec(
+                    "SHA-256",
+                    "MGF1",
+                    MGF1ParameterSpec.SHA256,
+                    PSource.PSpecified.DEFAULT,
+                ),
+            )
+            val encrypted = cipher.doFinal(plaintext)
+            Log.i(LOG_TAG, "Oura: encrypted key transfer payload=${Base64.encodeToString(encrypted, Base64.NO_WRAP)}")
+        } finally {
+            plaintext.fill(0)
+            key.fill(0)
+        }
+    }
+
     /** Read-only verification that a previously acknowledged NOOP key authenticates on a fresh link. */
     @SuppressLint("MissingPermission")
     @Test

@@ -18,7 +18,7 @@ claim. Exact device, firmware, host, build, and capability evidence belongs in t
 | **Polar deep streams** (ECG / PPG / ACC / PPI) | 🔬 Protocol verified, decoder not built | PMD service (below) — alpha, hardware-gated |
 | **Garmin** (sleep / HRV / Body Battery / SpO₂ / FIT) | 📋 Researched, not built | Local BLE re-derive (Gadgetbridge-informed, **never** GPLv3 copy) |
 | **Amazfit / Zepp** (incl. Helio deep) | 📋 Researched, not built | Encrypted Huami BLE — needs a one-time **user-pasted** vendor key (NOOP never logs into the vendor cloud) |
-| **Oura** | 🧪 Experimental, hardware validation in progress | Local BLE protocol package and platform sources; do not treat as production-ready yet |
+| **Oura** | 🧪 Experimental; Ring 4 partially qualified on Android and macOS | Local BLE protocol package and platform sources; see the per-host graduation matrix before making a support claim |
 | **Fitbit / Google** | 📋 Researched, not built | Build against **Google Health** API (Fitbit Web API sunsets Sept 2026) — off-by-default import |
 
 ## Polar Measurement Data (PMD) — verified protocol

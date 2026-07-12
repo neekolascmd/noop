@@ -28,7 +28,10 @@ platform-specific; see the [hardware graduation gate](HARDWARE_SUPPORT.md#oura-g
   - ATT handle observed `0x0012`, notifications via Handle-Value-Notification (ATT op `0x1B`) [open_ring][ringverse]
 - **GATT channel id:** `0x0004` [ringverse]
 
-> Implementation note for NOOP: subscribe to `...0003` notifications, then write commands to `...0002` with `.withoutResponse`. Do **not** assume write-with-response.
+> Implementation note for NOOP: subscribe to `...0003` on Gen 3 and read-only to
+> `...0003/0004/0005/0006` on Gen 4/5, then write commands only to `...0002` with
+> `.withoutResponse`. Do **not** assume write-with-response and never write application commands to
+> the extra inbound paths.
 
 ### 1.2 Per-generation GATT differences
 
@@ -43,12 +46,15 @@ platform-specific; see the [hardware graduation gate](HARDWARE_SUPPORT.md#oura-g
 | MTU | 203 [open_oura-r3] | 247 [open_ring] | 247 [open_oura-r5] |
 
 - Ring 5 keeps "the **same** GATT layout, framing, and app-auth flow as the Ring 3/4 … no new opcodes, event tags, or fundamental framing changes." [open_oura-r5]
-- Ring 4 firmware `2.12.3` requires Android to subscribe read-only to `…0003/0004/0005/0006` before the adopted session is driven. Their individual semantic roles remain **unconfirmed**; never write application commands to the extras (all commands still use `…0002`).
+- Ring 4 firmware `2.12.3` requires both the tested Android and macOS transports to subscribe read-only to `…0003/0004/0005/0006` before the adopted session is driven. Their individual semantic roles remain **unconfirmed**; never write application commands to the extras (all commands still use `…0002`).
 
 ### 1.3 MTU negotiation
 - Notifications stream up to the negotiated MTU (max payload = MTU − 3 ATT bytes). Default BlueZ MTU is 23 unless negotiated. [open_ring]
 - **NOOP rule:** immediately after subscribing to `…0003`, request ATT MTU = **247** (Gen 4/5) or **203** (Gen 3). On iOS/CoreBluetooth the MTU is auto-negotiated; read `maximumWriteValueLength` and `CBPeripheral.maximumWriteValueLength(for: .withoutResponse)` and clamp writes. On Android, call `requestMtu(247)` before the first command.
 - **Android write scheduling:** serialize Write Without Response commands with at least **350 ms** between starts on Ring 4. The tested Saga link negotiated interval 15 ms with slave latency 20 (a 315 ms worst-case receive window); immediate writes dropped later commands, while the 350 ms queue completed auth, live enable, and history (`2026-07-12`).
+- **Apple write scheduling:** CoreBluetooth also serializes Ring 4 Write Without Response commands with
+  the same 350 ms minimum spacing and waits for `canSendWriteWithoutResponse`; this completed key
+  installation, fresh-session auth, live-mode enable, battery, and history on macOS 27.0 (`2026-07-12`).
 
 ---
 

@@ -77,9 +77,12 @@ public enum OuraRingGen: String, Sendable, CaseIterable, Codable {
         guard let name = advertisedName?.lowercased() else { return nil }
         // Only treat as an Oura ring at all if the name carries the brand token.
         guard name.contains("oura") || name.contains("ring") else { return nil }
-        if name.contains("5") { return .gen5 }
-        if name.contains("4") { return .gen4 }
-        if name.contains("3") || name.contains("horizon") { return .gen3 }
+        // Reset-mode advertisements can contain long serial-like digit runs. Only accept a number
+        // when it is explicitly labelled as a Ring/Gen token; arbitrary digits are not a generation.
+        if name.range(of: #"\b(?:ring|gen)\s*5\b"#, options: .regularExpression) != nil { return .gen5 }
+        if name.range(of: #"\b(?:ring|gen)\s*4\b"#, options: .regularExpression) != nil { return .gen4 }
+        if name.range(of: #"\b(?:ring|gen)\s*3\b"#, options: .regularExpression) != nil ||
+            name.range(of: #"\bhorizon\b"#, options: .regularExpression) != nil { return .gen3 }
         return nil
     }
 
@@ -87,11 +90,7 @@ public enum OuraRingGen: String, Sendable, CaseIterable, Codable {
     /// to gen3 (the verified-corpus generation) when the string is unrecognised, so an older row
     /// still maps to a usable command set. Per architecture plan s5.
     public static func from(model: String) -> OuraRingGen {
-        let m = model.lowercased()
-        if m.contains("5") { return .gen5 }
-        if m.contains("4") { return .gen4 }
-        if m.contains("3") { return .gen3 }
-        return .gen3
+        recognise(advertisedName: model) ?? .gen3
     }
 }
 
