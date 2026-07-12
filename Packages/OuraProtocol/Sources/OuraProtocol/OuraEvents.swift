@@ -1,5 +1,36 @@
 import Foundation
 
+/// The four non-sensitive version triplets returned by GetFirmwareVersion (`0x09`). The trailing
+/// six bytes in that response are the ring's Bluetooth address and are deliberately not represented
+/// here, so diagnostics cannot accidentally persist a device identifier.
+public struct OuraFirmwareIdentity: Equatable, Sendable {
+    public struct Version: Equatable, Sendable, CustomStringConvertible {
+        public let major: UInt8
+        public let minor: UInt8
+        public let patch: UInt8
+
+        public init(major: UInt8, minor: UInt8, patch: UInt8) {
+            self.major = major
+            self.minor = minor
+            self.patch = patch
+        }
+
+        public var description: String { "\(major).\(minor).\(patch)" }
+    }
+
+    public let api: Version
+    public let firmware: Version
+    public let bootloader: Version
+    public let bluetooth: Version
+
+    public init(api: Version, firmware: Version, bootloader: Version, bluetooth: Version) {
+        self.api = api
+        self.firmware = firmware
+        self.bootloader = bootloader
+        self.bluetooth = bluetooth
+    }
+}
+
 // OuraEvents: the decoded value structs the driver emits (OURA_PROTOCOL.md s6). Each carries the
 // record's ringTimestamp (the ring-clock value; the app anchors it to UTC via the 0x42 time-sync /
 // 0x85 RTC events) plus the decoded signal. Pure value types, no CoreBluetooth.

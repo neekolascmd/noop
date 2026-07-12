@@ -132,17 +132,22 @@ class OuraDriver(
      */
     fun nextStep(after: OuraTransition): List<OuraCommand> = when (after) {
         is OuraTransition.Ready -> {
+            // Capture a reproducible firmware/hardware tuple on every connection. These safe pre-auth
+            // reads omit the serial page, so a redacted strap log can qualify hardware without exposing
+            // a persistent identifier (OURA_PROTOCOL.md s3.6/s4.3).
+            val identity = listOf(OuraCommands.getFirmwareVersion(), OuraCommands.getProductHardware())
             // No app key -> we cannot authenticate; surface the honest pairing path (no faked data).
             if (effectiveKey == null) {
                 phase = OuraDriverPhase.NeedsKeyInstall
-                emptyList()
+                identity
             } else {
                 phase = OuraDriverPhase.Authenticating
-                // Enable notifications, then request the auth nonce. SyncTime can follow auth.
+                // Keep the proven auth writes first: transports may have a shallow no-response write
+                // window, so qualification reads must never delay or displace the nonce request.
                 listOf(
                     OuraCommands.enableAllNotifications(),
                     OuraCommand("get_nonce", OuraAuth.getAuthNonceCommand()),
-                )
+                ) + identity
             }
         }
 

@@ -96,6 +96,12 @@ object OuraFraming {
     /** The secure-session / extended opcode. Per OURA_PROTOCOL.md s2.2 / s4.1. */
     const val secureSessionOp = 0x2F
 
+    /** Safe, pre-auth GetFirmwareVersion response (`0x09`, OURA_PROTOCOL.md s4.3). */
+    const val firmwareResponseOp = 0x09
+
+    /** ProductInfo response (`0x19`). NOOP requests only the hardware page, never the serial page. */
+    const val productInfoResponseOp = 0x19
+
     /**
      * The GetEvents response / summary outer opcode (OURA_PROTOCOL.md s5.2). Below the event-tag range
      * (tags are >= 0x41), so a caller that fails to special-case it and lets it fall through to the TLV

@@ -969,10 +969,23 @@ class OuraLiveSource(
     private fun handleNotification(data: ByteArray) = guardedCallback("notification") {
         val d = driver ?: return@guardedCallback
         val bytes = IntArray(data.size) { data[it].toInt() and 0xFF }
+        // Event tags occupy 0x41+ while command/response opcodes are below that range. Once a partial
+        // TLV is buffered, every continuation byte belongs to it regardless of its first value.
+        if (reassembler.bufferedByteCount > 0 || (bytes.firstOrNull() ?: 0) >= 0x41) {
+            for (rec in reassembler.feed(bytes)) emit(d.ingest(rec))
+            return@guardedCallback
+        }
         // Split any packed outer frames; route 0x2F secure sub-frames through the driver's secure handler
         // and feed all other bytes to the TLV reassembler.
+        val frames = OuraFraming.parseOuterFrames(bytes)
+        // A TLV record may be split across notifications. Preserve an incomplete first fragment in the
+        // reassembler instead of dropping it. Identity responses fit one minimum-MTU notification.
+        if (frames.isEmpty()) {
+            for (rec in reassembler.feed(bytes)) emit(d.ingest(rec))
+            return@guardedCallback
+        }
         val nonSecure = ArrayList<Int>()
-        for (frame in OuraFraming.parseOuterFrames(bytes)) {
+        for (frame in frames) {
             if (frame.op == OuraFraming.secureSessionOp) {
                 val secure = OuraFraming.parseSecureFrame(frame) ?: continue
                 routeSecure(d, secure)
@@ -995,6 +1008,23 @@ class OuraLiveSource(
                 // it through the existing `.battery` ingest path (batteryPct/onBattery/log side effects).
                 val battery = OuraDecoders.decodeBattery(frame.body)
                 if (battery != null) emit(listOf(OuraEvent.Battery(battery)))
+            } else if (frame.op == OuraFraming.firmwareResponseOp) {
+                // The decoder drops the response's Bluetooth-address bytes; the log contains only the
+                // reproducible version tuple and the generation selected in the wizard.
+                val identity = OuraDecoders.decodeFirmwareIdentity(frame.body)
+                if (identity != null) {
+                    log("Oura: identity selected=${ringGen.displayName} firmware=${identity.firmware} " +
+                        "api=${identity.api} bootloader=${identity.bootloader} bluetooth=${identity.bluetooth}")
+                } else {
+                    log("Oura: identity firmware response received but could not be decoded (${frame.body.size}B)")
+                }
+            } else if (frame.op == OuraFraming.productInfoResponseOp) {
+                val hardware = OuraDecoders.decodeProductHardware(frame.body)
+                if (hardware != null) {
+                    log("Oura: identity hardware=$hardware")
+                } else {
+                    log("Oura: identity hardware response received but no privacy-safe family token was found (${frame.body.size}B)")
+                }
             } else {
                 // Re-serialise the outer frame (op, len, body) so the reassembler sees the original wire
                 // bytes; TLV records and outer frames share the op/len header shape.

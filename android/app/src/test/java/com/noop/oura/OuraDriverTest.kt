@@ -29,10 +29,10 @@ class OuraDriverTest {
         val d = OuraDriver(ringGen = OuraRingGen.GEN3, authKey = key)
         assertEquals(OuraDriverPhase.Idle, d.phase)
 
-        // ready -> enable notifications + request nonce.
+        // ready -> capture serial-free identity, enable notifications, request nonce.
         val onReady = d.nextStep(OuraTransition.Ready)
         assertEquals(OuraDriverPhase.Authenticating, d.phase)
-        assertEquals(listOf("notify_all", "get_nonce"), onReady.map { it.label })
+        assertEquals(listOf("notify_all", "get_nonce", "get_firmware", "get_hardware"), onReady.map { it.label })
         assertArrayEquals(intArrayOf(0x2F, 0x01, 0x2B), onReady[1].bytes)
 
         // nonce -> submit proof.
@@ -69,7 +69,11 @@ class OuraDriverTest {
     fun testNoKeyDrivesNeedsKeyInstall() {
         val d = OuraDriver(ringGen = OuraRingGen.GEN3, authKey = null)
         val cmds = d.nextStep(OuraTransition.Ready)
-        assertTrue("without an app key we cannot authenticate; emit no commands", cmds.isEmpty())
+        assertEquals(
+            "without a key, collect only safe serial-free identity and never authenticate",
+            listOf("get_firmware", "get_hardware"),
+            cmds.map { it.label },
+        )
         assertEquals(OuraDriverPhase.NeedsKeyInstall, d.phase)
     }
 
@@ -102,7 +106,7 @@ class OuraDriverTest {
         // No injected key -> the honest needs-pairing path; the transport will provision one.
         val d = OuraDriver(ringGen = OuraRingGen.GEN3, authKey = null, allowKeyInstall = true)
         val onReady = d.nextStep(OuraTransition.Ready)
-        assertTrue(onReady.isEmpty())
+        assertEquals(listOf("get_firmware", "get_hardware"), onReady.map { it.label })
         assertEquals(OuraDriverPhase.NeedsKeyInstall, d.phase)
 
         // The transport generates + persists a fresh 16-byte key and asks the driver for the install

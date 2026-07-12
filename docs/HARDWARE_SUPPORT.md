@@ -71,6 +71,36 @@ software behavior; they are not physical-device verification.
 See [Device support roadmap](DEVICE_SUPPORT_ROADMAP.md) for protocol research and future lanes. See
 [Analytics golden fixtures](ANALYTICS_FIXTURES.md) for cross-platform software parity.
 
+## Oura graduation gate
+
+Oura support graduates per **ring generation + host platform**, not as one blanket claim. A Ring 3
+result does not make Ring 4/5 supported, and an Apple result does not prove Android. Starting with the
+qualification build, each connection safely requests the pre-auth firmware and hardware pages and adds
+lines like these to the exportable strap log:
+
+```text
+Oura: identity selected=Oura Ring 3 firmware=3.4.3 api=... bootloader=... bluetooth=...
+Oura: identity hardware=BLB_03
+```
+
+NOOP never requests the ProductInfo serial page for this diagnostic, and the firmware decoder discards
+the response's Bluetooth-address bytes. A generation/platform cell can move from Experimental to
+Supported only after all of the following are recorded on a current release:
+
+1. Two reproducible reports from independent rings, with exact firmware, hardware family, host, OS,
+   NOOP build, date, and privacy-redacted evidence. At least one reporter must be available to retest.
+2. Factory-reset adoption **and** a later reconnect with the stored key pass without another reset.
+3. Live HR and R-R remain active through a 30-minute worn session, an out-of-range reconnect, and an app
+   relaunch. Values are compared with a simultaneous reference sensor or the ring's own visible reading.
+4. An overnight/24-hour run resumes history after reconnect and records plausible UTC timestamps for the
+   available HRV, sleep-phase, temperature, and SpO2 events. Missing capabilities are reported, not inferred.
+5. Wrong-key, missing-key, unavailable-ring, and interrupted-adoption paths fail visibly and never claim
+   streaming or persist a key before the ring acknowledges it.
+6. The Swift and Kotlin protocol suites pass, and the tested host app builds in CI.
+
+Tier-B activity, step, and sleep-summary layouts may remain experimental after a live/history transport
+cell graduates; they are separately fixture-gated and cannot feed scoring until validated.
+
 ## Reproducible verification report
 
 Use the [hardware verification issue form](https://github.com/neekolascmd/noop/issues/new?template=hardware-verification.yml).
@@ -89,6 +119,9 @@ Every report must include:
    firmware-sensitive response. Never attach a serial, session token, account export, or raw personal
    biometric history.
 7. Verification date, tester attribution, and whether maintainers can retest with that hardware.
+
+For Oura, copy the `Oura: identity ...` lines from the redacted strap log and include the adoption,
+reconnect, relaunch, 30-minute live session, and overnight/24-hour results required by the graduation gate.
 
 Maintainers should update this matrix only after reading the evidence. A community report may move a
 cell from Unknown to Partial; Verified requires a reproducible tuple and a result another maintainer

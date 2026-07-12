@@ -19,6 +19,47 @@ package com.noop.oura
 
 object OuraDecoders {
 
+    // MARK: - Pre-auth identity (0x09 / 0x19)
+
+    /**
+     * Decode `API:3 FW:3 BL:3 BT:3 MAC:6` (OURA_PROTOCOL.md s4.3). The MAC bytes are intentionally
+     * ignored. Kotlin twin of Swift's decodeFirmwareIdentity.
+     */
+    fun decodeFirmwareIdentity(body: IntArray): OuraFirmwareIdentity? {
+        if (body.size < 12) return null
+        fun version(offset: Int) = OuraFirmwareIdentity.Version(body[offset], body[offset + 1], body[offset + 2])
+        return OuraFirmwareIdentity(
+            api = version(0),
+            firmware = version(3),
+            bootloader = version(6),
+            bluetooth = version(9),
+        )
+    }
+
+    /**
+     * Extract a privacy-safe hardware-family token from the requested ProductInfo hardware page.
+     * Only printable runs containing `_` or `-` (for example `BLB_03`) are accepted; an undelimited
+     * alphanumeric run could be a serial and is never returned or logged.
+     */
+    fun decodeProductHardware(body: IntArray): String? {
+        fun allowed(b: Int): Boolean = b in 0x30..0x39 || b in 0x41..0x5A || b in 0x61..0x7A ||
+            b == 0x5F || b == 0x2D || b == 0x2E
+        val run = ArrayList<Int>()
+        fun candidate(): String? {
+            if (run.size !in 3..16 || (0x5F !in run && 0x2D !in run)) return null
+            return run.map { it.toChar() }.joinToString("")
+        }
+        for (b in body.toList() + 0) {
+            if (allowed(b)) {
+                run.add(b)
+            } else {
+                candidate()?.let { return it }
+                run.clear()
+            }
+        }
+        return null
+    }
+
     // MARK: - Little-endian helpers (body offset == spec offset - 6)
 
     private fun u16le(b: IntArray, i: Int): Int = b[i] or (b[i + 1] shl 8)

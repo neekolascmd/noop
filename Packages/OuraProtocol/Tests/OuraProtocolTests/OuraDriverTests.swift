@@ -24,10 +24,10 @@ final class OuraDriverTests: XCTestCase {
         let d = OuraDriver(ringGen: .gen3, authKey: key)
         XCTAssertEqual(d.phase, .idle)
 
-        // ready -> enable notifications + request nonce.
+        // ready -> capture serial-free identity, enable notifications, request nonce.
         let onReady = d.nextStep(after: .ready)
         XCTAssertEqual(d.phase, .authenticating)
-        XCTAssertEqual(onReady.map { $0.label }, ["notify_all", "get_nonce"])
+        XCTAssertEqual(onReady.map { $0.label }, ["notify_all", "get_nonce", "get_firmware", "get_hardware"])
         XCTAssertEqual(onReady[1].bytes, [0x2F, 0x01, 0x2B])
 
         // nonce -> submit proof.
@@ -63,7 +63,8 @@ final class OuraDriverTests: XCTestCase {
     func testNoKeyDrivesNeedsKeyInstall() {
         let d = OuraDriver(ringGen: .gen3, authKey: nil)
         let cmds = d.nextStep(after: .ready)
-        XCTAssertTrue(cmds.isEmpty, "without an app key we cannot authenticate; emit no commands")
+        XCTAssertEqual(cmds.map { $0.label }, ["get_firmware", "get_hardware"],
+                       "without a key, collect only safe serial-free identity and never authenticate")
         XCTAssertEqual(d.phase, .needsKeyInstall)
     }
 
@@ -90,7 +91,7 @@ final class OuraDriverTests: XCTestCase {
         // No injected key -> the honest needs-pairing path; the transport will provision one.
         let d = OuraDriver(ringGen: .gen3, authKey: nil, allowKeyInstall: true)
         let onReady = d.nextStep(after: .ready)
-        XCTAssertTrue(onReady.isEmpty)
+        XCTAssertEqual(onReady.map { $0.label }, ["get_firmware", "get_hardware"])
         XCTAssertEqual(d.phase, .needsKeyInstall)
 
         // The transport generates + persists a fresh 16-byte key and asks the driver for the install

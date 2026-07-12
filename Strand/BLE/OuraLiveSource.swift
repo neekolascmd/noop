@@ -972,7 +972,38 @@ extension OuraLiveSource: @preconcurrency CBPeripheralDelegate {
         // Split the notification into outer frames; route 0x2F ones through the driver's secure handler,
         // and feed the remainder to the reassembler as TLV records.
         guard let driver else { return }
+        // Event tags occupy 0x41+ while command/response opcodes are below that range. Once a partial TLV
+        // is buffered, every continuation byte belongs to it regardless of its first value. Take this
+        // unambiguous path before trying the outer-frame parser.
+        if reassembler.bufferedByteCount > 0 || (bytes.first.map { $0 >= 0x41 } ?? false) {
+            ingest(driver.ingest(notification: bytes, reassembler: reassembler))
+            return
+        }
         let frames = OuraFraming.parseOuterFrames(bytes)
+        // A TLV record may be split across notifications. If no complete outer-shaped frame exists yet,
+        // preserve the raw fragment in the reassembler instead of dropping it. Identity responses fit one
+        // minimum-MTU notification (20 bytes), so they still take the explicit route below.
+        if frames.isEmpty {
+            ingest(driver.ingest(notification: bytes, reassembler: reassembler))
+            return
+        }
+        // Qualification identity reads are deliberately pre-auth and serial-free. Log the exact firmware
+        // tuple plus the selected generation so a privacy-redacted test bundle is reproducible; the
+        // decoder intentionally discards the response's Bluetooth-address bytes.
+        if let frame = frames.first(where: { $0.op == OuraFraming.firmwareResponseOp }) {
+            if let identity = OuraDecoders.decodeFirmwareIdentity(frame.body) {
+                log("Oura: identity selected=\(ringGen.displayName) firmware=\(identity.firmware) api=\(identity.api) bootloader=\(identity.bootloader) bluetooth=\(identity.bluetooth)")
+            } else {
+                log("Oura: identity firmware response received but could not be decoded (\(frame.body.count)B)")
+            }
+        }
+        if let frame = frames.first(where: { $0.op == OuraFraming.productInfoResponseOp }) {
+            if let hardware = OuraDecoders.decodeProductHardware(frame.body) {
+                log("Oura: identity hardware=\(hardware)")
+            } else {
+                log("Oura: identity hardware response received but no privacy-safe family token was found (\(frame.body.count)B)")
+            }
+        }
         // The `0x25` SetAuthKey-response is an OUTER frame (NOT a 0x2F secure sub-frame): `25 01 <status>`,
         // status `0x00` = OK (OURA_PROTOCOL.md s3.2). It only ever arrives during an adopt install we
         // initiated, so handle it ONLY while a key install is pending; otherwise it is ignored (never fed to
@@ -1009,15 +1040,23 @@ extension OuraLiveSource: @preconcurrency CBPeripheralDelegate {
             }
             // Any non-secure outer frames in the same notification are TLV records; fall through to decode.
             // The 0x25 ack (if any) is consumed above, so it never reaches here.
-            let tlvBytes = frames.filter { $0.op != OuraFraming.secureSessionOp && $0.op != Self.setAuthKeyRespOp }
+            let tlvBytes = frames.filter {
+                $0.op != OuraFraming.secureSessionOp && $0.op != Self.setAuthKeyRespOp &&
+                $0.op != OuraFraming.firmwareResponseOp && $0.op != OuraFraming.productInfoResponseOp
+            }
                                  .flatMap { [$0.op, UInt8($0.body.count)] + $0.body }
             if !tlvBytes.isEmpty {
                 ingest(driver.ingest(notification: tlvBytes, reassembler: reassembler))
             }
             return
         }
-        // No secure frame in this notification: treat the whole value as TLV record bytes.
-        ingest(driver.ingest(notification: bytes, reassembler: reassembler))
+        // No secure frame: strip identity responses before treating any remaining frames as TLV records.
+        let tlvBytes = frames.filter {
+            $0.op != OuraFraming.firmwareResponseOp && $0.op != OuraFraming.productInfoResponseOp
+        }.flatMap { [$0.op, UInt8($0.body.count)] + $0.body }
+        if !tlvBytes.isEmpty {
+            ingest(driver.ingest(notification: tlvBytes, reassembler: reassembler))
+        }
     }
 
     /// Act on what the driver resolved a 0x2F secure sub-frame to.

@@ -1,6 +1,7 @@
 # NOOP - Oura Ring BLE Protocol Specification (Clean-Room)
 
-**Status:** Internal decoder foundation, v0.1 (2026-06-29)
+**Status:** Implemented qualification candidate (2026-07-12). Promotion is generation- and
+platform-specific; see the [hardware graduation gate](HARDWARE_SUPPORT.md#oura-graduation-gate).
 **Scope:** Oura Ring Gen 3 (Horizon), Gen 4, Gen 5. Foundation for NOOP's own Swift (`StrandiOSShared` / `Strand`) and Kotlin decoders.
 **Authorship:** This is NOOP's own original specification. Every protocol *fact* (UUID, opcode, byte layout, tag value) is cited to a reverse-engineering reference read for facts only. No source code was copied from any RE repo. NOOP decodes raw signals plus the ring's own HRV/sleep tags and runs NOOP's own scoring; NOOP never touches Oura's encrypted PyTorch scores.
 
@@ -148,6 +149,11 @@ ring  → phone: 2f 02 2e <status>
 
 ### 3.6 Pre-auth readable / gated commands
 Before app-auth, the ring answers a small set unauthenticated: firmware (`0x08`), product serial/hardware (`0x18`). Auth-required commands return `2f 02 2f 01` until authenticated: battery (`0x0c`), history events (`0x10`), feature status (`0x2f…0x20`), realtime/feature-latest. [open_oura-r3][open_oura-r5]
+
+**NOOP qualification rule:** request firmware and the ProductInfo **hardware page** on every connection,
+but never request the serial page. Decode/log the four version triplets and hardware-family token; discard
+the firmware response's trailing Bluetooth-address bytes. This makes a test bundle reproducible without
+persisting a ring serial or address.
 
 ---
 

@@ -98,15 +98,20 @@ public final class OuraDriver {
     public func nextStep(after transition: OuraTransition) -> [OuraCommand] {
         switch transition {
         case .ready:
+            // Capture the exact firmware/hardware tuple on every connection. These reads are safe before
+            // auth and omit the serial page, so a redacted strap log can qualify real hardware without
+            // exposing a persistent identifier (OURA_PROTOCOL.md s3.6/s4.3).
+            let identity = [OuraCommands.getFirmwareVersion(), OuraCommands.getProductHardware()]
             // No app key -> we cannot authenticate; surface the honest pairing path (no faked data).
             guard effectiveKey != nil else {
                 phase = .needsKeyInstall
-                return []
+                return identity
             }
             phase = .authenticating
-            // Enable notifications, then request the auth nonce. SyncTime can follow auth.
+            // Keep the proven auth writes first: transports may have a shallow write-without-response
+            // window, so qualification reads must never delay or displace the nonce request.
             return [OuraCommands.enableAllNotifications(),
-                    OuraCommand(label: "get_nonce", bytes: OuraAuth.getAuthNonceCommand())]
+                    OuraCommand(label: "get_nonce", bytes: OuraAuth.getAuthNonceCommand())] + identity
 
         case .nonceReceived(let nonce):
             guard let key = effectiveKey else {

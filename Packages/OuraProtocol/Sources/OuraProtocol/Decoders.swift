@@ -14,6 +14,45 @@ import Foundation
 // Platform-pure value types. All facts cited tersely per OURA_PROTOCOL.md s6.
 
 public enum OuraDecoders {
+    // MARK: - Pre-auth identity (0x09 / 0x19)
+
+    /// Decode the non-sensitive portion of a GetFirmwareVersion response body:
+    /// `API:3 FW:3 BL:3 BT:3 MAC:6` (OURA_PROTOCOL.md s4.3). The MAC bytes are intentionally ignored.
+    public static func decodeFirmwareIdentity(_ body: [UInt8]) -> OuraFirmwareIdentity? {
+        guard body.count >= 12 else { return nil }
+        func version(_ offset: Int) -> OuraFirmwareIdentity.Version {
+            .init(major: body[offset], minor: body[offset + 1], patch: body[offset + 2])
+        }
+        return OuraFirmwareIdentity(api: version(0), firmware: version(3),
+                                    bootloader: version(6), bluetooth: version(9))
+    }
+
+    /// Extract a privacy-safe hardware-family token from the requested ProductInfo hardware page.
+    /// ProductInfo is page-based and may include padding/status bytes, so scan printable runs rather
+    /// than assuming an offset. Only tokens containing `_` or `-` (for example `BLB_03`) are accepted;
+    /// an undelimited alphanumeric run could be a serial and is never returned or logged.
+    public static func decodeProductHardware(_ body: [UInt8]) -> String? {
+        let allowed: (UInt8) -> Bool = { byte in
+            (byte >= 0x30 && byte <= 0x39) || (byte >= 0x41 && byte <= 0x5A) ||
+            (byte >= 0x61 && byte <= 0x7A) || byte == 0x5F || byte == 0x2D || byte == 0x2E
+        }
+        var run: [UInt8] = []
+        func candidate() -> String? {
+            guard run.count >= 3, run.count <= 16,
+                  run.contains(0x5F) || run.contains(0x2D) else { return nil }
+            return String(bytes: run, encoding: .ascii)
+        }
+        for byte in body + [0] {
+            if allowed(byte) {
+                run.append(byte)
+            } else {
+                if let value = candidate() { return value }
+                run.removeAll(keepingCapacity: true)
+            }
+        }
+        return nil
+    }
+
 
     // MARK: - Little-endian helpers (body offset == spec offset - 6)
 

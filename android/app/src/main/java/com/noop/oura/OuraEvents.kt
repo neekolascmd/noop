@@ -14,6 +14,22 @@ package com.noop.oura
 // apply the anchor. Honest-data invariant: a short/malformed record decodes to null upstream, so
 // these structs only ever hold real decoded values.
 
+/**
+ * The four non-sensitive version triplets returned by GetFirmwareVersion (`0x09`). The response's
+ * trailing Bluetooth-address bytes are deliberately not represented, so diagnostics cannot persist
+ * a device identifier. Kotlin twin of Swift's OuraFirmwareIdentity.
+ */
+data class OuraFirmwareIdentity(
+    val api: Version,
+    val firmware: Version,
+    val bootloader: Version,
+    val bluetooth: Version,
+) {
+    data class Version(val major: Int, val minor: Int, val patch: Int) {
+        override fun toString(): String = "$major.$minor.$patch"
+    }
+}
+
 /** One decoded inter-beat interval (and optional amplitude), in milliseconds. */
 data class OuraIBI(val ringTimestamp: Long, val ibiMs: Int, val amplitude: Int? = null)
 
