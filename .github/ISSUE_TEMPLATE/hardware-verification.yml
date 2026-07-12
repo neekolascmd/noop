@@ -1,0 +1,154 @@
+name: "⌚ Hardware verification"
+description: Record a reproducible device, firmware, host, and NOOP capability run
+title: "[hardware]: "
+labels: [documentation]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for a completed hardware test, not a support question. Test one exact device,
+        firmware, host, and NOOP build per report. Remove serial numbers, session tokens, account
+        exports, and raw personal biometric history before attaching evidence.
+
+        Read the [hardware support matrix](https://github.com/neekolascmd/noop/blob/main/docs/HARDWARE_SUPPORT.md)
+        for status definitions and the capabilities that still need evidence.
+
+  - type: dropdown
+    id: lane
+    attributes:
+      label: Device or source lane
+      options:
+        - WHOOP 4.0 / 4C
+        - WHOOP 5.0
+        - WHOOP MG
+        - Generic BLE heart-rate device
+        - Xiaomi Smart Band import
+        - Xiaomi Smart Band live BLE
+        - Oura local BLE
+        - Oura / Fitbit / Garmin export import
+        - Polar PMD deep streams
+        - Garmin / Amazfit deep BLE
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: Exact model and hardware revision
+      placeholder: "WHOOP 5.0; hardware revision if shown"
+    validations:
+      required: true
+
+  - type: input
+    id: firmware
+    attributes:
+      label: Firmware or vendor export version
+      description: Include how you read it. Write "not exposed" only after checking.
+      placeholder: "50.38.1.0, from NOOP GET_HELLO"
+    validations:
+      required: true
+
+  - type: input
+    id: noop_build
+    attributes:
+      label: NOOP release or commit SHA
+      description: Do not write "latest"; give a release number or full commit.
+      placeholder: "8.2.1 or e69833096c9b17ecf3bd1707bd13205225650ec2"
+    validations:
+      required: true
+
+  - type: textarea
+    id: host
+    attributes:
+      label: Host test tuple
+      description: Host/phone model, OS version, BLE adapter if relevant, and install method.
+      placeholder: "MacBook Pro M3, macOS 15.5, built from source with Xcode 16.4"
+    validations:
+      required: true
+
+  - type: textarea
+    id: pairing_preconditions
+    attributes:
+      label: Pairing and test preconditions
+      description: State pairing mode, existing bonds, official-app state, wear/charge state, and history span.
+      value: |
+        - Pairing mode:
+        - Existing bond / official app state:
+        - Worn or off-wrist:
+        - Battery / charger state:
+        - Available history span:
+    validations:
+      required: true
+
+  - type: textarea
+    id: procedure
+    attributes:
+      label: Reproduction procedure
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: capability_results
+    attributes:
+      label: Capability results
+      description: Keep every line. Use PASS, FAIL, or NOT RUN and add one sentence of evidence/reason.
+      value: |
+        - Pairing:
+        - Live HR:
+        - Live R-R intervals:
+        - History sync:
+        - Sleep duration and stages:
+        - Workout detection/import:
+        - Haptics:
+        - Scheduled alarm set/read/fire/cancel:
+        - Firmware-sensitive or unexpected behavior:
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Privacy-safe evidence
+      description: >-
+        Attach a redacted strap log or test bundle and summarize timestamps, frame/record counts,
+        command responses, and comparison method. Never include a serial, token, account export, or
+        raw personal biometric history.
+    validations:
+      required: true
+
+  - type: input
+    id: verification_date
+    attributes:
+      label: Verification date
+      placeholder: "YYYY-MM-DD"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: availability
+    attributes:
+      label: Can this exact hardware be retested?
+      options:
+        - Yes, I can retest and answer follow-ups
+        - Yes, a maintainer has the device
+        - No, this was a one-time capture
+        - Unknown
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: attestations
+    attributes:
+      label: Before submitting
+      options:
+        - label: I tested a device or export I own or am authorized to use.
+          required: true
+        - label: I removed serial numbers, session tokens, account exports, and raw personal biometric history.
+          required: true
+        - label: I reported failures and NOT RUN capabilities as clearly as passes.
+          required: true

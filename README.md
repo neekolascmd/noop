@@ -257,6 +257,9 @@ import required.
 ### Strap support
 
 NOOP is an independent, **experimental** project — capable, but a work in progress.
+Exact firmware, host, app-build, verification-date, and per-capability evidence lives in the
+**[hardware support matrix](docs/HARDWARE_SUPPORT.md)**. A feature is not hardware-verified merely
+because its code or screen exists.
 
 | Strap | Status |
 |---|---|
@@ -507,6 +510,7 @@ no DRM circumvention. Full detail in [`ATTRIBUTION.md`](ATTRIBUTION.md).
 
 **Community:** questions, setup help, tips, and release news → **[r/NOOPApp](https://www.reddit.com/r/NOOPApp/)**.
 **Bug reports:** please use **[GitHub Issues](https://github.com/neekolascmd/noop/issues)** — there's a template, and they're tracked, deduped and linked to fixes (include a strap log).
+**Hardware results:** check the **[verified support matrix](docs/HARDWARE_SUPPORT.md)**, then submit one exact device/firmware/host/build tuple with the **[hardware verification form](https://github.com/neekolascmd/noop/issues/new?template=hardware-verification.yml)**.
 **Maintainer contact:** use [GitHub Issues](https://github.com/neekolascmd/noop/issues) for project questions and reports.
 
 ---

@@ -4,6 +4,10 @@ NOOP's north star is **WHOOP**, fully supported. Everything else is an opportuni
 expansion that must never regress the WHOOP experience. This file records where each additional
 source stands and the protocol facts we've verified, so the next build can pick up cleanly.
 
+Roadmap status means a code lane is shipped, researched, or planned; it is not a physical-hardware
+claim. Exact device, firmware, host, build, and capability evidence belongs in the
+[hardware support matrix](HARDWARE_SUPPORT.md).
+
 | Source | Status | How |
 |--------|--------|-----|
 | **WHOOP 4 / 5 / MG** | ✅ Shipped, primary | Local BLE decode |
