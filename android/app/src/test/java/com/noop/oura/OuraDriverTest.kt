@@ -577,8 +577,10 @@ class OuraDriverTest {
     fun testRingGenMtuAndCaps() {
         assertEquals(203, OuraRingGen.GEN3.mtu)
         assertEquals(247, OuraRingGen.GEN5.mtu)
+        assertTrue(OuraRingGen.GEN4.hasExtraNotifyChars)
         assertTrue(OuraRingGen.GEN5.hasExtraNotifyChars)
         assertTrue(!OuraRingGen.GEN3.hasExtraNotifyChars)
+        assertEquals(5, OuraGatt.characteristicUUIDs(OuraRingGen.GEN4).size)
         assertEquals(OuraRingGen.GEN5, OuraRingGen.from("Oura Ring 5"))
         assertEquals(OuraRingGen.GEN3, OuraRingGen.from("Oura Ring 3"))
         assertTrue(OuraRingGen.GEN3.capabilities.contains(OuraMetric.HRV))

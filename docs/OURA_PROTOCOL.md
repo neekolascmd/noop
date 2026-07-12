@@ -37,13 +37,13 @@ platform-specific; see the [hardware graduation gate](HARDWARE_SUPPORT.md#oura-g
 | Service `…0001` | yes | yes | yes (same layout) [open_oura-r5] |
 | Write `…0002` | yes | yes | yes |
 | Notify `…0003` | yes | yes | yes |
-| Extra char `…0004` | - | - | **present**: read,write,notify,indicate [open_oura-r5] |
-| Extra char `…0005` | - | - | **present**: write,notify [open_oura-r5] |
-| Extra char `…0006` | - | - | **present**: write,notify [open_oura-r5] |
+| Extra char `…0004` | - | **present**: read, write, write-no-response, notify, indicate (Ring 4 hardware, 2026-07-12) | **present**: read,write,notify,indicate [open_oura-r5] |
+| Extra char `…0005` | - | **present**: write-no-response, notify (Ring 4 hardware, 2026-07-12) | **present**: write,notify [open_oura-r5] |
+| Extra char `…0006` | - | **present**: write-no-response, notify (Ring 4 hardware, 2026-07-12) | **present**: write,notify [open_oura-r5] |
 | MTU | 203 [open_oura-r3] | 247 [open_ring] | 247 [open_oura-r5] |
 
 - Ring 5 keeps "the **same** GATT layout, framing, and app-auth flow as the Ring 3/4 … no new opcodes, event tags, or fundamental framing changes." [open_oura-r5]
-- The functional roles of Ring-5 chars `…0004/0005/0006` are **unconfirmed** in the RE corpus - leave them unused in v1; do not write to them.
+- The functional roles of Ring-4/5 chars `…0004/0005/0006` are **unconfirmed** - discover them for completeness, leave them unused in v1, and do not write to them.
 
 ### 1.3 MTU negotiation
 - Notifications stream up to the negotiated MTU (max payload = MTU − 3 ATT bytes). Default BlueZ MTU is 23 unless negotiated. [open_ring]
@@ -413,7 +413,7 @@ bits 14–15 : qual_b
 | Capability | Gen 3 (Horizon) | Gen 4 | Gen 5 |
 |---|---|---|---|
 | Service/char `…0001/2/3` | yes | yes | yes [open_oura-r5] |
-| Extra chars `…0004/5/6` | no | no | **yes** (roles unconfirmed) [open_oura-r5] |
+| Extra chars `…0004/5/6` | no | **yes** (hardware-verified 2026-07-12; roles unconfirmed) | **yes** (roles unconfirmed) [open_oura-r5] |
 | MTU | 203 [open_oura-r3] | 247 [open_ring] | 247 [open_oura-r5] |
 | Framing (TLV §2) | same | same (verified vs ~953k records) [open_ring] | same [open_oura-r5] |
 | Auth handshake (§3) | same | same | same; control cmds need per-conn auth, fw/serial read unauth [open_oura-r5] |
@@ -425,7 +425,7 @@ bits 14–15 : qual_b
 | Test firmware in corpus | FW 3.4.3 | (Ring-4 verified corpus) | FW 2.1.3 [open_oura-feat] |
 
 ### 7.3 NOOP decoder build guidance
-1. **Single TLV parser** (§2.3) for all generations - the framing is generation-invariant. Branch only on: MTU clamp (203 vs 247) and Gen-5 extra-char presence (ignore in v1).
+1. **Single TLV parser** (§2.3) for all generations - the framing is generation-invariant. Branch only on: MTU clamp (203 vs 247) and Gen-4/5 extra-char presence (discover but ignore in v1).
 2. **Generation detection:** read product info (`0x18 03 18 00 10`) → hardware id (e.g. `BLB_03`), and firmware (`0x08`). Map to Gen 3/4/5 to set MTU and pick verified-vs-unverified layout confidence.
 3. **Trust tiers in the decoder:** Tier A (verified, ship now) = TLV framing, auth, GetEvents cursor, live-HR `0x02`, `0x60`/`0x80` IBI, `0x46`/`0x69`/`0x75` temp, `0x6F`/`0x7B` SpO2, `0x42` time-sync, `0x0D` battery, `0x45`/`0x53` state, `0x6B` motion. Tier B (UNVERIFIED, fixture-gate before use) = `0x49/0x4B/0x4C/0x4F/0x57/0x58` sleep summaries, `0x50/0x51/0x52` activity-MET, `0x7E/0x7F` steps, `0x70` smoothed SpO2, the protobuf `0x55/0x59` interpretation (do **not** ship).
 4. **HRV/sleep:** consume the ring's `0x5D` (HRV) and `0x4E/0x5A` (2-bit phase codes) tags AND independently reconstruct from raw IBI/PPG for NOOP's own scoring. Never read Oura feature `0x06` (encrypted API).

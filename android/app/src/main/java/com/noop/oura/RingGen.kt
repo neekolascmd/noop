@@ -4,7 +4,7 @@ package com.noop.oura
 // transport handles all gens by swapping command sets, not code paths. The framing/auth/event-tag
 // dictionary are generation-invariant (per OURA_PROTOCOL.md s7.2), so RingGen only drives:
 //   - MTU clamp (203 vs 247)
-//   - which characteristics to discover (gen5 extra notify chars, currently unused)
+//   - which characteristics to discover (gen4/5 extra notify chars, currently unused)
 //   - the live-HR enable command set (verified on gen3, expected-same on gen4/5)
 //   - the registered capability set surfaced to the app
 //
@@ -37,13 +37,13 @@ enum class OuraRingGen(val raw: String) {
     val maxWritePayload: Int get() = mtu - OuraGatt.attOverhead
 
     /**
-     * Whether this generation advertises the extra ...0004/5/6 characteristics. Only gen5 does, and
-     * v1 never writes to them (roles unconfirmed). Per OURA_PROTOCOL.md s1.2 / s7.2.
+     * Whether this generation advertises the extra ...0004/5/6 characteristics. Hardware discovery
+     * confirms Ring 4 does too; v1 never writes to them (roles unconfirmed).
      */
     val hasExtraNotifyChars: Boolean
         get() = when (this) {
-            GEN3, GEN4 -> false
-            GEN5 -> true
+            GEN3 -> false
+            GEN4, GEN5 -> true
         }
 
     /**

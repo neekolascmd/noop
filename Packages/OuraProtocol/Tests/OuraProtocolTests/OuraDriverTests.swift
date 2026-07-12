@@ -457,8 +457,10 @@ final class OuraDriverTests: XCTestCase {
     func testRingGenMtuAndCaps() {
         XCTAssertEqual(OuraRingGen.gen3.mtu, 203)
         XCTAssertEqual(OuraRingGen.gen5.mtu, 247)
+        XCTAssertTrue(OuraRingGen.gen4.hasExtraNotifyChars)
         XCTAssertTrue(OuraRingGen.gen5.hasExtraNotifyChars)
         XCTAssertFalse(OuraRingGen.gen3.hasExtraNotifyChars)
+        XCTAssertEqual(OuraGatt.characteristicUUIDs(for: .gen4).count, 5)
         XCTAssertEqual(OuraRingGen.from(model: "Oura Ring 5"), .gen5)
         XCTAssertEqual(OuraRingGen.from(model: "Oura Ring 3"), .gen3)
         XCTAssertTrue(OuraRingGen.gen3.capabilities.contains(.hrv))

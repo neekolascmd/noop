@@ -19,8 +19,8 @@ object OuraGatt {
     // Notify characteristic (ring to phone), Handle-Value-Notification. Per OURA_PROTOCOL.md s1.1.
     const val notifyCharacteristicUUID = "98ED0003-A541-11E4-B6A0-0002A5D5C51B"
 
-    // Gen-5 extra characteristics. Roles UNCONFIRMED in the RE corpus, leave UNUSED in v1.
-    // Per OURA_PROTOCOL.md s1.2: do not write to these. Listed for discovery completeness only.
+    // Gen-4/5 extra characteristics. Their presence + properties are hardware-verified on Ring 4;
+    // functional roles remain UNCONFIRMED, so leave them UNUSED in v1 and never write to them.
     const val extraCharacteristic4UUID = "98ED0004-A541-11E4-B6A0-0002A5D5C51B"
     const val extraCharacteristic5UUID = "98ED0005-A541-11E4-B6A0-0002A5D5C51B"
     const val extraCharacteristic6UUID = "98ED0006-A541-11E4-B6A0-0002A5D5C51B"
@@ -35,13 +35,13 @@ object OuraGatt {
 
     /**
      * The set of characteristic UUID strings the app must discover for a given generation.
-     * Gen3/4 expose only ...0002/...0003 beyond the service; Gen5 additionally advertises
+     * Gen3 exposes only ...0002/...0003 beyond the service; Gen4/5 additionally advertise
      * ...0004/5/6 (which v1 discovers but never writes to). Per OURA_PROTOCOL.md s1.2.
      */
     fun characteristicUUIDs(gen: OuraRingGen): List<String> = when (gen) {
-        OuraRingGen.GEN3, OuraRingGen.GEN4 ->
+        OuraRingGen.GEN3 ->
             listOf(writeCharacteristicUUID, notifyCharacteristicUUID)
-        OuraRingGen.GEN5 ->
+        OuraRingGen.GEN4, OuraRingGen.GEN5 ->
             listOf(
                 writeCharacteristicUUID, notifyCharacteristicUUID,
                 extraCharacteristic4UUID, extraCharacteristic5UUID, extraCharacteristic6UUID,

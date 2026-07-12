@@ -4,7 +4,7 @@ import Foundation
 // swapping command sets, not code paths (per the architecture plan s5). The framing/auth/event-tag
 // dictionary are generation-invariant (per OURA_PROTOCOL.md s7.2), so RingGen only drives:
 //   - MTU clamp (203 vs 247)
-//   - which characteristics to discover (gen5 extra notify chars, currently unused)
+//   - which characteristics to discover (gen4/5 extra notify chars, currently unused)
 //   - the live-HR enable command set (verified on gen3, expected-same on gen4/5)
 //   - the registered capability set surfaced to the app
 //
@@ -36,12 +36,12 @@ public enum OuraRingGen: String, Sendable, CaseIterable, Codable {
     /// Max writable payload after the 3-byte ATT overhead. Per OURA_PROTOCOL.md s1.3.
     public var maxWritePayload: Int { mtu - OuraGatt.attOverhead }
 
-    /// Whether this generation advertises the extra ...0004/5/6 characteristics. Only gen5 does, and
-    /// v1 never writes to them (roles unconfirmed). Per OURA_PROTOCOL.md s1.2 / s7.2.
+    /// Whether this generation advertises the extra ...0004/5/6 characteristics. Hardware discovery
+    /// confirms Ring 4 does too; v1 never writes to them (roles unconfirmed).
     public var hasExtraNotifyChars: Bool {
         switch self {
-        case .gen3, .gen4: return false
-        case .gen5: return true
+        case .gen3: return false
+        case .gen4, .gen5: return true
         }
     }
 
