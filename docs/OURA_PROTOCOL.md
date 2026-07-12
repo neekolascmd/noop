@@ -43,12 +43,12 @@ platform-specific; see the [hardware graduation gate](HARDWARE_SUPPORT.md#oura-g
 | MTU | 203 [open_oura-r3] | 247 [open_ring] | 247 [open_oura-r5] |
 
 - Ring 5 keeps "the **same** GATT layout, framing, and app-auth flow as the Ring 3/4 … no new opcodes, event tags, or fundamental framing changes." [open_oura-r5]
-- The functional roles of Ring-4/5 chars `…0004/0005/0006` are **unconfirmed** - discover them for completeness, leave them unused in v1, and do not write to them.
+- Ring 4 firmware `2.12.3` requires Android to subscribe read-only to `…0003/0004/0005/0006` before the adopted session is driven. Their individual semantic roles remain **unconfirmed**; never write application commands to the extras (all commands still use `…0002`).
 
 ### 1.3 MTU negotiation
 - Notifications stream up to the negotiated MTU (max payload = MTU − 3 ATT bytes). Default BlueZ MTU is 23 unless negotiated. [open_ring]
 - **NOOP rule:** immediately after subscribing to `…0003`, request ATT MTU = **247** (Gen 4/5) or **203** (Gen 3). On iOS/CoreBluetooth the MTU is auto-negotiated; read `maximumWriteValueLength` and `CBPeripheral.maximumWriteValueLength(for: .withoutResponse)` and clamp writes. On Android, call `requestMtu(247)` before the first command.
-- **Android write scheduling:** serialize Write Without Response commands with at least **75 ms** between starts. On the tested Ring 4/Saga tuple, immediate firmware + hardware writes delivered only the first command; the 75 ms production queue delivered both identity responses in 4.8 seconds (`8de785e`, 2026-07-12).
+- **Android write scheduling:** serialize Write Without Response commands with at least **350 ms** between starts on Ring 4. The tested Saga link negotiated interval 15 ms with slave latency 20 (a 315 ms worst-case receive window); immediate writes dropped later commands, while the 350 ms queue completed auth, live enable, and history (`2026-07-12`).
 
 ---
 
@@ -118,12 +118,16 @@ ring  → phone: 25 01 00                       (status 0x00 = OK)
 ```
 NOOP stores its 16-byte key locally (Keychain on iOS, EncryptedSharedPreferences/Keystore on Android). This key is required for every subsequent session's challenge.
 
+On tested Ring 4 firmware `2.12.3`, persist the acknowledged key, disconnect, and authenticate on a **new** GATT session. A same-session nonce request after the `0x25` acknowledgment did not answer.
+
 ### 3.3 Get auth nonce (sub-op `0x01` → response `0x2C`)
 ```
 phone → ring:  2f 01 2b                        (GetAuthNonce)
 ring  → phone: 2f 10 2c <nonce: 15 bytes>      (18 B total)
 ```
 [open_ring][ringverse][open_oura-r3]
+
+**Ring 4 ordering:** do not send `SetNotification` / `notify_all` (`0x1C`) in the adopted session. On firmware `2.12.3`, sending it before authentication stalled the following nonce/control writes, and sending it after authentication stalled live-data setup. The transport-level CCCD subscriptions are sufficient for auth, identity, live data, and history responses.
 
 ### 3.4 Compute proof (AES-128-ECB challenge)
 [open_ring][ringverse]

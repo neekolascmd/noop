@@ -108,10 +108,9 @@ public final class OuraDriver {
                 return identity
             }
             phase = .authenticating
-            // Keep the proven auth writes first: transports may have a shallow write-without-response
-            // window, so qualification reads must never delay or displace the nonce request.
-            return [OuraCommands.enableAllNotifications(),
-                    OuraCommand(label: "get_nonce", bytes: OuraAuth.getAuthNonceCommand())] + identity
+            // Ring 4 firmware 2.12.3 stalls control traffic around SetNotification. The transport-level
+            // CCCD subscriptions are sufficient, so request the nonce directly.
+            return [OuraCommand(label: "get_nonce", bytes: OuraAuth.getAuthNonceCommand())] + identity
 
         case .nonceReceived(let nonce):
             guard let key = effectiveKey else {
@@ -130,7 +129,8 @@ public final class OuraDriver {
             case .success:
                 phase = .enablingLiveHR
                 liveHREnableStep = 0
-                // Begin the live-HR enable triplet (gen-appropriate; gen3 verified, gen4/5 same path).
+                // The transport already enabled the inbound CCCDs; begin live HR directly. Ring 4
+                // firmware 2.12.3 stalls the following control write when `notify_all` is sent here.
                 return [OuraCommands.liveHREnableSequence()[0]]
             case .inFactoryReset:
                 // Ring needs a key install first; this is an explicit, named provisioning step the app
@@ -201,8 +201,7 @@ public final class OuraDriver {
     public func keyInstallAcknowledged() -> [OuraCommand] {
         guard phase == .installingKey, installedKey != nil else { return [] }
         phase = .authenticating
-        return [OuraCommands.enableAllNotifications(),
-                OuraCommand(label: "get_nonce", bytes: OuraAuth.getAuthNonceCommand())]
+        return [OuraCommand(label: "get_nonce", bytes: OuraAuth.getAuthNonceCommand())]
     }
 
     /// Stop: reset the flow so a fresh session re-runs auth (the app key is session-scoped, s3.1).

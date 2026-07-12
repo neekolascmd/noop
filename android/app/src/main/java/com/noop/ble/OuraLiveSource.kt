@@ -9,6 +9,7 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.BluetoothStatusCodes
 import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanFilter
@@ -41,6 +42,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.security.SecureRandom
+import java.util.ArrayDeque
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -355,7 +357,9 @@ class OuraLiveSource(
 
     /** Cached characteristics, resolved in onServicesDiscovered. */
     private var writeChar: BluetoothGattCharacteristic? = null
-    private var notifyChar: BluetoothGattCharacteristic? = null
+    private val inboundNotifyUUIDs = mutableSetOf<UUID>()
+    private val cccdQueue = ArrayDeque<BluetoothGattDescriptor>()
+    private var enabledCccdCount = 0
 
     /** Periodic live-HR re-engage: daytime HR auto-reverts after ~20 s, so while streaming we re-send the
      *  enable+subscribe every ~15 s (OURA_PROTOCOL.md s5.7). The token lets stop() cancel it. */
@@ -606,7 +610,9 @@ class OuraLiveSource(
         gatt?.let { runCatching { it.disconnect(); it.close() } }
         gatt = null
         writeChar = null
-        notifyChar = null
+        inboundNotifyUUIDs.clear()
+        cccdQueue.clear()
+        enabledCccdCount = 0
         reassembler.reset()
         loggedFirstHr = false      // a later reconnect should log its first sample again
         loggedFirstTemp = false
@@ -806,14 +812,11 @@ class OuraLiveSource(
         ) = guardedCallback("descriptor-write") {
             if (descriptor.uuid != CCCD) return@guardedCallback
             if (status == BluetoothGatt.GATT_SUCCESS) {
-                log("Oura: notifications enabled (CCCD write status=$status) - beginning auth")
-                // Notifications are live: tell the driver we are Ready. It returns the enable-notify +
-                // get-nonce commands (or drives the honest needs-pairing path when there is no app key).
-                advance(OuraTransition.Ready)
+                enabledCccdCount += 1
             } else {
-                log("Oura: WARNING CCCD write FAILED (status=$status) - ring will send no data")
-                announceNeedsPairing(KEY_INSTALL_MESSAGE)
+                log("Oura: WARNING CCCD write failed for ${descriptor.characteristic.uuid} (status=$status)")
             }
+            writeNextCccd(g)
         }
 
         override fun onCharacteristicChanged(
@@ -821,20 +824,21 @@ class OuraLiveSource(
             ch: BluetoothGattCharacteristic,
             value: ByteArray,
         ) {
-            if (ch.uuid == NOTIFY_UUID) handleNotification(value)
+            if (ch.uuid in inboundNotifyUUIDs) handleNotification(value)
         }
 
         // Legacy (< API 33) characteristic-changed callback: read the value off the characteristic.
         @Deprecated("Deprecated in Java")
         @Suppress("DEPRECATION")
         override fun onCharacteristicChanged(g: BluetoothGatt, ch: BluetoothGattCharacteristic) {
-            if (ch.uuid == NOTIFY_UUID) handleNotification(ch.value ?: return)
+            if (ch.uuid in inboundNotifyUUIDs) handleNotification(ch.value ?: return)
         }
     }
 
-    /** Resolve the write/notify characteristics, enable notifications on ...0003, and write the CCCD.
-     *  The auth flow begins from onDescriptorWrite once the CCCD write is acknowledged. */
-    private fun setUpNotifications(g: BluetoothGatt) = guardedCallback("setup-notify") {
+    /** Resolve the write characteristic and subscribe to every generation-appropriate inbound notify
+     *  characteristic. Ring 4 hardware exposes ...0003/4/5/6 and may route post-adoption responses over
+     *  the extras; we subscribe read-only and still write application commands ONLY to ...0002. */
+    private fun setUpNotifications(g: BluetoothGatt): Unit = guardedCallback("setup-notify") {
         val svc = g.getService(SERVICE_UUID)
         if (svc == null) {
             log("Oura: base service NOT FOUND - this peripheral is not a supported Oura ring")
@@ -842,30 +846,65 @@ class OuraLiveSource(
             return@guardedCallback
         }
         writeChar = svc.getCharacteristic(WRITE_UUID)
-        notifyChar = svc.getCharacteristic(NOTIFY_UUID)
-        val notify = notifyChar
-        if (writeChar == null || notify == null) {
+        val baseNotify = svc.getCharacteristic(NOTIFY_UUID)
+        if (writeChar == null || baseNotify == null) {
             log("Oura: write/notify characteristics NOT FOUND - cannot drive the ring")
             announceNeedsPairing(KEY_INSTALL_MESSAGE)
             return@guardedCallback
         }
-        log("Oura: write + notify characteristics found - enabling notifications on the notify char")
-        g.setCharacteristicNotification(notify, true)
-        val cccd = notify.getDescriptor(CCCD)
-        if (cccd == null) {
-            log("Oura: WARNING notify char has no CCCD (0x2902) - cannot enable notifications")
+
+        inboundNotifyUUIDs.clear()
+        cccdQueue.clear()
+        enabledCccdCount = 0
+        val candidateUUIDs = buildList {
+            add(NOTIFY_UUID)
+            if (ringGen.hasExtraNotifyChars) addAll(listOf(EXTRA4_UUID, EXTRA5_UUID, EXTRA6_UUID))
+        }
+        for (uuid in candidateUUIDs) {
+            val ch = svc.getCharacteristic(uuid) ?: continue
+            val canNotify = ch.properties and (
+                BluetoothGattCharacteristic.PROPERTY_NOTIFY or BluetoothGattCharacteristic.PROPERTY_INDICATE
+            ) != 0
+            if (!canNotify) continue
+            val cccd = ch.getDescriptor(CCCD) ?: continue
+            inboundNotifyUUIDs += uuid
+            g.setCharacteristicNotification(ch, true)
+            cccdQueue.addLast(cccd)
+        }
+        if (cccdQueue.isEmpty()) {
+            log("Oura: WARNING no inbound characteristic has a CCCD - cannot enable notifications")
             announceNeedsPairing(KEY_INSTALL_MESSAGE)
+            return@guardedCallback
+        }
+        log("Oura: write characteristic found - enabling ${cccdQueue.size} inbound notification paths")
+        writeNextCccd(g)
+    }
+
+    /** Android permits only one descriptor operation at a time. Drain the CCCDs serially, then start the
+     *  protocol once at least one subscription succeeded. */
+    private fun writeNextCccd(g: BluetoothGatt): Unit = guardedCallback("next-cccd") {
+        val cccd = cccdQueue.pollFirst()
+        if (cccd == null) {
+            if (enabledCccdCount == 0) {
+                log("Oura: WARNING every CCCD write failed - ring will send no data")
+                announceNeedsPairing(KEY_INSTALL_MESSAGE)
+                return@guardedCallback
+            }
+            log("Oura: notifications enabled on $enabledCccdCount inbound path(s) - beginning auth")
+            advance(OuraTransition.Ready)
             return@guardedCallback
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val rc = g.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
-            log("Oura: CCCD write requested (rc=$rc)")
+            log("Oura: CCCD write requested for ${cccd.characteristic.uuid} (rc=$rc)")
+            if (rc != BluetoothStatusCodes.SUCCESS) writeNextCccd(g)
         } else {
             @Suppress("DEPRECATION")
             run {
                 cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
                 val ok = g.writeDescriptor(cccd)
-                log("Oura: CCCD write requested (rc=$ok)")
+                log("Oura: CCCD write requested for ${cccd.characteristic.uuid} (rc=$ok)")
+                if (!ok) writeNextCccd(g)
             }
         }
     }
@@ -951,10 +990,9 @@ class OuraLiveSource(
      * Handle the ring's `0x25` SetAuthKey ack (OURA_PROTOCOL.md s3.2: `25 01 00`, status byte `0x00` = OK).
      * Acts ONLY when an install we initiated is in flight (a pending key is held AND driver phase is
      * InstallingKey); a stray 0x25 outside an adopt is ignored. On OK: PERSIST the freshly-provisioned key
-     * under this deviceId (so every future session authenticates with it), then drive the driver's
-     * keyInstallAcknowledged() to re-run the auth handshake (GetAuthNonce then Authenticate) with the NEW
-     * key. On a non-OK status (or a failed store) announce an honest failure and do NOT retry the dangerous
-     * command. Kotlin twin of Swift's `handleKeyInstallAck`.
+     * under this deviceId (so every future session authenticates with it), then disconnect so Android's
+     * normal reconnect path creates a fresh driver and authenticates with the new key. On a non-OK status
+     * (or a failed store), announce an honest failure and do NOT retry the dangerous command.
      */
     private fun handleKeyInstallAck(d: OuraDriver, frame: OuraOuterFrame) = guardedCallback("key-install-ack") {
         val key = pendingInstallKey ?: return@guardedCallback              // no install in flight
@@ -967,11 +1005,17 @@ class OuraLiveSource(
                 announceNeedsPairing(KEY_INSTALL_MESSAGE)
                 return@guardedCallback
             }
-            log("Oura: key installed and stored - re-authenticating with the new key")
+            // Ring 4 firmware 2.12.3 acknowledges the install but does not answer a nonce request on the
+            // same GATT session. Make adoption one-shot, then reconnect so the fresh driver reads the
+            // acknowledged key from encrypted storage and authenticates on a new encrypted link.
+            log("Oura: key installed and stored - reconnecting with the new key")
             pendingInstallKey = null
-            // Re-auth with the freshly-installed key. The driver returns enable-notify + get-nonce; the
-            // nonce response then flows through the normal routeSecure -> advance path to streaming.
-            enqueueCommands(d.keyInstallAcknowledged())
+            adoptIntent = false
+            _adoptPhase.value = AdoptPhase.Idle
+            runCatching { gatt?.disconnect() }.onFailure {
+                log("Oura: post-install reconnect could not start (${it.javaClass.simpleName}: ${it.message})")
+                announceNeedsPairing(KEY_INSTALL_MESSAGE)
+            }
         } else {
             log("Oura: the ring did not accept the key (status=${status ?: "none"}) - cannot adopt this ring")
             announceNeedsPairing(KEY_INSTALL_MESSAGE)
@@ -986,7 +1030,8 @@ class OuraLiveSource(
         val bytes = ByteArray(cmd.bytes.size) { cmd.bytes[it].toByte() }
         log("Oura: → ${cmd.label}")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            g.writeCharacteristic(ch, bytes, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
+            val rc = g.writeCharacteristic(ch, bytes, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
+            if (rc != BluetoothStatusCodes.SUCCESS) log("Oura: ${cmd.label} write rejected (rc=$rc)")
         } else {
             @Suppress("DEPRECATION")
             run {
@@ -1261,6 +1306,9 @@ class OuraLiveSource(
         val SERVICE_UUID: UUID = UUID.fromString(OuraGatt.serviceUUID)
         val WRITE_UUID: UUID = UUID.fromString(OuraGatt.writeCharacteristicUUID)
         val NOTIFY_UUID: UUID = UUID.fromString(OuraGatt.notifyCharacteristicUUID)
+        val EXTRA4_UUID: UUID = UUID.fromString(OuraGatt.extraCharacteristic4UUID)
+        val EXTRA5_UUID: UUID = UUID.fromString(OuraGatt.extraCharacteristic5UUID)
+        val EXTRA6_UUID: UUID = UUID.fromString(OuraGatt.extraCharacteristic6UUID)
 
         /** The standard client-characteristic-configuration descriptor (0x2902). */
         private val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
@@ -1269,8 +1317,8 @@ class OuraLiveSource(
          *  constant). We auto-retry it once. */
         private const val GATT_ERROR_133 = 133
 
-        /** Minimum Ring-4-hardware-verified spacing between Android Write Without Response operations. */
-        private const val MIN_WRITE_SPACING_MS = 75L
+        /** Ring 4/Saga needs one write per worst-case connection-latency window (15 ms × (20 + 1)). */
+        private const val MIN_WRITE_SPACING_MS = 350L
 
         /** The SetAuthKey-response OUTER opcode (`0x25`) and its OK status byte (`0x00`). The ring replies
          *  `25 01 00` to a successful `0x24` key install (OURA_PROTOCOL.md s3.2). */

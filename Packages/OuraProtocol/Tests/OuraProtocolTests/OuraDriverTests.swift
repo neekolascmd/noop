@@ -24,11 +24,11 @@ final class OuraDriverTests: XCTestCase {
         let d = OuraDriver(ringGen: .gen3, authKey: key)
         XCTAssertEqual(d.phase, .idle)
 
-        // ready -> capture serial-free identity, enable notifications, request nonce.
+        // ready -> request nonce first, then capture serial-free identity.
         let onReady = d.nextStep(after: .ready)
         XCTAssertEqual(d.phase, .authenticating)
-        XCTAssertEqual(onReady.map { $0.label }, ["notify_all", "get_nonce", "get_firmware", "get_hardware"])
-        XCTAssertEqual(onReady[1].bytes, [0x2F, 0x01, 0x2B])
+        XCTAssertEqual(onReady.map { $0.label }, ["get_nonce", "get_firmware", "get_hardware"])
+        XCTAssertEqual(onReady[0].bytes, [0x2F, 0x01, 0x2B])
 
         // nonce -> submit proof.
         let nonce = bytes("0102030405060708090a0b0c0d0e0f")
@@ -38,7 +38,7 @@ final class OuraDriverTests: XCTestCase {
         // The proof body matches the known vector.
         XCTAssertEqual(Array(onNonce[0].bytes[3...]), bytes("c49fb9e83c46087a555183a9dc511ee9"))
 
-        // auth success -> first live-HR enable step (read DHR status).
+        // auth success -> first live-HR step (read DHR status); CCCDs are already enabled by transport.
         let onAuth = d.nextStep(after: .authCompleted(.success))
         XCTAssertEqual(d.phase, .enablingLiveHR)
         XCTAssertEqual(onAuth.map { $0.label }, ["dhr_read"])
@@ -104,8 +104,8 @@ final class OuraDriverTests: XCTestCase {
 
         // The ring acks with `25 01 00`; the transport calls back and the driver drives re-auth.
         let onAck = d.keyInstallAcknowledged()
-        XCTAssertEqual(onAck.map { $0.label }, ["notify_all", "get_nonce"])
-        XCTAssertEqual(onAck[1].bytes, [0x2F, 0x01, 0x2B])
+        XCTAssertEqual(onAck.map { $0.label }, ["get_nonce"])
+        XCTAssertEqual(onAck[0].bytes, [0x2F, 0x01, 0x2B])
         XCTAssertEqual(d.phase, .authenticating)
 
         // Re-auth uses the freshly-installed key: the proof matches the known vector for that key.

@@ -3,14 +3,19 @@ package com.noop.oura
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothManager
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import com.noop.ble.OuraInstallKeyStore
 import com.noop.ble.OuraLiveSource
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -27,6 +32,101 @@ import org.junit.runner.RunWith
  */
 @RunWith(AndroidJUnit4::class)
 class OuraHardwareQualificationTest {
+    /** Read-only verification that a previously acknowledged NOOP key authenticates on a fresh link. */
+    @SuppressLint("MissingPermission")
+    @Test
+    fun reconnectsWithStoredAdoptedKey() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val deviceId = "hardware-qualification-ring4"
+        assertTrue("No acknowledged Ring 4 install key is stored", OuraInstallKeyStore.hasKey(context, deviceId))
+
+        val adapter = context.getSystemService(BluetoothManager::class.java).adapter
+        val ring = adapter.bondedDevices.firstOrNull { device ->
+            runCatching { device.name }.getOrNull()?.contains("Oura", ignoreCase = true) == true
+        }
+        assertNotNull("The adopted Ring 4 is not bonded in Android Settings", ring)
+
+        val sawHr = AtomicBoolean(false)
+        val sawRr = AtomicBoolean(false)
+        val liveLatch = CountDownLatch(1)
+
+        val source = OuraLiveSource(
+            context = context,
+            deviceId = deviceId,
+            ringGen = OuraRingGen.GEN4,
+            liveSink = { hr, rr ->
+                if (hr in 30..240) sawHr.set(true)
+                if (rr.any { it in 250..2_500 }) sawRr.set(true)
+                if (sawHr.get() && sawRr.get()) liveLatch.countDown()
+            },
+            authKey = { OuraInstallKeyStore.load(context, deviceId) },
+            persist = { _, _ -> },
+            log = ::safeLog,
+        )
+
+        try {
+            source.connect(requireNotNull(ring).address)
+            val phase = waitUntil(75_000) {
+                source.adoptPhase.value.takeIf {
+                    it == OuraLiveSource.AdoptPhase.Streaming || it == OuraLiveSource.AdoptPhase.Failed
+                }
+            }
+            assertEquals(OuraLiveSource.AdoptPhase.Streaming, phase)
+            assertTrue(
+                "Streaming started but no plausible live HR + R-R pair arrived",
+                liveLatch.await(120, TimeUnit.SECONDS),
+            )
+            safeLog("Oura: qualification live sample received (hr=true rr=true)")
+        } finally {
+            source.stop()
+        }
+    }
+
+    /**
+     * Destructive, explicit-consent-only adoption of a factory-reset Ring 4. The separate runner argument
+     * is a second safety gate so an ordinary connected-test invocation cannot install a key by accident.
+     */
+    @SuppressLint("MissingPermission")
+    @Test
+    fun adoptsFactoryResetRing4AfterExplicitConsent() {
+        assertEquals(
+            "true",
+            InstrumentationRegistry.getArguments().getString("ouraAdoptConfirmed"),
+        )
+
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val deviceId = "hardware-qualification-ring4"
+        OuraInstallKeyStore.clear(context, deviceId)
+
+        val source = OuraLiveSource(
+            context = context,
+            deviceId = deviceId,
+            ringGen = OuraRingGen.GEN4,
+            liveSink = { _, _ -> },
+            authKey = { OuraInstallKeyStore.load(context, deviceId) },
+            persist = { _, _ -> },
+            log = ::safeLog,
+        )
+
+        try {
+            source.setAdoptIntent(true)
+            source.scan()
+            val ring = waitUntil(45_000) { source.discovered.value.firstOrNull() }
+            assertNotNull("No reset Oura Ring 4 advertisement appeared", ring)
+            source.connect(requireNotNull(ring).address)
+
+            val phase = waitUntil(120_000) {
+                source.adoptPhase.value.takeIf {
+                    it == OuraLiveSource.AdoptPhase.Streaming || it == OuraLiveSource.AdoptPhase.Failed
+                }
+            }
+            assertEquals(OuraLiveSource.AdoptPhase.Streaming, phase)
+            assertTrue("The acknowledged install key was not stored", OuraInstallKeyStore.hasKey(context, deviceId))
+        } finally {
+            source.stop()
+        }
+    }
+
     @SuppressLint("MissingPermission")
     @Test
     fun readsPrivacySafeIdentityFromBondedRing4() {
@@ -47,8 +147,7 @@ class OuraHardwareQualificationTest {
             authKey = { null },
             persist = { _, _ -> },
             log = { line ->
-                val safe = line.replace(MAC_ADDRESS, "XX:XX:XX:XX:XX:XX")
-                Log.i(LOG_TAG, safe)
+                val safe = safeLog(line)
                 if (safe.startsWith("Oura: identity ")) {
                     identityLines += safe
                     identityLatch.countDown()
@@ -65,6 +164,21 @@ class OuraHardwareQualificationTest {
         } finally {
             source.stop()
         }
+    }
+
+    private fun safeLog(line: String): String {
+        val safe = line.replace(MAC_ADDRESS, "XX:XX:XX:XX:XX:XX")
+        Log.i(LOG_TAG, safe)
+        return safe
+    }
+
+    private fun <T> waitUntil(timeoutMs: Long, block: () -> T?): T? {
+        val deadline = SystemClock.elapsedRealtime() + timeoutMs
+        while (SystemClock.elapsedRealtime() < deadline) {
+            block()?.let { return it }
+            SystemClock.sleep(100)
+        }
+        return block()
     }
 
     private companion object {

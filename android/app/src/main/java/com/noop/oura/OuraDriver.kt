@@ -142,12 +142,9 @@ class OuraDriver(
                 identity
             } else {
                 phase = OuraDriverPhase.Authenticating
-                // Keep the proven auth writes first: transports may have a shallow no-response write
-                // window, so qualification reads must never delay or displace the nonce request.
-                listOf(
-                    OuraCommands.enableAllNotifications(),
-                    OuraCommand("get_nonce", OuraAuth.getAuthNonceCommand()),
-                ) + identity
+                // Ring 4 firmware 2.12.3 stalls control traffic around SetNotification. Transport-level
+                // CCCD subscriptions are sufficient, so request the nonce directly.
+                listOf(OuraCommand("get_nonce", OuraAuth.getAuthNonceCommand())) + identity
             }
         }
 
@@ -176,7 +173,8 @@ class OuraDriver(
             OuraAuthStatus.SUCCESS -> {
                 phase = OuraDriverPhase.EnablingLiveHR
                 liveHREnableStep = 0
-                // Begin the live-HR enable triplet (gen-appropriate; gen3 verified, gen4/5 same path).
+                // The transport already enabled the inbound CCCDs; begin live HR directly. Ring 4
+                // firmware 2.12.3 stalls the following control write when `notify_all` is sent here.
                 listOf(OuraCommands.liveHREnableSequence()[0])
             }
             OuraAuthStatus.IN_FACTORY_RESET -> {
@@ -262,18 +260,15 @@ class OuraDriver(
 
     /**
      * Handle the ring's 0x25 SetAuthKey ack (`25 01 00`, s3.2) by driving re-auth with the freshly
-     * installed key: transition InstallingKey -> Authenticating and return the same enable+nonce
-     * commands the ready path uses. Returns [] (phase unchanged) when not in InstallingKey or when no
+     * installed key: transition InstallingKey -> Authenticating and request the nonce first. Returns []
+     * (phase unchanged) when not in InstallingKey or when no
      * installed key is present, so a stray ack cannot advance the flow. Kotlin twin of Swift's
      * keyInstallAcknowledged.
      */
     fun keyInstallAcknowledged(): List<OuraCommand> {
         if (phase != OuraDriverPhase.InstallingKey || installedKey == null) return emptyList()
         phase = OuraDriverPhase.Authenticating
-        return listOf(
-            OuraCommands.enableAllNotifications(),
-            OuraCommand("get_nonce", OuraAuth.getAuthNonceCommand()),
-        )
+        return listOf(OuraCommand("get_nonce", OuraAuth.getAuthNonceCommand()))
     }
 
     /** Stop: reset the flow so a fresh session re-runs auth (the app key is session-scoped, s3.1). */

@@ -29,11 +29,11 @@ class OuraDriverTest {
         val d = OuraDriver(ringGen = OuraRingGen.GEN3, authKey = key)
         assertEquals(OuraDriverPhase.Idle, d.phase)
 
-        // ready -> capture serial-free identity, enable notifications, request nonce.
+        // ready -> request nonce first, then capture serial-free identity.
         val onReady = d.nextStep(OuraTransition.Ready)
         assertEquals(OuraDriverPhase.Authenticating, d.phase)
-        assertEquals(listOf("notify_all", "get_nonce", "get_firmware", "get_hardware"), onReady.map { it.label })
-        assertArrayEquals(intArrayOf(0x2F, 0x01, 0x2B), onReady[1].bytes)
+        assertEquals(listOf("get_nonce", "get_firmware", "get_hardware"), onReady.map { it.label })
+        assertArrayEquals(intArrayOf(0x2F, 0x01, 0x2B), onReady[0].bytes)
 
         // nonce -> submit proof.
         val nonce = bytes("0102030405060708090a0b0c0d0e0f")
@@ -43,7 +43,7 @@ class OuraDriverTest {
         // The proof body matches the known vector.
         assertArrayEquals(bytes("c49fb9e83c46087a555183a9dc511ee9"), onNonce[0].bytes.copyOfRange(3, onNonce[0].bytes.size))
 
-        // auth success -> first live-HR enable step (read DHR status).
+        // auth success -> first live-HR step (read DHR status); CCCDs are already enabled by transport.
         val onAuth = d.nextStep(OuraTransition.AuthCompleted(OuraAuthStatus.SUCCESS))
         assertEquals(OuraDriverPhase.EnablingLiveHR, d.phase)
         assertEquals(listOf("dhr_read"), onAuth.map { it.label })
@@ -119,8 +119,8 @@ class OuraDriverTest {
 
         // The ring acks with `25 01 00`; the transport calls back and the driver drives re-auth.
         val onAck = d.keyInstallAcknowledged()
-        assertEquals(listOf("notify_all", "get_nonce"), onAck.map { it.label })
-        assertArrayEquals(intArrayOf(0x2F, 0x01, 0x2B), onAck[1].bytes)
+        assertEquals(listOf("get_nonce"), onAck.map { it.label })
+        assertArrayEquals(intArrayOf(0x2F, 0x01, 0x2B), onAck[0].bytes)
         assertEquals(OuraDriverPhase.Authenticating, d.phase)
 
         // Re-auth uses the freshly-installed key: the proof matches the known vector for that key.
