@@ -14,6 +14,8 @@ import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -48,6 +50,10 @@ class OuraHardwareQualificationTest {
 
         val sawHr = AtomicBoolean(false)
         val sawRr = AtomicBoolean(false)
+        val hrCount = AtomicInteger(0)
+        val rrCount = AtomicInteger(0)
+        val lastHrAt = AtomicLong(0)
+        val lastRrAt = AtomicLong(0)
         val liveLatch = CountDownLatch(1)
 
         val source = OuraLiveSource(
@@ -55,8 +61,17 @@ class OuraHardwareQualificationTest {
             deviceId = deviceId,
             ringGen = OuraRingGen.GEN4,
             liveSink = { hr, rr ->
-                if (hr in 30..240) sawHr.set(true)
-                if (rr.any { it in 250..2_500 }) sawRr.set(true)
+                val now = SystemClock.elapsedRealtime()
+                if (hr in 30..240) {
+                    sawHr.set(true)
+                    hrCount.incrementAndGet()
+                    lastHrAt.set(now)
+                }
+                if (rr.any { it in 250..2_500 }) {
+                    sawRr.set(true)
+                    rrCount.incrementAndGet()
+                    lastRrAt.set(now)
+                }
                 if (sawHr.get() && sawRr.get()) liveLatch.countDown()
             },
             authKey = { OuraInstallKeyStore.load(context, deviceId) },
@@ -77,6 +92,32 @@ class OuraHardwareQualificationTest {
                 liveLatch.await(120, TimeUnit.SECONDS),
             )
             safeLog("Oura: qualification live sample received (hr=true rr=true)")
+
+            val sustainMs = InstrumentationRegistry.getArguments()
+                .getString("ouraSustainDurationMs")
+                ?.toLongOrNull()
+                ?.coerceIn(0, TimeUnit.HOURS.toMillis(24))
+                ?: 0L
+            if (sustainMs > 0) {
+                val startedAt = SystemClock.elapsedRealtime()
+                val startingHrCount = hrCount.get()
+                val startingRrCount = rrCount.get()
+                val deadline = startedAt + sustainMs
+                while (SystemClock.elapsedRealtime() < deadline) {
+                    assertEquals(OuraLiveSource.AdoptPhase.Streaming, source.adoptPhase.value)
+                    SystemClock.sleep(maxOf(1L, minOf(1_000L, deadline - SystemClock.elapsedRealtime())))
+                }
+                val finishedAt = SystemClock.elapsedRealtime()
+                assertTrue("No plausible HR samples during sustained run", hrCount.get() > startingHrCount)
+                assertTrue("No plausible R-R samples during sustained run", rrCount.get() > startingRrCount)
+                assertTrue("HR stream was stale at the end of sustained run", finishedAt - lastHrAt.get() < 120_000)
+                assertTrue("R-R stream was stale at the end of sustained run", finishedAt - lastRrAt.get() < 120_000)
+                safeLog(
+                    "Oura: sustained qualification passed " +
+                        "(durationMs=${finishedAt - startedAt} " +
+                        "hrCallbacks=${hrCount.get()} rrCallbacks=${rrCount.get()})",
+                )
+            }
         } finally {
             source.stop()
         }
