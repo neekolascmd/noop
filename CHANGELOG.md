@@ -2,7 +2,8 @@
 
 All notable changes to NOOP. NOOP is an independent, experimental project — not the WHOOP app, and
 not affiliated with WHOOP. It reads a strap you own, on your own device, fully offline. Dates are
-approximate; downloads are on the [Releases](https://github.com/ParthJadhav/noop/releases) page.
+approximate; current downloads are on the
+[maintained fork's Releases page](https://github.com/neekolascmd/noop/releases).
 
 ## What to expect
 
@@ -16,6 +17,25 @@ approximate; downloads are on the [Releases](https://github.com/ParthJadhav/noop
 - **Everything stays on your device.** No account, no cloud, no sync.
 
 ---
+
+## 8.2.1: the continuation release (all platforms)
+
+The first release from the community-maintained fork. The canonical project home and future
+downloads now live at [github.com/neekolascmd/noop](https://github.com/neekolascmd/noop). Existing
+data remains local and compatible; NOOP remains independent, experimental, and unaffiliated with
+WHOOP.
+
+- **Backup restores fail safely.** The database is integrity-checked before replacement and verified
+  again afterward. A failed restore keeps or rolls back to the previous database.
+- **The release path is reviewable.** Required Apple, Android, and Swift-package checks always
+  report; release artifacts are built in GitHub Actions, inspected, and published with SHA-256
+  checksums and explicit platform limitations.
+- **Cross-platform analytics are pinned.** Shared golden fixtures exercise scoring and imports in
+  both Swift and Kotlin so implementation drift fails CI.
+- **Hardware claims are evidence-based.** The support matrix distinguishes physical verification,
+  protocol evidence, and experimental paths, and links a structured verification report form.
+- **No new hardware support is claimed in this patch.** WHOOP 4.0 remains the supported path;
+  WHOOP 5.0/MG and direct Oura support remain experimental as documented in the hardware matrix.
 
 ## 7.9.0: Coupled view, a rebuilt workout list, and numbers in your journal (all platforms)
 

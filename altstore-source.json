@@ -2,8 +2,8 @@
   "name": "NOOP",
   "subtitle": "A standalone WHOOP app — your strap, your device, fully offline.",
   "description": "An AltStore / SideStore source for NOOP, the independent open-source WHOOP companion. Add this source to get one-tap updates for the sideloaded iOS build.\n\nNOOP is not affiliated with WHOOP. It reads a strap you own, directly over Bluetooth, on your own device — no WHOOP app, no subscription, no cloud.",
-  "iconURL": "https://github.com/ParthJadhav/noop/raw/main/Strand/Resources/Assets.xcassets/AppIcon.appiconset/icon_512x512.png",
-  "website": "https://github.com/ParthJadhav/noop",
+  "iconURL": "https://github.com/neekolascmd/noop/raw/main/Strand/Resources/Assets.xcassets/AppIcon.appiconset/icon_512x512.png",
+  "website": "https://github.com/neekolascmd/noop",
   "tintColor": "44E2B0",
   "apps": [
     {
@@ -11,19 +11,18 @@
       "bundleIdentifier": "com.noopapp.noop",
       "developerName": "NoopApp",
       "subtitle": "Read your own WHOOP strap, fully offline.",
-      "localizedDescription": "NOOP talks to a WHOOP 4.0 / 5.0 / MG strap you own directly over Bluetooth — no WHOOP app, no subscription, no cloud. Live heart rate, history sync, and NOOP's own Charge / Effort / Rest scores, all computed on-device and stored only on your iPhone.\n\nIndependent and experimental; not affiliated with WHOOP. Source: https://github.com/ParthJadhav/noop",
-      "iconURL": "https://github.com/ParthJadhav/noop/raw/main/Strand/Resources/Assets.xcassets/AppIcon.appiconset/icon_512x512.png",
+      "localizedDescription": "NOOP talks to a WHOOP 4.0 / 5.0 / MG strap you own directly over Bluetooth — no WHOOP app, no subscription, no cloud. Live heart rate, history sync, and NOOP's own Charge / Effort / Rest scores, all computed on-device and stored only on your iPhone.\n\nIndependent and experimental; not affiliated with WHOOP. Source: https://github.com/neekolascmd/noop",
+      "iconURL": "https://github.com/neekolascmd/noop/raw/main/Strand/Resources/Assets.xcassets/AppIcon.appiconset/icon_512x512.png",
       "tintColor": "44E2B0",
       "category": "healthcare-fitness",
       "screenshotURLs": [],
       "versions": [
         {
-          "version": "8.2.0",
-          "buildVersion": "170",
-          "date": "2026-07-05",
-          "localizedDescription": "NOOP 8.2.0. See the release notes for what changed.",
-          "downloadURL": "https://github.com/ParthJadhav/noop/releases/download/v8.2.0/NOOP-v8.2.0-ios.ipa",
-          "size": 14027253,
+          "version": "8.2.1",
+          "buildVersion": "171",
+          "date": "2026-07-11",
+          "localizedDescription": "The first community-maintained continuation release, with safer backup restores and a reproducible release pipeline.",
+          "downloadURL": "https://github.com/neekolascmd/noop/releases/download/v8.2.1/NOOP-v8.2.1-ios.ipa",
           "minOSVersion": "17.0"
         }
       ],
@@ -37,12 +36,11 @@
           "NSHealthUpdateUsageDescription": "NOOP writes the metrics it computes from your strap back into Apple Health, on-device and only when you allow it."
         }
       },
-      "version": "8.2.0",
-      "buildVersion": "170",
-      "versionDate": "2026-07-05",
-      "versionDescription": "NOOP 8.2.0. See the release notes for what changed.",
-      "downloadURL": "https://github.com/ParthJadhav/noop/releases/download/v8.2.0/NOOP-v8.2.0-ios.ipa",
-      "size": 14027253,
+      "version": "8.2.1",
+      "buildVersion": "171",
+      "versionDate": "2026-07-11",
+      "versionDescription": "The first community-maintained continuation release, with safer backup restores and a reproducible release pipeline.",
+      "downloadURL": "https://github.com/neekolascmd/noop/releases/download/v8.2.1/NOOP-v8.2.1-ios.ipa",
       "minOSVersion": "17.0"
     }
   ],

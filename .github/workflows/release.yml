@@ -80,6 +80,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO build
           app="build/release-dd/Build/Products/Release/NOOP.app"
           test -d "$app"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$VERSION"
           lipo -info "$app/Contents/MacOS/NOOP"
           lipo -info "$app/Contents/MacOS/NOOP" | grep -E 'x86_64.*arm64|arm64.*x86_64'
           Tools/anonymize-macos-app.sh "$app"
@@ -107,6 +108,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO build
           app="build/ios-dd/Build/Products/Release-iphoneos/NOOP.app"
           test -d "$app"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Info.plist")" = "$VERSION"
           Tools/anonymize-ios-app.sh "$app"
           stage="build/ios-stage"
           mkdir -p "$GITHUB_WORKSPACE/dist"
@@ -157,6 +159,26 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Configure stable Android release signing
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_B64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_B64"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > android/noop-release.jks
+          printf '%s\n' \
+            'storeFile=noop-release.jks' \
+            "storePassword=$STORE_PASSWORD" \
+            "keyAlias=$KEY_ALIAS" \
+            "keyPassword=$KEY_PASSWORD" \
+            > android/keystore.properties
+
       - name: Run Android unit tests
         run: ./gradlew testFullDebugUnitTest
         working-directory: android
@@ -170,6 +192,14 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           cp android/app/build/outputs/apk/full/release/app-full-release.apk "dist/NOOP-v${VERSION}.apk"
+          aapt="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)"
+          apksigner="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          test -x "$aapt"
+          test -x "$apksigner"
+          "$aapt" dump badging "dist/NOOP-v${VERSION}.apk" | grep -F "versionName='${VERSION}'"
+          "$apksigner" verify --verbose --print-certs "dist/NOOP-v${VERSION}.apk"
+          expected_cert="$(openssl x509 -in docs/signing/android-release-certificate.pem -outform DER | sha256sum | cut -d' ' -f1)"
+          "$apksigner" verify --print-certs "dist/NOOP-v${VERSION}.apk" | grep -Fi "certificate SHA-256 digest: ${expected_cert}"
 
       - name: Upload Android artifact
         uses: actions/upload-artifact@v4
@@ -217,18 +247,22 @@ jobs:
           sha256sum NOOP-v* > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
+      - name: Verify release artifacts
+        run: Tools/verify-release-artifacts.sh "$VERSION" dist
+
       - name: Publish or update release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           ls -lh dist
-          notes="NOOP ${TAG} maintained release. Verify downloads with SHA256SUMS.txt."
+          notes_file="docs/releases/v${VERSION}.md"
+          test -f "$notes_file"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" \
-              --target "$GITHUB_SHA" --title "NOOP ${TAG}" --notes "$notes" --latest
+              --target "$GITHUB_SHA" --title "NOOP ${TAG}" --notes-file "$notes_file" --latest
             gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
           else
             gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" \
-              --target "$GITHUB_SHA" --title "NOOP ${TAG}" --notes "$notes" --latest
+              --target "$GITHUB_SHA" --title "NOOP ${TAG}" --notes-file "$notes_file" --latest
           fi
