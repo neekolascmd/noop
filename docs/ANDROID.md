@@ -221,22 +221,28 @@ the `app` configuration on a physical device.
 
 ## Installing the APK (sideload & Play Protect)
 
-The released `NOOP-full.apk` is an **unsigned, source-available APK** — there
-is no Play Store listing, because the project is anonymous and has no paid Play identity to publish
-or sign under. That's deliberate, but it means Android treats NOOP as an "unknown app" and **Google
-Play Protect** may warn or block on install — most stubbornly on stock Pixel / recent Android.
-Nothing is wrong with the file; it's just missing a Play signature. To get it on:
+The released `NOOP-full.apk` is a **source-available, sideloaded APK** signed with the continuation
+repository's stable release key. There is no Play Store listing, so Android still treats NOOP as an
+"unknown app" and **Google Play Protect** may warn or block on install — most stubbornly on stock
+Pixel / recent Android. The release workflow verifies the APK signature before publication. The
+public signing certificate is committed at
+[`docs/signing/android-release-certificate.pem`](signing/android-release-certificate.pem); its
+SHA-256 fingerprint is
+`15:0F:92:20:F6:58:1E:01:91:84:2C:B2:40:9B:34:50:EC:1D:DE:B6:36:64:46:A7:8B:15:89:56:51:FB:34:10`.
+To install:
 
 1. **Tap "Install anyway."** When the warning appears, choose **More details → Install anyway**.
 2. **If that button is missing** — it can vanish after a first install + uninstall — grant the source
    directly: **Settings → Apps → Special app access → Install unknown apps → [the browser or file
    manager you're installing from] → Allow from this source**, then reopen the APK.
-3. **If Play Protect still refuses**, it's your call for an unsigned app you trust: **Play Store →
+3. **If Play Protect still refuses**, it's your call for a sideloaded app you trust: **Play Store →
    profile icon → Play Protect → ⚙ Settings → "Scan apps with Play Protect" off**, install NOOP,
    then switch it **back on**.
-4. **Reinstalling is safe.** The app sets `android:allowBackup="false"` and keeps everything in
-   private on-device storage, so uninstalling and reinstalling simply starts fresh — there's no cloud
-   copy to lose, and nothing leaves the device either way.
+4. **Back up before changing signing lineages.** Android cannot update an installation signed by a
+   different key. Export a NOOP backup, uninstall the older build, install the continuation release,
+   and restore it. Uninstalling deletes the private database because `android:allowBackup="false"`;
+   there is no cloud copy. Releases from v8.2.1 onward use the same continuation key and should
+   upgrade in place.
 
 A sample-data **demo** flavour still exists for exploring every screen with no strap, but it's
 **build-from-source only** (`./gradlew assembleDemoDebug`) and is no longer published as a release

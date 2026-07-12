@@ -72,9 +72,10 @@ large product features come after those foundations are stable. See [`ROADMAP.md
 
 ## Download
 
-Maintainer-built downloads will be published on this fork's Releases page. Until the first verified
-continuation release is available, build from source using [`docs/BUILD.md`](docs/BUILD.md); do not
-assume historical artifacts from another repository were produced by this maintainer.
+Verified continuation downloads are published on this fork's Releases page. Every release includes
+SHA-256 checksums and explicit signing notes; historical artifacts from another repository were not
+produced by this maintainer. Building from source remains available through
+[`docs/BUILD.md`](docs/BUILD.md).
 
 | Platform | Build | Notes |
 |---|---|---|
@@ -96,22 +97,26 @@ assume historical artifacts from another repository were produced by this mainta
 >
 > Prefer to avoid this entirely? Build from source — see [Quickstart](#quickstart-macos).
 
-> **Installing on Android (Play Protect blocked it?).** NOOP isn't on the Play Store — it's an
-> **unsigned, source-available APK** you sideload, because the project is anonymous and has no paid
-> Play identity to publish or sign under. So Android treats it as an "unknown app" and **Google
-> Play Protect** may warn or block on install (most stubbornly on stock Pixel / recent Android).
-> Nothing is wrong with the file — it's just missing a Play signature. To get it on:
+> **Installing on Android (Play Protect blocked it?).** NOOP isn't on the Play Store. The continuation
+> APK is source-available and signed with this repository's stable release key, but it is still an
+> "unknown app," so **Google Play Protect** may warn or block on install (most stubbornly on stock
+> Pixel / recent Android). The signature is checked during the release workflow against the
+> [published certificate](docs/signing/android-release-certificate.pem), whose SHA-256 fingerprint is
+> `15:0F:92:20:F6:58:1E:01:91:84:2C:B2:40:9B:34:50:EC:1D:DE:B6:36:64:46:A7:8B:15:89:56:51:FB:34:10`.
+> To get it on:
 >
 > - **Tap "Install anyway."** When the warning appears, choose **More details → Install anyway**.
 > - **No "Install anyway" button?** It can vanish after a first install + uninstall. Grant the source
 >   directly: **Settings → Apps → Special app access → Install unknown apps**, pick the **browser or
 >   file manager you're installing from**, turn on **"Allow from this source"**, then open the APK again.
-> - **Still blocked by Play Protect?** It's your call to make for an unsigned app you trust: open the
+> - **Still blocked by Play Protect?** It's your call to make for a sideloaded app you trust: open the
 >   **Play Store → your profile icon → Play Protect → ⚙ Settings**, toggle **"Scan apps with Play
 >   Protect" off**, install NOOP, then switch it **back on**.
-> - **Reinstalling is safe.** Uninstalling and installing again won't hurt anything — NOOP keeps all
->   data on-device with `allowBackup=false`, so a reinstall simply starts fresh. There's no cloud copy
->   to lose either way.
+> - **Moving from an older or differently signed build:** Android will not install an update over an
+>   app signed by another key. Export a NOOP backup first, uninstall the old app, install the
+>   continuation build, then restore. Uninstalling deletes NOOP's private on-device database because
+>   `allowBackup=false`; there is no cloud copy. Releases from v8.2.1 onward use the same continuation
+>   key and should upgrade in place.
 
 Prefer to build it yourself? See [`docs/BUILD.md`](docs/BUILD.md).
 

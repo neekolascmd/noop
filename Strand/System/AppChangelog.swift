@@ -7,7 +7,7 @@ enum AppChangelog {
 
     /// Bump this when you add a release below. The "What's New" sheet shows automatically when the
     /// stored last-seen version is behind this. (Decoupled from the bundle version on purpose.)
-    static let currentVersion = "7.9.0"
+    static let currentVersion = "8.2.1"
 
     struct Release: Identifiable {
         let version: String
@@ -19,6 +19,17 @@ enum AppChangelog {
 
     /// Newest first.
     static let releases: [Release] = [
+        Release(
+            version: "8.2.1",
+            title: "The continuation release",
+            date: "July 2026",
+            items: [
+                "**NOOP continues under community maintenance.** The canonical project home and future releases now live at github.com/neekolascmd/noop. Existing data stays local and the app remains independent, experimental, and unaffiliated with WHOOP.",
+                "**Backup restores fail safely.** A restore is integrity-checked before replacing your database and verified again afterward. If either check fails, NOOP keeps or restores the previous database instead of risking a partial replacement.",
+                "**Release builds are reproducible and inspectable.** Mac, iPhone, Android, and every shared Swift package now report required checks; release downloads carry SHA-256 checksums and explicit signing and sideloading notes.",
+                "**Apple and Android analytics stay in lockstep.** Shared golden fixtures now pin core scoring and import behavior on both implementations so a platform drift is caught before release.",
+                "**Hardware claims are evidence-based.** A dated support matrix separates physically verified behavior from protocol support and experimental paths, with a structured form for new device reports.",
+            ]),
         Release(
             version: "7.9.0",
             title: "Coupled view, workouts rebuilt, journal numbers",
