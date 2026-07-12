@@ -48,6 +48,7 @@ platform-specific; see the [hardware graduation gate](HARDWARE_SUPPORT.md#oura-g
 ### 1.3 MTU negotiation
 - Notifications stream up to the negotiated MTU (max payload = MTU − 3 ATT bytes). Default BlueZ MTU is 23 unless negotiated. [open_ring]
 - **NOOP rule:** immediately after subscribing to `…0003`, request ATT MTU = **247** (Gen 4/5) or **203** (Gen 3). On iOS/CoreBluetooth the MTU is auto-negotiated; read `maximumWriteValueLength` and `CBPeripheral.maximumWriteValueLength(for: .withoutResponse)` and clamp writes. On Android, call `requestMtu(247)` before the first command.
+- **Android write scheduling:** serialize Write Without Response commands with at least **75 ms** between starts. On the tested Ring 4/Saga tuple, immediate firmware + hardware writes delivered only the first command; the 75 ms production queue delivered both identity responses in 4.8 seconds (`8de785e`, 2026-07-12).
 
 ---
 
@@ -422,11 +423,11 @@ bits 14–15 : qual_b
 | Live-HR feature `0x02` (§5.6) | **verified** [relue] | expected same | expected same |
 | Feature-mode (`>Gen2`) | yes | yes | yes [open_oura-feat] |
 | Firmware string fields | API/FW/BL/BT/MAC | same | same/extended [open_oura-r5] |
-| Test firmware in corpus | FW 3.4.3 | (Ring-4 verified corpus) | FW 2.1.3 [open_oura-feat] |
+| Test firmware in corpus | FW 3.4.3 | FW 2.12.3 / hardware `ORE_06` (NOOP Android hardware, 2026-07-12) | FW 2.1.3 [open_oura-feat] |
 
 ### 7.3 NOOP decoder build guidance
 1. **Single TLV parser** (§2.3) for all generations - the framing is generation-invariant. Branch only on: MTU clamp (203 vs 247) and Gen-4/5 extra-char presence (discover but ignore in v1).
-2. **Generation detection:** read product info (`0x18 03 18 00 10`) → hardware id (e.g. `BLB_03`), and firmware (`0x08`). Map to Gen 3/4/5 to set MTU and pick verified-vs-unverified layout confidence.
+2. **Generation detection:** read product info (`0x18 03 18 00 10`) → hardware id (`ORE_06` on the tested Ring 4), and firmware (`0x08`). Map to Gen 3/4/5 to set MTU and pick verified-vs-unverified layout confidence.
 3. **Trust tiers in the decoder:** Tier A (verified, ship now) = TLV framing, auth, GetEvents cursor, live-HR `0x02`, `0x60`/`0x80` IBI, `0x46`/`0x69`/`0x75` temp, `0x6F`/`0x7B` SpO2, `0x42` time-sync, `0x0D` battery, `0x45`/`0x53` state, `0x6B` motion. Tier B (UNVERIFIED, fixture-gate before use) = `0x49/0x4B/0x4C/0x4F/0x57/0x58` sleep summaries, `0x50/0x51/0x52` activity-MET, `0x7E/0x7F` steps, `0x70` smoothed SpO2, the protobuf `0x55/0x59` interpretation (do **not** ship).
 4. **HRV/sleep:** consume the ring's `0x5D` (HRV) and `0x4E/0x5A` (2-bit phase codes) tags AND independently reconstruct from raw IBI/PPG for NOOP's own scoring. Never read Oura feature `0x06` (encrypted API).
 

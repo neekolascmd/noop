@@ -45,7 +45,7 @@ does not substitute today's version for an older capture.
 | WHOOP 5.0 pairing, live data, history, and command responses | `50.38.1.0` command responses; v18/v26 on the recorded 5.0, with v20/v21 documented separately for newer 5/MG firmware | Linux / BlueZ capture host; Apple pairing path also documented | Linux capture tools, exact commit not recorded; Apple `CLIENT_HELLO` pairing behavior documented from **v1.5**. Current 8.2.x app not yet re-verified in a recorded run | Date not recorded | Recorded by prior maintainer documentation; capture operator not separately named. Device availability after handoff: **unknown** |
 | WHOOP 5.0 Maverick haptic | Firmware not recorded in the haptic result | Linux / BlueZ capture host | `tools/linux-capture`, exact commit and released app version not recorded | **2026-06-12** | Recorded by prior maintainer documentation; capture operator not separately named. Device availability after handoff: **unknown** |
 | WHOOP MG Maverick haptic command | Firmware not recorded | Host not recorded | Build not recorded | Date not recorded | Real-MG capture documented; tester and current device availability: **unknown** |
-| Oura Ring 4 advertisement and GATT discovery | Firmware not read; Android required a standard BLE bond before identity reads | Solana Mobile Saga, Android 16 | nRF Connect **4.29.1**; NOOP app path not yet exercised | **2026-07-12** | Recorded by the current maintainer; ring remains available. Advertisement, service discovery, and characteristic properties reproduced; no bond, reset, key install, live stream, or history test completed |
+| Oura Ring 4 advertisement, GATT, bond, and identity | FW `2.12.3`; API `2.1.0`; bootloader `1.0.1`; Bluetooth `5.0.15`; hardware `ORE_06` | Solana Mobile Saga, Android 16 | nRF Connect **4.29.1** plus NOOP **8.2.1-debug**, qualification commit `8de785e` | **2026-07-12** | Recorded by the current maintainer; ring remains available. Standard BLE bond, direct reconnect, MTU 247, and both privacy-safe identity reads passed. No reset, NOOP key install, application auth, live stream, or history test completed |
 
 Evidence details live in [BLE reverse engineering](BLE_REVERSE_ENGINEERING.md), including the
 [5.0 bond and session](BLE_REVERSE_ENGINEERING.md#bonding-and-the-puffin-session-hardware-verified),
@@ -63,7 +63,7 @@ software behavior; they are not physical-device verification.
 | Generic BLE heart-rate devices (Polar, Wahoo, Coospo, Garmin HRM, Amazfit HR broadcast) | Standard `0x180D` / `0x2A37` live HR and R-R | **Implemented** since v3.8.0; no per-model firmware matrix is recorded | Devices not inventoried. Report each model separately before calling it verified |
 | Xiaomi Smart Band 8 / 9 / 10 | Offline Mi Fitness SQLite import | **Partial** — one real Mi Band 10 export (450 days / 545 sleeps) verified the import and stage mapping; exact firmware, host, build, date, and tester were not recorded | Current Band 10 availability: **unknown**; Bands 8 and 9 need their own real exports |
 | Xiaomi Smart Band live BLE | Encrypted protobuf-v2 BLE sync | **Planned** — protocol researched, decoder not built | Requires a physical band, GATT dump, firmware, and iterative foreground sync testing |
-| Oura | Local BLE | **Partial / experimental** — a real Ring 4 advertisement, connection, service discovery, and `…0002`–`…0006` characteristic properties are recorded; auth/live/history remain unverified | Ring 4 is currently available on a Solana Mobile Saga; standard BLE bonding needs explicit test consent before identity/auth work continues |
+| Oura | Local BLE | **Partial / experimental** — Ring 4 on Android now has a recorded advertisement, standard bond, direct reconnect, MTU 247, service/characteristic discovery, and firmware/hardware identity | Ring 4 is currently available on a Solana Mobile Saga. Application auth, live HR/R-R, reconnect, and history still require either the existing Oura application key or a separately authorized reset/adopt test |
 | Oura / Fitbit / Garmin | Offline wellness-export import | **Implemented** with shared Swift/Kotlin golden fixtures; this verifies parsers, not current vendor hardware or export apps | Capture fresh, privacy-redacted exports and record vendor app/export versions |
 | Polar H10 / Verity Sense / OH1 deep streams | PMD ECG / PPG / ACC / PPI | **Planned** — protocol documented, production decoder not built; H10 issue `#421` remains hardware-gated | No maintainer device inventory recorded |
 | Garmin and Amazfit / Zepp deep BLE | Vendor BLE history and sensors | **Planned** | Needs owned hardware and clean-room captures; no current device inventory recorded |
@@ -80,8 +80,8 @@ qualification build, each connection safely requests the pre-auth firmware and h
 lines like these to the exportable strap log:
 
 ```text
-Oura: identity selected=Oura Ring 3 firmware=3.4.3 api=... bootloader=... bluetooth=...
-Oura: identity hardware=BLB_03
+Oura: identity selected=Oura Ring 4 firmware=2.12.3 api=2.1.0 bootloader=1.0.1 bluetooth=5.0.15
+Oura: identity hardware=ORE_06
 ```
 
 NOOP never requests the ProductInfo serial page for this diagnostic, and the firmware decoder discards
