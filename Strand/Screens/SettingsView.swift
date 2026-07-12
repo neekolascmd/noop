@@ -167,7 +167,7 @@ struct SettingsView: View {
 
     var body: some View {
         ScreenScaffold(title: "Settings",
-                       subtitle: "Your numbers, your strap, and how NOOP works. All on \(Platform.deviceNounPhrase).",
+                       subtitle: "Your numbers, your \(model.activeDeviceNoun), and how NOOP works. All on \(Platform.deviceNounPhrase).",
                        // The day-of-sky liquid backdrop, matching Today / Health / Sleep / Trends / Devices:
                        // a fixed, full-bleed time-of-day sky behind the scroll content (it does not scroll).
                        // Settings' own frosted cards sit on the dark canvas below the sky band, unchanged.
@@ -719,14 +719,14 @@ struct SettingsView: View {
 
     private var strapCard: some View {
         SettingsSection(
-            icon: "antenna.radiowaves.left.and.right",
-            title: "Strap",
-            blurb: "NOOP pairs directly with your WHOOP over Bluetooth: no WHOOP app, no cloud."
+            icon: activeDeviceSettingsIcon,
+            title: activeDeviceSettingsTitle,
+            blurb: activeDeviceSettingsBlurb
         ) {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(spacing: 12) {
-                    StatePill("\(strapStatusTitle)", tone: strapTone, pulsing: live.connected)
-                    if let pct = live.batteryPct {
+                    StatePill("\(strapStatusTitle)", tone: strapTone, pulsing: settingsConnectionActive)
+                    if settingsConnectionActive, model.activeDeviceSupportsLiveBattery, let pct = live.batteryPct {
                         StatePill(live.charging == true
                                   ? "Battery \(Int(pct.rounded()))% · Charging"
                                   : "Battery \(Int(pct.rounded()))%",
@@ -737,29 +737,31 @@ struct SettingsView: View {
                 Text(strapStatusDetail)
                     .font(StrandFont.subhead)
                     .foregroundStyle(StrandPalette.textSecondary)
-                HStack(spacing: NoopMetrics.space3) {
-                    NoopButton("Re-scan", systemImage: "arrow.clockwise", kind: .primary) {
-                        model.scan()
-                    }
+                if model.activeDeviceIsWhoop {
+                    HStack(spacing: NoopMetrics.space3) {
+                        NoopButton("Re-scan", systemImage: "arrow.clockwise", kind: .primary) {
+                            model.scan()
+                        }
 
-                    NoopButton("Disconnect", systemImage: "xmark.circle", kind: .secondary) {
-                        model.disconnect()
+                        NoopButton("Disconnect", systemImage: "xmark.circle", kind: .secondary) {
+                            model.disconnect()
+                        }
+                        .disabled(!live.connected && !live.bonded)
                     }
-                    .disabled(!live.connected && !live.bonded)
                 }
 
                 Divider().overlay(StrandPalette.hairline)
                 // MARK: Strap log — a Settings shortcut so people don't have to hunt for it on the Live
                 // screen (#507: couldn't find it on Mac; #509: same on iPhone). Same text as the Live card.
                 HStack(spacing: 12) {
-                    Text("STRAP LOG").font(StrandFont.overline).tracking(StrandFont.overlineTracking)
+                    Text("DEVICE LOG").font(StrandFont.overline).tracking(StrandFont.overlineTracking)
                         .foregroundStyle(StrandPalette.textSecondary)
                     Spacer()
                     Button("Copy") { PlatformPasteboard.copy(live.exportableLogText()) }
                         .buttonStyle(.plain).font(StrandFont.mono).foregroundStyle(StrandPalette.accent)
                     Button("Save…") {
                         FileExport.exportText(live.exportableLogText(),
-                                              suggestedName: FileExport.timestampedName("noop-strap-log", ext: "txt"))
+                                              suggestedName: FileExport.timestampedName("noop-device-log", ext: "txt"))
                     }
                     .buttonStyle(.plain).font(StrandFont.mono).foregroundStyle(StrandPalette.accent)
                 }
@@ -771,23 +773,25 @@ struct SettingsView: View {
                 Divider().overlay(StrandPalette.hairline)
 
                 // MARK: Continuous HRV capture — keep the dense beat-to-beat (R-R) stream armed 24/7.
-                Toggle(isOn: $continuousHrvEnabled) {
-                    Text("Continuous HRV capture")
-                        .font(StrandFont.subhead)
-                        .foregroundStyle(StrandPalette.textPrimary)
+                if model.activeDeviceIsWhoop {
+                    Toggle(isOn: $continuousHrvEnabled) {
+                        Text("Continuous HRV capture")
+                            .font(StrandFont.subhead)
+                            .foregroundStyle(StrandPalette.textPrimary)
+                    }
+                    .toggleStyle(.switch)
+                    .tint(StrandPalette.accent)
+                    .onChangeCompat(of: continuousHrvEnabled) { on in model.ble.setKeepRealtimeForData(on) }
+                    Text("Keeps the detailed beat-to-beat heart-rate stream running all day and night, not just while a live screen is open, so NOOP captures much more for overnight HRV, recovery and sleep. Uses more battery: your band streams heart rate continuously while connected.")
+                        .font(StrandFont.caption)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .toggleStyle(.switch)
-                .tint(StrandPalette.accent)
-                .onChangeCompat(of: continuousHrvEnabled) { on in model.ble.setKeepRealtimeForData(on) }
-                Text("Keeps the detailed beat-to-beat heart-rate stream running all day and night, not just while a live screen is open, so NOOP captures much more for overnight HRV, recovery and sleep. Uses more battery: your strap streams heart rate continuously while connected.")
-                    .font(StrandFont.caption)
-                    .foregroundStyle(StrandPalette.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
 
                 // #927 Overnight only: window-gate the continuous stream to the nightly quiet-hours
                 // window. Re-pushing the UNCHANGED base preference just re-runs the BLE reconciler,
                 // which re-derives the window gate and arms/disarms on the edge immediately.
-                if continuousHrvEnabled {
+                if model.activeDeviceIsWhoop && continuousHrvEnabled {
                     Toggle(isOn: $continuousHrvOvernightOnly) {
                         Text("Overnight only")
                             .font(StrandFont.subhead)
@@ -805,7 +809,7 @@ struct SettingsView: View {
                 }
 
                 // MARK: Strap name — rename the WHOOP 4.0's BLE advertising name (Harvard command set).
-                if live.connected && selectedWhoopModelRaw == WhoopModel.whoop4.rawValue {
+                if model.activeDeviceIsWhoop && live.connected && selectedWhoopModelRaw == WhoopModel.whoop4.rawValue {
                     Divider().overlay(StrandPalette.hairline)
                     strapNameControl
                 }
@@ -820,7 +824,7 @@ struct SettingsView: View {
                 }
                 .toggleStyle(.switch)
                 .tint(StrandPalette.accent)
-                Text("Shows your live heart rate on the Lock Screen and in the Dynamic Island while the strap is connected. Turn it off to keep your live HR out of the Dynamic Island. (Any one already showing clears within a moment.)")
+                Text("Shows your live heart rate on the Lock Screen and in the Dynamic Island while your \(model.activeDeviceNoun) is connected. Turn it off to keep your live HR out of the Dynamic Island. (Any one already showing clears within a moment.)")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -867,16 +871,49 @@ struct SettingsView: View {
         }
     }
 
-    // Shares LiveState.connectionStatus* with the sidebar footer (RootView) so the two never drift (#266).
-    private var strapStatusTitle: String { live.connectionStatusLabel }
+    private var activeDeviceSettingsIcon: String {
+        switch model.activePairedDevice?.sourceKind {
+        case .oura: return "circle.circle"
+        case .liveAppleWatch: return "applewatch"
+        case .ftms: return "figure.run.treadmill"
+        default: return "antenna.radiowaves.left.and.right"
+        }
+    }
+
+    private var activeDeviceSettingsTitle: LocalizedStringKey { "\(model.activeDeviceDisplayName)" }
+
+    private var activeDeviceSettingsBlurb: LocalizedStringKey {
+        if model.activeDeviceIsWhoop {
+            return "NOOP pairs directly with your WHOOP over Bluetooth: no WHOOP app, no cloud."
+        }
+        return "NOOP reads your \(model.activeDeviceDisplayName) locally and keeps its data on your device."
+    }
+
+    private var settingsConnectionActive: Bool {
+        live.connected && (model.activeDeviceIsWhoop ? live.bonded : true)
+    }
+
+    // WHOOP keeps its richer pairing states; direct non-WHOOP sources use their own connected/streaming state.
+    private var strapStatusTitle: String {
+        if model.activeDeviceIsWhoop { return live.connectionStatusLabel }
+        if live.streamingLiveHR { return String(localized: "Streaming") }
+        return live.connected ? String(localized: "Connected") : String(localized: "Disconnected")
+    }
 
     private var strapTone: StrandTone {
+        if !model.activeDeviceIsWhoop { return settingsConnectionActive ? .positive : .critical }
         if live.connectionStatusIsActive { return .positive }
         if live.connectionStatusIsIdle { return .warning }
         return .critical
     }
 
     private var strapStatusDetail: String {
+        if !model.activeDeviceIsWhoop {
+            if settingsConnectionActive {
+                return String(localized: "Your \(model.activeDeviceDisplayName) is connected and sending local data. Open Live for the real-time stream.")
+            }
+            return String(localized: "\(model.activeDeviceDisplayName) is not connected. Open Devices to manage or reconnect it.")
+        }
         if live.bonded && live.connected {
             return String(localized: "Your strap is paired and sending data. Open Live for a real-time heart rate.")
         }
