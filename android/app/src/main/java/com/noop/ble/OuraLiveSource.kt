@@ -20,6 +20,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
+import android.os.SystemClock
 import com.noop.data.OuraStreamMapping
 import com.noop.data.StreamBatch
 import com.noop.data.StreamPersistence
@@ -307,6 +308,38 @@ class OuraLiveSource(
     /** All BLE work hops onto the main looper, matching the other sources + CBCentralManager(queue:.main). */
     private val handler = Handler(Looper.getMainLooper())
 
+    // Android does not queue overlapping Write Without Response calls for us. Ring 4 hardware proved that
+    // two immediate writes can return/log as issued while the second command never reaches the ring. Keep
+    // every protocol write on one small, epoch-cancelled schedule so auth, identity, history, and re-engage
+    // commands cannot displace one another. A new connection/teardown increments the epoch, making any
+    // stale lambdas from the previous GATT harmless.
+    private val writeScheduleLock = Any()
+    private var nextWriteAtMs = 0L
+    private var writeEpoch = 0L
+
+    private fun resetWriteSchedule() {
+        synchronized(writeScheduleLock) {
+            writeEpoch += 1
+            nextWriteAtMs = SystemClock.uptimeMillis()
+        }
+    }
+
+    private fun enqueueCommands(commands: List<OuraCommand>) {
+        if (commands.isEmpty()) return
+        synchronized(writeScheduleLock) {
+            val epoch = writeEpoch
+            var at = maxOf(SystemClock.uptimeMillis(), nextWriteAtMs)
+            for (cmd in commands) {
+                handler.postAtTime({
+                    val current = synchronized(writeScheduleLock) { writeEpoch }
+                    if (current == epoch) write(cmd)
+                }, at)
+                at += MIN_WRITE_SPACING_MS
+            }
+            nextWriteAtMs = at
+        }
+    }
+
     // MARK: - Protocol state (the pure driver + reassembler own all protocol logic)
 
     /**
@@ -332,7 +365,7 @@ class OuraLiveSource(
         override fun run() {
             val d = driver ?: return
             if (d.phase == OuraDriverPhase.Streaming) {
-                for (cmd in d.reengageLiveHRCommands()) write(cmd)
+                enqueueCommands(d.reengageLiveHRCommands())
             }
             // Reschedule only while a session is live; stop() clears reengageScheduled + removes callbacks.
             if (reengageScheduled) handler.postDelayed(this, reengageIntervalMs)
@@ -505,6 +538,7 @@ class OuraLiveSource(
     }
 
     private fun connectToDevice(device: BluetoothDevice) {
+        resetWriteSchedule()
         lastDevice = device   // remembered so a status-133 disconnect can auto-retry the same ring
         log("Oura: connecting to ${device.address}")
         // Tear down any prior link first so we never run two GATTs for this source.
@@ -551,6 +585,7 @@ class OuraLiveSource(
 
     /** Tear down: cancel the connection and stop scanning, persisting anything still buffered. Idempotent. */
     fun stop() {
+        resetWriteSchedule()
         // A deliberate teardown (device switch / removal) must NOT auto-reconnect: mark it intentional and
         // drop the reconnect target so any pending backoff bails and no fresh one is scheduled (#912). Remove
         // any already-posted reconnect from the main-looper handler too, so it isn't retained for the full
@@ -692,6 +727,9 @@ class OuraLiveSource(
                     g.discoverServices()
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
+                    // A late callback from the GATT we just replaced must not cancel writes queued for the
+                    // new connection. Only the currently-owned GATT advances the write epoch.
+                    if (gatt === g) resetWriteSchedule()
                     log("Oura: disconnected (status=$status)")
                     loggedFirstHr = false   // a reconnect should log its first sample again
                     _batteryPct.value = null
@@ -839,7 +877,7 @@ class OuraLiveSource(
     private fun advance(transition: OuraTransition) = guardedCallback("advance") {
         val d = driver ?: return@guardedCallback
         val commands = d.nextStep(transition)
-        for (cmd in commands) write(cmd)
+        enqueueCommands(commands)
         when (d.phase) {
             OuraDriverPhase.Streaming -> {
                 // The driver returns to Streaming after EACH history-fetch pass completes, so gate all the
@@ -857,7 +895,7 @@ class OuraLiveSource(
                     // running, and ask for battery once (the 0x0D reply routes to onBattery).
                     scheduleHistoryFetch()
                     fetchHistoryIfIdle()
-                    write(OuraCommands.getBattery())
+                    enqueueCommands(listOf(OuraCommands.getBattery()))
                 }
             }
             OuraDriverPhase.NeedsKeyInstall -> {
@@ -906,7 +944,7 @@ class OuraLiveSource(
         pendingInstallKey = key
         _adoptPhase.value = AdoptPhase.InstallingKey
         log("Oura: installing NOOP's key on the reset ring")
-        write(cmd)
+        enqueueCommands(listOf(cmd))
     }
 
     /**
@@ -933,7 +971,7 @@ class OuraLiveSource(
             pendingInstallKey = null
             // Re-auth with the freshly-installed key. The driver returns enable-notify + get-nonce; the
             // nonce response then flows through the normal routeSecure -> advance path to streaming.
-            for (cmd in d.keyInstallAcknowledged()) write(cmd)
+            enqueueCommands(d.keyInstallAcknowledged())
         } else {
             log("Oura: the ring did not accept the key (status=${status ?: "none"}) - cannot adopt this ring")
             announceNeedsPairing(KEY_INSTALL_MESSAGE)
@@ -1230,6 +1268,9 @@ class OuraLiveSource(
         /** Android's infamous generic GATT connect failure (`BluetoothGatt.GATT_ERROR`, not a public
          *  constant). We auto-retry it once. */
         private const val GATT_ERROR_133 = 133
+
+        /** Minimum Ring-4-hardware-verified spacing between Android Write Without Response operations. */
+        private const val MIN_WRITE_SPACING_MS = 75L
 
         /** The SetAuthKey-response OUTER opcode (`0x25`) and its OK status byte (`0x00`). The ring replies
          *  `25 01 00` to a successful `0x24` key install (OURA_PROTOCOL.md s3.2). */
