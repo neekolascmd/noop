@@ -616,8 +616,8 @@ public final class BLEManager: NSObject, ObservableObject {
     /// Keep each main-actor drain slice small enough that SwiftUI can process input/paint between slices.
     private static let backfillDrainBatchSize = 12
 
-    /// Records WHOOP 5/MG puffin frames to a JSON file for protocol mapping. Passive (read-only on the
-    /// strap) and gated by the Settings → Experimental "Record puffin frames" toggle; a no-op for
+    /// Records WHOOP 5/MG puffin frames to JSONL for protocol mapping. Passive (never causes a strap
+    /// write) and gated by the Settings → Experimental "Record puffin frames" toggle; a no-op for
     /// WHOOP 4.0 and when the toggle is off. Lazy so it shares `state` after init. (Cherry-picked from
     /// @j0b-dev's PR #20.)
     private lazy var puffinRecorder = PuffinFrameRecorder(state: state)
@@ -661,7 +661,23 @@ public final class BLEManager: NSObject, ObservableObject {
     /// can re-subscribe them AFTER bonding — the strap refuses them ("Authentication is insufficient")
     /// until the link is encrypted (issue #17).
     private var whoop5NotifyCharacteristics: [CBCharacteristic] = []
-    private var reassembler = Reassembler()
+    /// One framing buffer per notify characteristic. BLE guarantees ordering within a characteristic,
+    /// not across fd4b0003/4/5/7; sharing one buffer let a response arriving on one channel splice into a
+    /// fragmented history frame from another and also mislabeled the finished frame's source channel.
+    private var reassemblers: [String: Reassembler] = [:]
+    private var reassemblerFamily: DeviceFamily = .whoop4
+
+    private func resetReassemblers(family: DeviceFamily) {
+        reassemblerFamily = family
+        reassemblers.removeAll(keepingCapacity: true)
+    }
+
+    private func assembledFrames(from bytes: [UInt8], characteristic: CBUUID) -> [[UInt8]] {
+        let key = characteristic.uuidString.lowercased()
+        let r = reassemblers[key] ?? Reassembler(family: reassemblerFamily)
+        reassemblers[key] = r
+        return r.feed(bytes)
+    }
     private var seq: UInt8 = 0
     private var didBond = false
     /// WHOOP 5/MG only: realtime HR has been armed (puffin TOGGLE_REALTIME_HR sent) once for this
@@ -691,6 +707,11 @@ public final class BLEManager: NSObject, ObservableObject {
     /// (so it accumulates across the reconnect loop). Distinct from `pinnedBondRefusals`, which is gated to
     /// the multi-WHOOP pinned peripheral and drives the #52 stale-pin handoff.
     private var bondRefusalStreak = 0
+    /// Exact request/response correlation for the current R22 attempt. Counting arbitrary SET_CONFIG
+    /// responses as "accepted flags" inflated on duplicates and unrelated writes.
+    private var r22SentSequences: Set<UInt8> = []
+    private var r22ResponseSequences: Set<UInt8> = []
+    private var r22AttemptToken: UUID?
     /// #747 / #750: after the bond is refused persistently, pause auto-reconnect (stop hammering) and write
     /// a one-line epitaph. Fed by the SAME refusal events as `bondRefusalStreak`; its higher give-up
     /// threshold fires once the pairing HINT has had several cycles to be acted on. Reset on a genuine bond
@@ -952,7 +973,7 @@ public final class BLEManager: NSObject, ObservableObject {
             ? BatteryEstimator.ratedLifeHoursWhoop5 : BatteryEstimator.ratedLifeHoursWhoop4
         // Frame the inbound stream for the chosen family (WHOOP 4.0 CRC8 vs WHOOP 5.0 CRC16/puffin)
         // and tell the router which decoder to use. Fresh per connection so no stale bytes carry over.
-        reassembler = Reassembler(family: model.deviceFamily)
+        resetReassemblers(family: model.deviceFamily)
         router.family = model.deviceFamily
         // Live 5/MG persistence: point the Collector's decode at the selected family and install the
         // identity clock ref for a 5/MG (its live timestamps are already real unix). WHOOP 4.0 keeps
@@ -1396,6 +1417,11 @@ public final class BLEManager: NSObject, ObservableObject {
             let puffinPayload: [UInt8] = isHaptics ? [0x01, 47, 152, 0, 0, 0, 0, 0, 0, 0, 0, 0] : payload
             seq = seq &+ 1
             let frame = puffinCommandFrame(cmd: puffinCmd, seq: seq, payload: puffinPayload)
+            if command == .setConfig { r22SentSequences.insert(seq) }
+            puffinRecorder.capture(
+                frame: frame, char: ch.uuid,
+                direction: "app_to_strap",
+                offload: backfilling || command == .sendHistoricalData || command == .historicalDataResult)
             p.writeValue(Data(frame), for: ch, type: writeType)
             let cmdNote = isHaptics ? " cmd=0x13" : ""
             if command == .historicalDataResult {
@@ -1510,7 +1536,6 @@ public final class BLEManager: NSObject, ObservableObject {
         state.rejectedFramesUnarchived = 0
         state.decodedChunksThisSession = 0
         state.consoleChunksThisSession = 0
-        state.r22FlagsAccepted = 0
         state.deepPacketsThisSession = 0
         historicalAckLogCounter = 0
         // Payload MUST be [0x00], NOT empty: verified on-device that this strap serves type-47 only with
@@ -1993,17 +2018,25 @@ public final class BLEManager: NSObject, ObservableObject {
     /// #174 cooldown: when our own offload ENDS, the strap can keep flushing a few trailing type-0x2F
     /// records AFTER `backfilling` has already flipped false. So we stamp `lastOffloadFrameAt` on every
     /// offload frame (and at HISTORY_COMPLETE) and skip a non-offload 0x2F within
-    /// `deepPacketLiveCooldownSeconds` of it. The flag-ACK counting (1) is unchanged.
+    /// `deepPacketLiveCooldownSeconds` of it. Configuration responses are counted only after CRC and
+    /// request-sequence correlation; they are never described as proof that firmware changed behaviour.
     private func noteWhoop5R22Telemetry(_ frame: [UInt8], duringOffload: Bool) {
         // R22 deep-data is a WHOOP 5/MG concept only. On a WHOOP 4 a type-0x2F frame is something else
         // entirely, so counting it as a "deep packet" gave 4.0 owners a bogus deep-data counter (#346).
         guard selectedModel.deviceFamily == .whoop5 else { return }
         guard frame.count > 10 else { return }
-        if frame[8] == 0x24, frame[10] == WhoopCommand.setConfig.rawValue {
-            state.r22FlagsAccepted += 1
+        if (frame[8] == 36 || frame[8] == PuffinPacketType.puffinCommandResponse),
+           frame[10] == WhoopCommand.setConfig.rawValue {
+            let parsed = parseFrame(frame, family: .whoop5)
+            let responseSequence = frame[9]
+            guard parsed.ok, parsed.crcOK == true, r22SentSequences.contains(responseSequence) else { return }
+            r22ResponseSequences.insert(responseSequence)
+            state.r22FlagResponses = r22ResponseSequences.count
             let total = Whoop5Config.enableR22Sequence.count
-            if state.r22FlagsAccepted == total {
-                log("Deep-data: strap ACCEPTED all \(total)/\(total) R22 flags ✓ — keep it on; watching for deep packets.")
+            if state.r22FlagResponses == total {
+                state.r22SequenceInFlight = false
+                r22AttemptToken = nil
+                log("R22: received valid correlated responses for all \(total)/\(total) configuration writes. This does not by itself prove firmware behaviour changed.")
             }
         }
         if frame[8] == 0x2F {
@@ -2033,8 +2066,8 @@ public final class BLEManager: NSObject, ObservableObject {
     }
 
     /// EXPERIMENTAL (#174): write the official app's `enable_r22_*` SET_CONFIG sequence to a bonded
-    /// WHOOP 5/MG, to switch on the deep biometric (type-0x2F "R22") streams the strap withholds from a
-    /// fresh third-party connection. The exact 15-flag sequence + values are documented by judes.club
+    /// WHOOP 5/MG. Current evidence identifies type-0x2F as history, not a separate live stream; this
+    /// controlled write remains useful for testing whether firmware changes what it banks. The exact values are
     /// and Asherlc/dofek and built byte-for-byte by `Whoop5Config` (golden-frame unit-tested).
     ///
     /// Safety: only ever runs when the deep-data experiment is explicitly opted in AND the strap is a
@@ -2058,19 +2091,34 @@ public final class BLEManager: NSObject, ObservableObject {
         guard state.worn else {
             log("Deep-data: the R22 stream is on-wrist only — put the strap ON, then try again."); return
         }
-        state.r22FlagsAccepted = 0   // fresh attempt — count this send's ACKs from zero
+        guard !state.r22SequenceInFlight else {
+            log("Deep-data: an R22 configuration attempt is already in progress — ignored."); return
+        }
+        let attempt = UUID()
+        r22AttemptToken = attempt
+        state.r22SequenceInFlight = true
+        state.r22FlagResponses = 0
+        r22SentSequences.removeAll(keepingCapacity: true)
+        r22ResponseSequences.removeAll(keepingCapacity: true)
         let frames = Whoop5Config.enableR22Sequence
         log("Deep-data: sending the \(frames.count)-flag enable_r22 sequence (experimental, reversible)…")
         for (i, flag) in frames.enumerated() {
             DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(80 * i)) { [weak self] in
-                guard let self else { return }
+                guard let self, self.r22AttemptToken == attempt else { return }
                 self.send(.setConfig,
                           payload: [0x01] + Whoop5Config.payloadBody(name: flag.name, value: flag.value),
                           writeType: .withResponse)
             }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(80 * frames.count + 200)) { [weak self] in
-            self?.log("Deep-data: sequence sent. Keep the strap on, let it sync, then share your strap log — we're looking for new deep records (type-0x2F) to start arriving. (#174)")
+            guard let self, self.r22AttemptToken == attempt else { return }
+            self.log("Deep-data: all 15 writes queued; waiting for correlated strap responses.")
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(80 * frames.count + 15_000)) { [weak self] in
+            guard let self, self.r22AttemptToken == attempt else { return }
+            self.state.r22SequenceInFlight = false
+            self.r22AttemptToken = nil
+            self.log("Deep-data: R22 attempt timed out with \(self.state.r22FlagResponses)/\(frames.count) correlated responses. The link may be slow or this firmware may ignore some writes.")
         }
     }
 
@@ -2311,7 +2359,7 @@ public final class BLEManager: NSObject, ObservableObject {
     private func startScan(for model: WhoopModel, allowFallback: Bool) {
         cancelScanFallback()
         selectedModel = model
-        reassembler = Reassembler(family: model.deviceFamily)
+        resetReassemblers(family: model.deviceFamily)
         router.family = model.deviceFamily
         configureCollectorFamily()
         central.stopScan()
@@ -2639,6 +2687,7 @@ extension BLEManager: @preconcurrency CBCentralManagerDelegate {
         failedConnectAttempts = 0   // a successful connect clears the reconnect backoff (#414)
         restoredPeripheral = nil
         preparePeripheral(peripheral)
+        puffinRecorder.beginConnection()
         // Clear the per-connection bond BEFORE publishing the connected uuid below. SourceCoordinator's #52
         // re-adoption gate keys off `encryptedBond` at the instant `connectedPeripheralUUID` is observed —
         // an ordinary `didConnect` publish must always read false (only the deliberate post-bond #52
@@ -2779,7 +2828,11 @@ extension BLEManager: @preconcurrency CBCentralManagerDelegate {
         state.rejectedFramesUnarchived = 0
         state.decodedChunksThisSession = 0
         state.consoleChunksThisSession = 0
-        state.r22FlagsAccepted = 0
+        state.r22FlagResponses = 0
+        state.r22SequenceInFlight = false
+        r22AttemptToken = nil
+        r22SentSequences.removeAll(keepingCapacity: true)
+        r22ResponseSequences.removeAll(keepingCapacity: true)
         state.deepPacketsThisSession = 0
         lastOffloadFrameAt = nil   // #174: don't carry a stale cooldown reference into the next session
         // #580: a fresh connection earns a fresh empty-offload streak — a strap that was history-empty last
@@ -2907,7 +2960,7 @@ extension BLEManager: @preconcurrency CBCentralManagerDelegate {
         // length offset + constant), producing corrupt/empty data for the whole unattended session until
         // the user manually taps connect.
         selectedModel = .persisted
-        reassembler = Reassembler(family: selectedModel.deviceFamily)
+        resetReassemblers(family: selectedModel.deviceFamily)
         router.family = selectedModel.deviceFamily
         configureCollectorFamily()
         // Collection only runs post-bond, so a restored link was already bonded;
@@ -3000,6 +3053,9 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
                     // "Finishing the secure pairing handshake…".
                     log("WHOOP 5/MG: writing CLIENT_HELLO to fd4b0002 with response (to trigger bonding, experimental).")
                     state.pairingHint = nil   // fresh attempt; clear any stale pairing-mode guidance
+                    puffinRecorder.capture(
+                        frame: hello, char: c.uuid,
+                        direction: "app_to_strap", offload: false)
                     peripheral.writeValue(Data(hello), for: c, type: .withResponse)
                 }
                 // The realtime-HR stream is armed POST-bond (in didWriteValueFor / startRealtime) with
@@ -3360,7 +3416,7 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
              BLEManager.cmdNotifyChar,
              BLEManager.eventNotifyChar:
             // Reassemble (no-op for already-complete frames) then route each complete frame.
-            for frame in reassembler.feed(bytes) {
+            for frame in assembledFrames(from: bytes, characteristic: characteristic.uuid) {
                 if backfilling, BLEManager.isOffloadFrame(frame, family: .whoop4) {
                     // Historical replay is bulk sync traffic, not live UI traffic. Feed it only to
                     // the Backfiller; parsing every record through FrameRouter updates SwiftUI for
@@ -3461,8 +3517,14 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
             // timestamps are already real-unix seconds.) Live HR/battery still also come from the
             // standard 0x2A37 / 0x2A19 profiles handled above.
             if BLEManager.whoop5NotifyChars.contains(characteristic.uuid) {
-                for frame in reassembler.feed(bytes) {
+                for frame in assembledFrames(from: bytes, characteristic: characteristic.uuid) {
                     let isOffload = backfilling && BLEManager.isOffloadFrame(frame, family: .whoop5)
+                    // Capture BEFORE the bulk-offload early return. The history records are the primary
+                    // protocol-mapping evidence (v18/v20/v21/v26); the old placement below silently skipped
+                    // every one while the UI promised "every raw 5/MG frame".
+                    puffinRecorder.capture(
+                        frame: frame, char: characteristic.uuid,
+                        direction: "strap_to_app", offload: isOffload)
                     noteWhoop5R22Telemetry(frame, duringOffload: isOffload)   // #174 deep-data telemetry
                     if isOffload {
                         // Same policy as WHOOP4: historical offload frames are bulk sync traffic.
@@ -3482,8 +3544,6 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
                     // decoding HR a second time off the puffin stream stored a duplicate row per heartbeat
                     // at a slightly different second (strap-unix vs Mac-receive), inflating the sample
                     // store. 0x2A37 stays the single authoritative live HR/RR source for 5/MG.
-                    // Capture for protocol mapping (no-op unless the Settings toggle is on). PR #20.
-                    puffinRecorder.capture(frame: frame, char: characteristic.uuid)
                 }
             }
         }

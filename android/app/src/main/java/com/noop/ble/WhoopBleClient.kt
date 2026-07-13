@@ -36,6 +36,7 @@ import com.noop.protocol.CommandNumber
 import com.noop.protocol.DeviceFamily
 import com.noop.protocol.Framing
 import com.noop.protocol.HapticClock
+import com.noop.protocol.PacketType
 import com.noop.protocol.Reassembler
 import com.noop.protocol.Streams
 import com.noop.protocol.Whoop5Config
@@ -169,11 +170,13 @@ data class LiveState(
      *  bond or a fresh user-initiated connect. Parity with macOS LiveState.pairingHint (#78). The same
      *  text is mirrored into [statusNote] so the existing Live status surface shows it with no UI change. */
     val pairingHint: String? = null,
-    /** EXPERIMENTAL R22 telemetry (#174): how many of the 15 enable_r22 SET_CONFIG flags the strap has
-     *  ACKed since the last "Send enable sequence" tap. 15 = the strap accepted the whole sequence (it
-     *  returns a COMMAND_RESPONSE per flag — hardware-confirmed). Reset per attempt + per session.
-     *  Twin of macOS LiveState.r22FlagsAccepted. */
+    /** EXPERIMENTAL R22 telemetry (#174): number of unique SET_CONFIG request sequences with a valid,
+     *  CRC-checked correlated response since the last tap. A response proves transaction correlation,
+     *  not that firmware applied the value; result semantics are not mapped yet. */
     val r22FlagsAccepted: Int = 0,
+    /** True while the paced 15-write R22 attempt is active; disables repeat taps and keeps response
+     * correlation scoped to one attempt. */
+    val r22SequenceInFlight: Boolean = false,
     /** Count of type-0x2F records seen this session OUTSIDE our own history offload. #494 showed these are
      *  historical-offload data (e.g. another BLE client pulling the strap's backlog over the shared notify
      *  channel), NOT a separate live R22 stream — type-0x2F is only ever the historical offload. Kept as a
@@ -706,6 +709,7 @@ class WhoopBleClient(
                 // #580: the 5/MG "history experimental" note is per-link — a fresh connect re-derives it
                 // from the next offload, so it must not outlive the dropped link.
                 historySyncExperimental = false,
+                r22SequenceInFlight = false,
             )
 
         /**
@@ -1056,9 +1060,13 @@ class WhoopBleClient(
      *  thread (user actions) - the barrier makes a main-thread send see the current characteristic. */
     @Volatile private var cmdCharacteristic: BluetoothGattCharacteristic? = null
 
-    /** Frame reassembler for the fragmented custom notify chars (port of Reassembler). Reassigned per
-     *  connection with the detected family — WHOOP5/MG frames use a different length encoding. */
-    private var reassembler = Reassembler()
+    /** One frame reassembler per notify characteristic. Fragments from fd4b0003/4/5/7 can interleave;
+     * feeding them through one shared buffer can splice unrelated channels into a plausible bad frame. */
+    private val reassemblers = HashMap<UUID, Reassembler>()
+    private val r22CorrelationLock = Any()
+    private val r22SentSequences = HashSet<Int>()
+    private val r22ResponseSequences = HashSet<Int>()
+    private val r22AttemptId = AtomicInteger(0)
 
     /** Rolling command sequence byte; incremented before each send. ATOMIC because `send()` is called from
      *  BOTH the GATT binder thread (the connect handshake, offload acks, the bond frame) and the main thread
@@ -1773,7 +1781,8 @@ class WhoopBleClient(
         disconnect()
         lastDevice = null   // don't auto-reconnect to the old strap; the next connect scans for the new model
         _state.update { it.copy(connected = false, bonded = false, encryptedBond = false,
-                                r22FlagsAccepted = 0, deepPacketsThisSession = 0) }   // #174 reset per session
+                                r22FlagsAccepted = 0, r22SequenceInFlight = false,
+                                deepPacketsThisSession = 0) }   // #174 reset per session
     }
 
     /**
@@ -1994,6 +2003,17 @@ class WhoopBleClient(
                 byteArrayOf(0x01, 47, 152.toByte(), 0, 0, 0, 0, 0, 0, 0, 0, 0) else payload
             val s = seq.incrementAndGet() and 0xFF
             val frame = Framing.puffinCommandFrame(cmd = puffinCmd, seq = s, payload = puffinPayload)
+            if (cmd == CommandNumber.SET_CONFIG) {
+                synchronized(r22CorrelationLock) { r22SentSequences.add(s) }
+            }
+            if (captureWriter != null) {
+                writeWhoop5BackfillCapture(
+                    ch.uuid.toString(), frame,
+                    direction = "app_to_strap",
+                    offload = backfilling || cmd == CommandNumber.SEND_HISTORICAL_DATA ||
+                        cmd == CommandNumber.HISTORICAL_DATA_RESULT,
+                )
+            }
             enqueueWrite(PendingWrite(frame, withResponse))
             val cmdNote = if (isHaptics) " cmd=0x13" else ""
             log("→ ${cmd.name} payload=${puffinPayload.toHex()} (puffin$cmdNote)")
@@ -2965,6 +2985,7 @@ class WhoopBleClient(
                 // standard HR/battery notifications are enabled), not the WHOOP4 confirmed-write bond.
                 connectedFamily = DeviceFamily.WHOOP5
                 log("WHOOP 5/MG detected — will send CLIENT_HELLO after subscribing (experimental).")
+                if (PuffinExperiment.from(context).isCaptureEnabled) startWhoop5BackfillCapture()
                 _state.update { it.copy(
                     whoop5Detected = true,
                     statusNote = "WHOOP 5/MG connected - experimental. After bonding, NOOP brings up live " +
@@ -2975,9 +2996,9 @@ class WhoopBleClient(
             } else {
                 log("Custom WHOOP service not found on this peripheral")
             }
-            // The reassembler frames per family — 5/MG uses a different length encoding (declLen @[2..4],
-            // total +8) than WHOOP4 (length @[1..3], total +4), so it must match the connected strap.
-            reassembler = Reassembler(connectedFamily)
+            // Reassemblers are created lazily per characteristic with the detected family. WHOOP5/MG
+            // uses a different length encoding from WHOOP4, and its four notify channels may interleave.
+            reassemblers.clear()
 
             // 2. Standard HR profile (works unbonded — the reliable HR + R-R source).
             g.getService(HEART_RATE_SERVICE)?.getCharacteristic(HEART_RATE_CHAR)?.let { cccdQueue.add(it) }
@@ -3172,6 +3193,7 @@ class WhoopBleClient(
                 uuid in WHOOP5_NOTIFY_CHARS -> {
                 // Reassemble (no-op for already-complete frames) then route each complete frame.
                 // Port of: for frame in reassembler.feed(bytes) { router.handle(frame:) }.
+                val reassembler = reassemblers.getOrPut(uuid) { Reassembler(connectedFamily) }
                 for (frame in reassembler.feed(bytes)) {
                   // #453 defense-in-depth: this loop runs on the GATT binder thread; an uncaught throw
                   // from ANY frame op (handleFrame, a decoder, the inline date-format, log) would crash
@@ -3182,6 +3204,9 @@ class WhoopBleClient(
                     // handleFrame's replayedOffload gate, so evaluating it twice bounds-checked + indexed
                     // every offloaded frame for nothing. (The Swift 5/MG inbound loop already hoists this.)
                     val offloadFrame = backfilling && isOffloadFrame(frame, connectedFamily)
+                    if (connectedFamily == DeviceFamily.WHOOP5 && captureWriter != null) {
+                        writeWhoop5BackfillCapture(uuid.toString(), frame)
+                    }
                     noteWhoop5R22Telemetry(frame, offloadFrame)  // #174
                     // A frame replayed as part of the historical offload (type 47/48/… during a backfill)
                     // must not drive LIVE-only state (the charging pill). Mirrors iOS, where the offload
@@ -3255,9 +3280,6 @@ class WhoopBleClient(
                         // flood — the offload flag lets analysis filter), BEFORE routing so frames
                         // are retained before the trim ack deletes the strap's copy. No-op (single
                         // null check) when the toggle is off. (#78 fork)
-                        if (connectedFamily == DeviceFamily.WHOOP5 && captureWriter != null) {
-                            writeWhoop5BackfillCapture(uuid.toString(), frame)
-                        }
                         // Historical offload: route ONLY genuine offload frames (47/48/49/50) through
                         // the serial drain (preserves chunk order) + re-arm the idle watchdog on them.
                         // The live type-40/43 flood is dropped here (extractHistoricalStreams ignores
@@ -3303,11 +3325,28 @@ class WhoopBleClient(
         if (connectedFamily != DeviceFamily.WHOOP5) return
         if (frame.size <= 10) return
         val type = frame[8].toInt() and 0xFF
-        if (type == 0x24 && (frame[10].toInt() and 0xFF) == CommandNumber.SET_CONFIG.rawValue) {
-            val n = _state.value.r22FlagsAccepted + 1
-            _state.update { it.copy(r22FlagsAccepted = n) }
-            val total = Whoop5Config.enableR22Sequence.size
-            if (n == total) log("Deep-data: strap ACCEPTED all $n/$total R22 flags ✓ — keep it on; watching for deep packets.")
+        if ((type == PacketType.COMMAND_RESPONSE.rawValue ||
+                type == PacketType.PUFFIN_COMMAND_RESPONSE.rawValue) &&
+            (frame[10].toInt() and 0xFF) == CommandNumber.SET_CONFIG.rawValue
+        ) {
+            val parsed = Framing.parseFrame(frame, connectedFamily)
+            val responseSequence = frame[9].toInt() and 0xFF
+            val n = synchronized(r22CorrelationLock) {
+                if (!parsed.ok || parsed.crcOk != true || responseSequence !in r22SentSequences) null
+                else {
+                    r22ResponseSequences.add(responseSequence)
+                    r22ResponseSequences.size
+                }
+            }
+            if (n != null) {
+                _state.update { it.copy(r22FlagsAccepted = n) }
+                val total = Whoop5Config.enableR22Sequence.size
+                if (n == total) {
+                    r22AttemptId.incrementAndGet()
+                    _state.update { it.copy(r22SequenceInFlight = false) }
+                    log("R22: received valid correlated responses for all $n/$total configuration writes. This does not prove firmware behaviour changed.")
+                }
+            }
         }
         if (type == 0x2F) {
             if (duringOffload) {
@@ -3860,8 +3899,8 @@ class WhoopBleClient(
 
     /**
      * EXPERIMENTAL (#174): write the official app's `enable_r22_*` SET_CONFIG sequence to a bonded
-     * WHOOP 5/MG to switch on the deep biometric (type-0x2F "R22") streams the strap withholds from a
-     * fresh third-party connection. Exact 15-flag sequence + values built byte-for-byte by
+     * WHOOP 5/MG. Current evidence identifies type-0x2F as history, not a separate live stream; this
+     * controlled write remains useful for testing whether firmware changes what it banks. Exact values are
      * [Whoop5Config] (documented by judes.club + Asherlc/dofek). Port of `BLEManager.enableWhoop5DeepData`.
      *
      * Safety: only runs when the deep-data experiment is opted in AND the strap is a bonded, worn 5/MG.
@@ -3886,11 +3925,20 @@ class WhoopBleClient(
         if (!s.worn) {
             log("Deep-data: the R22 stream is on-wrist only — put the strap ON, then try again."); return
         }
-        _state.update { it.copy(r22FlagsAccepted = 0) }   // fresh attempt
+        if (s.r22SequenceInFlight) {
+            log("Deep-data: an R22 configuration attempt is already in progress — ignored."); return
+        }
+        val attempt = r22AttemptId.incrementAndGet()
+        synchronized(r22CorrelationLock) {
+            r22SentSequences.clear()
+            r22ResponseSequences.clear()
+        }
+        _state.update { it.copy(r22FlagsAccepted = 0, r22SequenceInFlight = true) }
         val flags = Whoop5Config.enableR22Sequence
         log("Deep-data: sending the ${flags.size}-flag enable_r22 sequence (experimental, reversible)…")
         flags.forEachIndexed { i, flag ->
             handler.postDelayed({
+                if (r22AttemptId.get() != attempt) return@postDelayed
                 send(
                     CommandNumber.SET_CONFIG,
                     byteArrayOf(0x01) + Whoop5Config.payloadBody(flag.name, flag.value),
@@ -3899,8 +3947,16 @@ class WhoopBleClient(
             }, 80L * i)
         }
         handler.postDelayed({
-            log("Deep-data: sequence sent. Keep the strap on, let it sync, then share your strap log — we're looking for new deep records (type-0x2F) to start arriving. (#174)")
+            if (r22AttemptId.get() != attempt) return@postDelayed
+            log("Deep-data: all 15 writes queued; waiting for correlated strap responses.")
         }, 80L * flags.size + 200L)
+        handler.postDelayed({
+            if (r22AttemptId.get() != attempt) return@postDelayed
+            r22AttemptId.incrementAndGet()
+            val responses = _state.value.r22FlagsAccepted
+            _state.update { it.copy(r22SequenceInFlight = false) }
+            log("Deep-data: R22 attempt timed out with $responses/${flags.size} correlated responses. The link may be slow or this firmware may ignore some writes.")
+        }, 80L * flags.size + 15_000L)
     }
 
     /**
@@ -4069,6 +4125,10 @@ class WhoopBleClient(
         // unacknowledged write left it bond-less and silent — CLIENT_HELLO written, then nothing (#17).
         // Hold the slot until the ACK; the opt-in puffin probe now fires post-bond (onCharacteristicWrite).
         log("WHOOP 5/MG: writing CLIENT_HELLO to fd4b0002 with response (to trigger bonding, experimental).")
+        if (captureWriter != null) {
+            writeWhoop5BackfillCapture(
+                ch.uuid.toString(), hello, direction = "app_to_strap", offload = false)
+        }
         writeInFlight = true
         val ok = safeGatt("writeClientHello") {
             ops.writeCharacteristicCompat(ch, hello, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
@@ -4855,6 +4915,7 @@ class WhoopBleClient(
         _state.update { it.clearedBiometrics().copy(
             connected = false, bonded = false, encryptedBond = false,
             backfilling = false, syncChunksThisSession = 0,
+            r22SequenceInFlight = false,
             charging = null,        // a stale charging flag must not outlive the link
             strapFirmware = null,   // nor a stale firmware version
         ) }
@@ -4969,6 +5030,11 @@ class WhoopBleClient(
 
     /** Clear per-connection state. Port of the flag resets in didConnect / didDisconnectPeripheral. */
     private fun reset() {
+        r22AttemptId.incrementAndGet()
+        synchronized(r22CorrelationLock) {
+            r22SentSequences.clear()
+            r22ResponseSequences.clear()
+        }
         didBond = false
         connectHandshakeDone = false
         seq.set(0)
@@ -5027,7 +5093,8 @@ class WhoopBleClient(
         // connect (BLEManager.swift:183); matching that here stops a partial/garbage frame left over
         // from one session wedging the live stream after a reconnect (so the keep-alive's link-bounce
         // actually recovers a frozen stream).
-        reassembler.reset()
+        reassemblers.values.forEach { it.reset() }
+        reassemblers.clear()
     }
 
     /**
@@ -5090,10 +5157,16 @@ class WhoopBleClient(
         }
     }
 
-    private fun writeWhoop5BackfillCapture(characteristic: String, frame: ByteArray) {
+    private fun writeWhoop5BackfillCapture(
+        characteristic: String,
+        frame: ByteArray,
+        direction: String = "strap_to_app",
+        offload: Boolean? = null,
+    ) {
         val w = captureWriter ?: return
         runCatching {
             val parsed = Framing.parseFrame(frame, connectedFamily)
+            val live = _state.value
             captureSummary.record(parsed.typeName, parsed.crcOk, frame.size, characteristic, frame.toHex())
             val line = BackfillCaptureJsonl.encode(
                 BackfillCaptureRecord(
@@ -5102,10 +5175,15 @@ class WhoopBleClient(
                     characteristic = characteristic,
                     typeName = parsed.typeName,
                     crcOk = parsed.crcOk,
-                    offload = isOffloadFrame(frame, connectedFamily),
+                    offload = offload ?: isOffloadFrame(frame, connectedFamily),
                     size = frame.size,
                     parsed = parsed.parsed,
                     hex = frame.toHex(),
+                    direction = direction,
+                    firmware = live.strapFirmware,
+                    worn = live.worn,
+                    batteryPct = live.batteryPct,
+                    hr = live.heartRate,
                 ),
             )
             synchronized(w) {

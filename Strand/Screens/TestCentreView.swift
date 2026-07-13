@@ -259,10 +259,28 @@ struct TestCentreView: View {
                     .toggleStyle(.switch).tint(StrandPalette.accent)
 
                     Toggle(isOn: $deepDataEnabled) {
-                        Text("Unlock WHOOP 5/MG deep data (R22)")
+                        Text("WHOOP 5/MG R22 configuration")
                             .font(StrandFont.subhead).foregroundStyle(StrandPalette.textPrimary)
                     }
                     .toggleStyle(.switch).tint(StrandPalette.accent)
+
+                    if deepDataEnabled {
+                        #if os(macOS)
+                        Text("R22 configuration requires a fully encrypted iPhone or Android connection. Mac can record and decode history, but cannot send this sequence.")
+                            .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        #else
+                        NoopButton("Send R22 configuration", systemImage: "bolt.badge.automatic", kind: .secondary) {
+                            model.ble.enableWhoop5DeepData()
+                        }
+                        .disabled(!live.encryptedBond || !live.worn || live.r22SequenceInFlight)
+                        Text(live.encryptedBond
+                             ? (live.r22SequenceInFlight ? "Sending the 15 R22 configuration writes…" : (live.worn ? "Sends the 15 documented flags once; keep wearing the strap and let history sync." : "Put the strap on before sending the configuration."))
+                             : "Pair WHOOP 5/MG fully to NOOP first; a live-HR-only connection cannot carry configuration writes.")
+                            .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        #endif
+                    }
 
                     Toggle(isOn: $broadcastHrEnabled) {
                         Text("Broadcast heart rate (Garmin/ANT)")

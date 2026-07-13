@@ -51,6 +51,7 @@ Evidence details live in [BLE reverse engineering](BLE_REVERSE_ENGINEERING.md), 
 [5.0 history flow](BLE_REVERSE_ENGINEERING.md#whoop-50-historical-offload-hardware-verified),
 [4.0 firmware check](BLE_REVERSE_ENGINEERING.md#whoop-4-firmware-drift-check--this-device-showed-no-drift),
 and [haptic and clock results](BLE_REVERSE_ENGINEERING.md#6-haptic-preset-discovery-get_all_haptics_pattern).
+The living known/preserved/unmapped worklist is [WHOOP 5/MG protocol mapping status](WHOOP5_MAPPING.md).
 
 ## Other device and import sources
 

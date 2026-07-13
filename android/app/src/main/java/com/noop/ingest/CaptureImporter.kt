@@ -14,6 +14,7 @@ import com.noop.protocol.rejectedHistoricalRecords
 import org.json.JSONException
 import org.json.JSONObject
 import java.io.Reader
+import java.io.PushbackReader
 import java.io.StringReader
 import java.time.Instant
 import java.time.LocalDate
@@ -56,8 +57,9 @@ object CaptureImporter {
     /** Hard cap on frames kept from one file (~a year of dense offload is well under this). */
     private const val MAX_FRAMES = 5_000_000
 
-    /** A real strap frame is well under this; a longer hex string is junk and is skipped. */
-    private const val MAX_FRAME_BYTES = 512
+    /** Match the live reassembler ceiling. WHOOP 5 v20/v21 records are 2,140/1,244 bytes, so the old
+     *  512-byte importer cap rejected the exact deep records this research path exists to analyze. */
+    private const val MAX_FRAME_BYTES = 8192
 
     // ---- pure: char -> family ----
 
@@ -98,16 +100,18 @@ object CaptureImporter {
         val totalFrames: Int,
         val skipped: Int, // unknown-char or unparsable-hex rows
         val truncated: Boolean = false, // hit MAX_FRAMES; later frames were dropped
+        val tornTailSkipped: Boolean = false, // crash interrupted the final JSONL append
     )
 
-    /** Parse capture.json text into per-family frame lists. Throws org.json.JSONException on non-array input. */
+    /** Parse either fixture-compatible JSON arrays or NOOP Android's comment-prefixed JSONL export. */
     fun parse(jsonText: String): Parsed = parse(StringReader(jsonText))
 
     /**
      * Streaming parse: pull one top-level JSON value at a time off [reader] so a multi-day capture
      * (tens of MB, hundreds of thousands of frames) never materialises as a giant String + JSONArray.
      * Peak memory is the per-family ByteArray lists plus one element substring — not the whole file.
-     * Throws org.json.JSONException on non-array / malformed input, exactly like the old DOM parse.
+     * Accepts either a top-level array or comment-prefixed one-object-per-line JSONL. Throws
+     * org.json.JSONException on malformed input.
      *
      * Bounded against an untrusted file: the scanner caps total bytes read ([MAX_CHARS]) and the
      * accepted-frame count ([MAX_FRAMES]); past the frame cap it stops keeping frames and flags the
@@ -119,18 +123,64 @@ object CaptureImporter {
         var skipped = 0
         var kept = 0
         var truncated = false
-        JsonArrayScanner(reader).forEachElement { elem ->
-            if (kept >= MAX_FRAMES) { truncated = true; return@forEachElement }
+        var tornTailSkipped = false
+        fun accept(elem: String) {
+            if (kept >= MAX_FRAMES) { truncated = true; return }
             val obj = elem.asJsonObjectOrNull()
-            if (obj == null) { skipped++; return@forEachElement }
+            if (obj == null) { skipped++; return }
             total++
-            val family = familyForChar(if (obj.has("char")) obj.optString("char") else null)
+            val char = when {
+                obj.has("char") -> obj.optString("char")
+                obj.has("characteristic") -> obj.optString("characteristic")
+                else -> null
+            }
+            val family = familyForChar(char)
             val frame = if (obj.has("hex")) hexToBytes(obj.optString("hex")) else null
-            if (family == null || frame == null) { skipped++; return@forEachElement }
+            if (family == null || frame == null) { skipped++; return }
             groups.getOrPut(family) { ArrayList() }.add(frame)
             kept++
         }
-        return Parsed(groups, total, skipped, truncated)
+
+        // Peek the first non-whitespace byte without materialising a multi-day capture. `[` is the Apple/
+        // Linux fixture array; anything else is the Android JSONL form (comment lines beginning `#`).
+        val input = PushbackReader(reader, 1)
+        var first: Int
+        do { first = input.read() } while (first >= 0 && first.toChar().isWhitespace())
+        if (first < 0) throw JSONException("Empty capture")
+        input.unread(first)
+        if (first.toChar() == '[') {
+            JsonArrayScanner(input).forEachElement { accept(it) }
+        } else {
+            var chars = 0L
+            fun consume(line: String, finalLine: Boolean) {
+                val trimmed = line.trim()
+                if (trimmed.isNotEmpty() && !trimmed.startsWith("#")) {
+                    if (!trimmed.startsWith("{")) throw JSONException("JSONL capture line is not an object")
+                    try {
+                        accept(trimmed)
+                    } catch (e: JSONException) {
+                        if (!finalLine) throw e
+                        tornTailSkipped = true
+                        skipped++
+                    }
+                }
+            }
+            val line = StringBuilder()
+            while (true) {
+                val next = input.read()
+                if (next < 0) break
+                chars++
+                if (chars > MAX_CHARS) throw JSONException("Capture exceeds $MAX_CHARS characters")
+                if (next.toChar() == '\n') {
+                    consume(line.toString(), finalLine = false)
+                    line.setLength(0)
+                } else {
+                    line.append(next.toChar())
+                }
+            }
+            if (line.isNotEmpty()) consume(line.toString(), finalLine = true)
+        }
+        return Parsed(groups, total, skipped, truncated, tornTailSkipped)
     }
 
     /** A top-level array element is a frame only if it is a JSON object; everything else is skipped
@@ -194,6 +244,7 @@ object CaptureImporter {
             if (parsed.skipped > 0) append(" Skipped ${parsed.skipped} unrecognised frame(s).")
             if (rejectCount > 0) append(" Archived $rejectCount undecodable frame(s) for a future decoder.")
             if (parsed.truncated) append(" File was very large - imported the first ${MAX_FRAMES} frames only.")
+            if (parsed.tornTailSkipped) append(" Ignored one incomplete final capture record.")
         }
         return ImportSummary(SOURCE_LABEL, counts, first, last, message)
     }

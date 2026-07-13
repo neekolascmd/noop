@@ -18,6 +18,32 @@ class Whoop5HistoricalDecodeTest {
     private fun bytes(s: String): ByteArray =
         s.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
 
+    private fun makeWhoop5Frame(total: Int, version: Int, build: (ByteArray) -> Unit): ByteArray {
+        val f = ByteArray(total)
+        f[0] = 0xAA.toByte(); f[1] = 0x01
+        val declared = total - 8
+        f[2] = (declared and 0xFF).toByte(); f[3] = ((declared shr 8) and 0xFF).toByte()
+        f[4] = 0x01; f[5] = 0x00; f[8] = 0x2F; f[9] = version.toByte()
+        build(f)
+        val header = Crc.crc16Modbus(f.copyOfRange(0, 6))
+        f[6] = (header and 0xFF).toByte(); f[7] = ((header shr 8) and 0xFF).toByte()
+        val end = total - 4
+        val body = Crc.crc32(f.copyOfRange(8, end))
+        f[end] = (body and 0xFF).toByte(); f[end + 1] = ((body shr 8) and 0xFF).toByte()
+        f[end + 2] = ((body shr 16) and 0xFF).toByte(); f[end + 3] = ((body shr 24) and 0xFF).toByte()
+        return f
+    }
+
+    private fun putU32(f: ByteArray, off: Int, value: Long) {
+        for (i in 0 until 4) f[off + i] = ((value shr (8 * i)) and 0xFF).toByte()
+    }
+
+    private fun putI16(f: ByteArray, off: Int, value: Int) {
+        f[off] = (value and 0xFF).toByte(); f[off + 1] = ((value shr 8) and 0xFF).toByte()
+    }
+
+    private fun putI32(f: ByteArray, off: Int, value: Int) = putU32(f, off, value.toLong())
+
     // Real worn WHOOP 5 v18 frame: hr=102, rr=[602,613] ms, |gravity|≈1, skin temp 30.57 °C.
     private val wornV18 =
         "aa01740001003fb12f1280733d8401b69f266a66460066025a0265020000000000007b0a8d656463ff0012163cf6a439bf2924fd3ed763fe3e3200aa000000000000000000f7000901f10b0007010c020c00000000000000000000000000000000000000000000000100656f1e1e0000009d61a7c00000003e862817"
@@ -50,6 +76,41 @@ class Whoop5HistoricalDecodeTest {
         // @63 also reads as the activity-class enum (#316): this worn-still frame's byte is 0 => still.
         assertEquals(0, p["activity_class"])
         assertTrue((p["dynamic_acceleration"] as Double) in 0.0..8.0)
+    }
+
+    @Test
+    fun decodesV21BulkChannelsWithoutInventingUnits() {
+        val frame = makeWhoop5Frame(1244, 21) { f ->
+            f[10] = 0x80.toByte(); putU32(f, 11, 0x01A8CF25); putU32(f, 15, 1_781_556_371)
+            for (i in 0 until 100) putI16(f, 28 + i * 2, 1800 + i % 7)
+            for (i in 0 until 100) putI16(f, 228 + i * 2, 700 + i % 5)
+            for (i in 0 until 100) putI16(f, 428 + i * 2, 3600 + i % 3)
+        }
+        val p = decodeHistorical(frame, DeviceFamily.WHOOP5)!!
+        assertEquals(21, p["hist_version"]); assertEquals(100, p["sensor_channel_samples"])
+        assertEquals(100, (p["optical_ch0"] as List<*>).size)
+        assertEquals(1800, (p["optical_ch0"] as List<*>).first())
+        assertEquals(3600, (p["optical_ch2"] as List<*>).first())
+        assertEquals(1, rejectedHistoricalRecords(listOf(frame), DeviceFamily.WHOOP5).size)
+    }
+
+    @Test
+    fun decodesV20OnlyForPresentBlocks() {
+        val frame = makeWhoop5Frame(2140, 20) { f ->
+            f[10] = 0x81.toByte(); putU32(f, 11, 0x01A8CF26); putU32(f, 15, 1_781_556_372)
+            f[0x1a] = 0x19
+            for (i in 0 until 50) putI32(f, 0x2f + i * 4, 100000 + i)
+            for (i in 0 until 50) putI32(f, 0xf7 + i * 4, 200000 - i)
+            f[0x50c] = 0x19
+            for (i in 0 until 50) putI32(f, 0x521 + i * 4, 140 + i)
+            for (i in 0 until 50) putI32(f, 0x5e9 + i * 4, 130 + i)
+        }
+        val p = decodeHistorical(frame, DeviceFamily.WHOOP5)!!
+        assertEquals(20, p["hist_version"]); assertEquals(50, p["sensor_channel_samples"])
+        assertEquals(4, p["sensor_channels_present"])
+        assertEquals(100000, (p["channel_b0_0"] as List<*>).first())
+        assertNull(p["channel_b1_0"])
+        assertEquals(1, rejectedHistoricalRecords(listOf(frame), DeviceFamily.WHOOP5).size)
     }
 
     /** Mutate one absolute frame byte and re-stamp the CRC32 (over frame[8..len-4]) so it passes the gate. */

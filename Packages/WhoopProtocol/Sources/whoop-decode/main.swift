@@ -13,8 +13,8 @@ import WhoopProtocol
 //   whoop-decode --hex aa0108000001e67123019101363e5c8d
 //
 // Input (any one of):
-//   FILE            a capture/fixture JSON file: an array of {"hex": …} objects. The richer capture
-//                   format ({"hex","char","hr","ts_ms"}) is a superset and is read too.
+//   FILE            a capture/fixture JSON array or append-only JSONL of {"hex": …} objects. Richer
+//                   Apple/Android provenance records are supersets and are read too.
 //   (stdin)         the same JSON, piped in, when no FILE is given.
 //   --hex HEX …     one or more raw frame hex strings instead of a file.
 //
@@ -33,7 +33,46 @@ struct CaptureRecord: Decodable {
     let char: String?
     let hr: Int?
     let tsMs: Int?
-    enum CodingKeys: String, CodingKey { case hex, char, hr; case tsMs = "ts_ms" }
+    let direction: String?
+    let offload: Bool?
+    let sessionId: String?
+    let firmware: String?
+    let worn: Bool?
+    let batteryPct: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case hex, char, characteristic, hr, direction, offload, firmware, worn
+        case tsMs = "ts_ms"
+        case capturedAtMs = "captured_at_ms"
+        case sessionId = "session_id"
+        case batteryPct = "battery_pct"
+    }
+
+    init(hex: String, char: String? = nil, hr: Int? = nil, tsMs: Int? = nil,
+         direction: String? = nil, offload: Bool? = nil, sessionId: String? = nil,
+         firmware: String? = nil, worn: Bool? = nil, batteryPct: Double? = nil) {
+        self.hex = hex; self.char = char; self.hr = hr; self.tsMs = tsMs
+        self.direction = direction; self.offload = offload; self.sessionId = sessionId
+        self.firmware = firmware; self.worn = worn; self.batteryPct = batteryPct
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        hex = try c.decode(String.self, forKey: .hex)
+        let primaryChar = try c.decodeIfPresent(String.self, forKey: .char)
+        let legacyChar = try c.decodeIfPresent(String.self, forKey: .characteristic)
+        char = primaryChar ?? legacyChar
+        hr = try c.decodeIfPresent(Int.self, forKey: .hr)
+        let appleTs = try c.decodeIfPresent(Int.self, forKey: .tsMs)
+        let androidTs = try c.decodeIfPresent(Int.self, forKey: .capturedAtMs)
+        tsMs = appleTs ?? androidTs
+        direction = try c.decodeIfPresent(String.self, forKey: .direction)
+        offload = try c.decodeIfPresent(Bool.self, forKey: .offload)
+        sessionId = try c.decodeIfPresent(String.self, forKey: .sessionId)
+        firmware = try c.decodeIfPresent(String.self, forKey: .firmware)
+        worn = try c.decodeIfPresent(Bool.self, forKey: .worn)
+        batteryPct = try c.decodeIfPresent(Double.self, forKey: .batteryPct)
+    }
 }
 
 enum FamilyMode { case whoop4, whoop5, auto }
@@ -53,9 +92,9 @@ USAGE:
   cat capture.json | whoop-decode --family whoop5
   whoop-decode --hex aa0108000001e67123019101363e5c8d
 
-Reads a capture/fixture JSON array of {"hex": …} (the capture tool's richer
-{"hex","char","hr","ts_ms"} records are read too) from FILE or stdin, or raw
-frames from --hex. Family defaults to auto: derived per-frame from `char`
+Reads a capture/fixture JSON array or NOOP Android JSONL of {"hex": …} (richer
+provenance records are read too) from FILE or stdin, or raw frames from --hex.
+Family defaults to auto: derived per-frame from `char`/`characteristic`
 (fd4b…→whoop5, 6108…→whoop4), falling back to whoop5.
 """
 
@@ -100,11 +139,27 @@ while i < args.count {
 // MARK: - Gather input records
 
 func loadJSON(_ data: Data) -> [CaptureRecord] {
+    let decoder = JSONDecoder()
+    if let array = try? decoder.decode([CaptureRecord].self, from: data) { return array }
+    guard let text = String(data: data, encoding: .utf8) else { die("capture is not UTF-8") }
+    var records: [CaptureRecord] = []
+    let lines = text.split(whereSeparator: \.isNewline)
+    let hasTerminatedTail = text.hasSuffix("\n") || text.hasSuffix("\r")
     do {
-        return try JSONDecoder().decode([CaptureRecord].self, from: data)
+        for (index, line) in lines.enumerated() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
+            do {
+                records.append(try decoder.decode(CaptureRecord.self, from: Data(trimmed.utf8)))
+            } catch where index == lines.count - 1 && !hasTerminatedTail {
+                FileHandle.standardError.write(Data("warning: ignored torn final JSONL record\n".utf8))
+            }
+        }
     } catch {
-        die("could not parse capture JSON: \(error)")
+        die("could not parse capture JSON/JSONL: \(error)")
     }
+    if records.isEmpty { die("capture contains no frame records") }
+    return records
 }
 
 var records: [CaptureRecord] = []
@@ -172,13 +227,23 @@ struct DecodedOut: Encodable {
     let char: String?
     let hr: Int?
     let tsMs: Int?
+    let direction: String?
+    let offload: Bool?
+    let sessionId: String?
+    let firmware: String?
+    let worn: Bool?
+    let batteryPct: Double?
     let family: String
     let frame: ParsedFrame
-    enum CodingKeys: String, CodingKey { case char, hr; case tsMs = "ts_ms"; case family, frame }
+    enum CodingKeys: String, CodingKey {
+        case char, hr, direction, offload, firmware, worn, family, frame
+        case tsMs = "ts_ms"; case sessionId = "session_id"; case batteryPct = "battery_pct"
+    }
 }
 
 var decodedOut: [DecodedOut] = []
 var typeCounts: [String: Int] = [:]
+var layoutCounts: [String: Int] = [:]
 var okCount = 0, total = 0
 
 for (n, rec) in records.enumerated() {
@@ -193,11 +258,16 @@ for (n, rec) in records.enumerated() {
     total += 1
     if parsed.ok { okCount += 1 }
     typeCounts[parsed.typeName, default: 0] += 1
+    let version = parsed.parsed["hist_version"]?.intValue.map { " v\($0)" } ?? ""
+    layoutCounts["\(parsed.typeName)\(version) · \(frame.count)B · \(rec.char ?? "unknown-char")", default: 0] += 1
 
     if rawOnly && parsed.ok { continue }
 
     if jsonOut {
         decodedOut.append(DecodedOut(char: rec.char, hr: rec.hr, tsMs: rec.tsMs,
+                                     direction: rec.direction, offload: rec.offload,
+                                     sessionId: rec.sessionId, firmware: rec.firmware,
+                                     worn: rec.worn, batteryPct: rec.batteryPct,
                                      family: family.rawValue, frame: parsed))
         continue
     }
@@ -207,6 +277,9 @@ for (n, rec) in records.enumerated() {
     var head = "[\(n)] \(family.rawValue) ok=\(parsed.ok) type=\(parsed.typeName) seq=\(parsed.seq.map(String.init) ?? "—") crc=\(crc)"
     if let c = rec.char { head += " char=\(c)" }
     if let hr = rec.hr { head += " hr=\(hr)" }
+    if let direction = rec.direction { head += " direction=\(direction)" }
+    if rec.offload == true { head += " offload=true" }
+    if let firmware = rec.firmware { head += " fw=\(firmware)" }
     print(head)
     for f in parsed.fields {
         let note = f.note.map { "  // \($0)" } ?? ""
@@ -228,6 +301,10 @@ if jsonOut {
     var summary = "\n— \(okCount)/\(total) frames decoded ok —\n"
     for (t, c) in typeCounts.sorted(by: { $0.value > $1.value }) {
         summary += "  \(pad(String(c), 5, right: true))  \(t)\n"
+    }
+    summary += "— layout / size / characteristic —\n"
+    for (layout, count) in layoutCounts.sorted(by: { $0.value > $1.value }) {
+        summary += "  \(pad(String(count), 5, right: true))  \(layout)\n"
     }
     FileHandle.standardError.write(Data(summary.utf8))
 }

@@ -27,12 +27,14 @@ class BackfillCaptureJsonlTest {
 
         assertEquals(
             "{" +
+                "\"schema_version\":2," +
                 "\"captured_at_ms\":1234," +
                 "\"session_id\":\"whoop5-1234\"," +
                 "\"characteristic\":\"fd4b0005\"," +
                 "\"type_name\":\"METADATA\"," +
                 "\"crc_ok\":true," +
                 "\"offload\":true," +
+                "\"direction\":\"strap_to_app\"," +
                 "\"size\":36," +
                 "\"parsed\":{\"meta_type\":\"HISTORY_END(2)\",\"rr_intervals\":[801,802],\"trim_cursor\":4512}," +
                 "\"hex\":\"aa01\"" +
@@ -59,12 +61,14 @@ class BackfillCaptureJsonlTest {
 
         assertEquals(
             "{" +
+                "\"schema_version\":2," +
                 "\"captured_at_ms\":1," +
                 "\"session_id\":\"s\\\"1\"," +
                 "\"characteristic\":\"fd4b0003\"," +
                 "\"type_name\":\"type54\"," +
                 "\"crc_ok\":null," +
                 "\"offload\":false," +
+                "\"direction\":\"strap_to_app\"," +
                 "\"size\":2," +
                 "\"parsed\":{\"note\":\"line\\nbreak\"}," +
                 "\"hex\":\"aa\\\\bb\"" +

@@ -7,6 +7,8 @@ import Foundation
 /// `{"hex": …}`), so a capture file is *directly* usable as a parity fixture — the extra fields are a
 /// superset the decoder ignores. Keys are snake_case to match the existing `golden.json` style.
 public struct PuffinCaptureRecord: Codable, Equatable {
+    /// Capture-record schema, independent of the WHOOP packet/layout version.
+    public let schemaVersion: Int
     /// Full on-wire frame as lowercase hex — the canonical `ParsedFrame.rawHex`.
     public let hex: String
     /// Source notify characteristic UUID (e.g. `fd4b0005-…`) — tells you which channel the frame
@@ -25,8 +27,24 @@ public struct PuffinCaptureRecord: Codable, Equatable {
     public let crcOK: Bool?
     /// Did the frame parse as a well-formed puffin envelope at all?
     public let ok: Bool
+    /// `strap_to_app` for notifications, `app_to_strap` for command writes. Capturing both directions
+    /// lets an offline mapper pair a response with the exact request that provoked it.
+    public let direction: String
+    /// True when the record belongs to the historical offload transaction. This keeps normal live traffic
+    /// separate from v18/v20/v21/v26 history without having to infer session state from packet timing.
+    public let offload: Bool
+    /// One identifier per BLE connection. A single capture file can span reconnects, so wall time alone is
+    /// not enough to tell which hello/config/history exchange a frame belonged to.
+    public let sessionId: String?
+    /// Best-effort firmware string learned from GET_HELLO by the time this frame arrived.
+    public let firmware: String?
+    /// Ground-truth context at capture time. These are deliberately optional because early handshake frames
+    /// arrive before the corresponding values are known.
+    public let worn: Bool?
+    public let batteryPct: Double?
 
     enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
         case hex, char
         case tsMs = "ts_ms"
         case hr
@@ -34,6 +52,10 @@ public struct PuffinCaptureRecord: Codable, Equatable {
         case seq
         case crcOK = "crc_ok"
         case ok
+        case direction, offload
+        case sessionId = "session_id"
+        case firmware, worn
+        case batteryPct = "battery_pct"
     }
 }
 
@@ -54,11 +76,15 @@ public final class PuffinCapture {
     /// Decode `frame` as a puffin envelope and append a record with the given provenance.
     /// The stored `hex` is the decoder's canonical `rawHex`, so it always round-trips through parsing.
     @discardableResult
-    public func record(frame: [UInt8], char: String, tsMs: Int, hr: Int?) -> PuffinCaptureRecord {
+    public func record(frame: [UInt8], char: String, tsMs: Int, hr: Int?,
+                       direction: String = "strap_to_app", offload: Bool = false,
+                       sessionId: String? = nil, firmware: String? = nil,
+                       worn: Bool? = nil, batteryPct: Double? = nil) -> PuffinCaptureRecord {
         // D#969: rawHex is only built when collectFields is true; PuffinCapture is the one production
         // consumer that stores it, so opt in here (this diagnostic path is off by default anyway).
         let parsed = parseFrame(frame, family: .whoop5, collectFields: true)
         let rec = PuffinCaptureRecord(
+            schemaVersion: 2,
             hex: parsed.rawHex,
             char: char,
             tsMs: tsMs,
@@ -66,7 +92,13 @@ public final class PuffinCapture {
             typeName: parsed.ok ? parsed.typeName : nil,
             seq: parsed.seq,
             crcOK: parsed.crcOK,
-            ok: parsed.ok
+            ok: parsed.ok,
+            direction: direction,
+            offload: offload,
+            sessionId: sessionId,
+            firmware: firmware,
+            worn: worn,
+            batteryPct: batteryPct
         )
         records.append(rec)
         return rec

@@ -1121,7 +1121,7 @@ struct SettingsView: View {
         #if os(macOS)
         return true
         #else
-        return !live.encryptedBond || !live.worn
+        return !live.encryptedBond || !live.worn || live.r22SequenceInFlight
         #endif
     }
 
@@ -1133,6 +1133,9 @@ struct SettingsView: View {
         #else
         if !live.encryptedBond {
             return String(localized: "Needs the full encrypted bond: close the official WHOOP app and pair the strap to NOOP first (a live-HR-only link can't carry the unlock).")
+        }
+        if live.r22SequenceInFlight {
+            return String(localized: "Sending the 15 R22 configuration writes…")
         }
         return live.worn
             ? String(localized: "Wear the strap, tap once, then let it sync and share your strap log.")
@@ -1163,13 +1166,13 @@ struct SettingsView: View {
 
                 // MARK: R22 deep-data unlock — the one probe that writes to the strap.
                 Toggle(isOn: $deepDataEnabled) {
-                    Text("Unlock WHOOP 5/MG deep data (R22)")
+                    Text("WHOOP 5/MG R22 configuration")
                         .font(StrandFont.subhead)
                         .foregroundStyle(StrandPalette.textPrimary)
                 }
                 .toggleStyle(.switch)
                 .tint(StrandPalette.accent)
-                Text("WHOOP 5/MG straps hand a fresh app only live heart rate. The official app switches on the deeper streams (high-rate HR + motion + history) by writing a set of feature flags, a sequence two independent projects have documented. With this on, the button below sends that exact sequence to your strap. Unlike everything else here it does write to the strap, but it's reversible (it only changes which data the strap chooses to emit) and is the same thing the official app does. Experimental: it may do nothing on your firmware. iPhone/Android only. A Mac can't write to a 5/MG.")
+                Text("Sends the official app's documented 15 R22 feature flags. A real strap has acknowledged the sequence, but current evidence does not show a separate live stream: type-0x2F records still arrive through normal history sync. This is reversible and may change which records your firmware banks or returns. Experimental, iPhone/Android only; Mac can capture and decode history but cannot send the encrypted configuration writes.")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1184,13 +1187,13 @@ struct SettingsView: View {
                         .foregroundStyle(StrandPalette.textTertiary)
 
                     // Live R22 telemetry (#174): proof of what the strap is doing right now.
-                    if live.r22FlagsAccepted > 0 {
-                        Label(live.r22FlagsAccepted >= 15
-                              ? "Strap accepted all 15 R22 flags"
-                              : "Strap accepted \(live.r22FlagsAccepted)/15 R22 flags…",
-                              systemImage: live.r22FlagsAccepted >= 15 ? "checkmark.seal.fill" : "ellipsis")
+                    if live.r22FlagResponses > 0 {
+                        Label(live.r22FlagResponses >= 15
+                              ? "Received responses for all 15 R22 writes"
+                              : "Received \(live.r22FlagResponses)/15 R22 responses…",
+                              systemImage: live.r22FlagResponses >= 15 ? "checkmark.seal.fill" : "ellipsis")
                             .font(StrandFont.caption)
-                            .foregroundStyle(live.r22FlagsAccepted >= 15 ? StrandPalette.statusPositive : StrandPalette.textSecondary)
+                            .foregroundStyle(live.r22FlagResponses >= 15 ? StrandPalette.statusPositive : StrandPalette.textSecondary)
                     }
                     if live.deepPacketsThisSession > 0 {
                         Label(live.deepPacketsThisSession == 1
@@ -1199,8 +1202,8 @@ struct SettingsView: View {
                               systemImage: "clock.arrow.circlepath")
                             .font(StrandFont.caption)
                             .foregroundStyle(StrandPalette.textSecondary)
-                    } else if live.r22FlagsAccepted >= 15 {
-                        Text("Flags accepted, but the enable sequence doesn't start a separate live stream. The deep records arrive as part of the normal history sync (#494).")
+                    } else if live.r22FlagResponses >= 15 {
+                        Text("All writes received correlated responses, but that does not prove a configuration result. No separate live stream starts; deep records arrive through normal history sync.")
                             .font(StrandFont.caption)
                             .foregroundStyle(StrandPalette.textTertiary)
                     }
@@ -1245,7 +1248,7 @@ struct SettingsView: View {
                 }
                 .toggleStyle(.switch)
                 .tint(StrandPalette.accent)
-                Text("Saves every raw 5/MG frame (with a timestamp and the live heart rate) to a JSON file you can share to help map the biometric layout. This only records frames the strap already sent (it never writes to your strap), so it is safe to leave on. Export the file and attach it to a protocol-mapping issue.")
+                Text("Saves every proprietary 5/MG frame — including history and the commands NOOP was already sending — with direction, connection session, timestamp, firmware, wear state, battery and live heart rate. Recording does not cause any additional strap writes. The export contains personal biometric history; keep it private unless you deliberately choose to share it for protocol mapping.")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1307,6 +1310,16 @@ struct SettingsView: View {
                         }
                     } else {
                         Label("Export raw sensor data (CSV)", systemImage: "square.and.arrow.up")
+                    }
+                    if live.puffinCaptureTruncated {
+                        Text("Capture reached its safety limit. The saved file is valid; later frames were not retained.")
+                            .font(StrandFont.caption)
+                            .foregroundStyle(StrandPalette.statusWarning)
+                    }
+                    if let captureError = live.puffinCaptureError {
+                        Text("Capture write failed: \(captureError)")
+                            .font(StrandFont.caption)
+                            .foregroundStyle(StrandPalette.statusCritical)
                     }
                 }
                 .buttonStyle(NoopButtonStyle(.secondary))

@@ -1385,7 +1385,7 @@ fun SettingsScreen(vm: AppViewModel, onOpenTestCentre: () -> Unit = {}) {
                     )
                 }
                 Text(
-                    "WHOOP 5/MG straps hand a fresh app only live heart rate. The official app switches on the deeper streams (high-rate HR + motion + history) by writing a set of feature flags, a sequence two independent projects have documented. With this on, the button below sends that exact sequence to your strap. Unlike everything else here it does write to the strap, but it's reversible (it only changes which data the strap emits) and is the same thing the official app does. Experimental: it may do nothing on your firmware.",
+                    "Sends the official app's documented 15 R22 feature flags. Hardware returns a response to each write, but current evidence does not show a separate live stream: type-0x2F records still arrive through normal history sync. This writes reversible configuration and may change which records your firmware banks or returns, so it remains experimental.",
                     style = NoopType.caption,
                     color = Palette.textTertiary,
                 )
@@ -1394,12 +1394,13 @@ fun SettingsScreen(vm: AppViewModel, onOpenTestCentre: () -> Unit = {}) {
                         text = "Send enable sequence to strap",
                         leadingIcon = Icons.Filled.Bolt,
                         kind = NoopButtonKind.Primary,
-                        enabled = live.encryptedBond && live.worn,
+                        enabled = live.encryptedBond && live.worn && !live.r22SequenceInFlight,
                         onClick = { vm.ble.enableWhoop5DeepData() },
                     )
                     Text(
                         if (!live.encryptedBond) "Needs the full encrypted bond: close the official WHOOP app and pair the strap to NOOP first (a live-HR-only link can't carry the unlock)."
-                        else if (!live.worn) "Put the strap on first. The deep stream is on-wrist only."
+                        else if (!live.worn) "Put the strap on first. The R22 configuration is wear-gated."
+                        else if (live.r22SequenceInFlight) "Sending the 15 R22 configuration writes…"
                         else "Wear the strap, tap once, then let it sync and share your strap log.",
                         style = NoopType.caption,
                         color = Palette.textTertiary,
@@ -1407,8 +1408,8 @@ fun SettingsScreen(vm: AppViewModel, onOpenTestCentre: () -> Unit = {}) {
                     // Live R22 telemetry (#174): proof of what the strap is doing right now.
                     if (live.r22FlagsAccepted > 0) {
                         Text(
-                            if (live.r22FlagsAccepted >= 15) "✓ Strap accepted all 15 R22 flags"
-                            else "Strap accepted ${live.r22FlagsAccepted}/15 R22 flags…",
+                            if (live.r22FlagsAccepted >= 15) "Received responses for all 15 R22 writes"
+                            else "Received ${live.r22FlagsAccepted}/15 R22 responses…",
                             style = NoopType.caption,
                             color = if (live.r22FlagsAccepted >= 15) Palette.statusPositive else Palette.textSecondary,
                         )
@@ -1421,7 +1422,7 @@ fun SettingsScreen(vm: AppViewModel, onOpenTestCentre: () -> Unit = {}) {
                         )
                     } else if (live.r22FlagsAccepted >= 15) {
                         Text(
-                            "Flags accepted, but the enable sequence doesn't start a separate live stream. The deep records arrive as part of the normal history sync (#494).",
+                            "All writes received correlated responses, but that does not prove a configuration result. Deep records arrive through normal history sync (#494).",
                             style = NoopType.caption,
                             color = Palette.textTertiary,
                         )
