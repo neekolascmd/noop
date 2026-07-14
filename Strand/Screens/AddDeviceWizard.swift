@@ -815,7 +815,7 @@ struct AddDeviceWizard: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                Text("Beta. * is an on-device estimate. Skin temp is a trend versus your own baseline, steps are a raw motion count, and HRV needs you to be still. No Oura Readiness or SpO2 percentage comes off the ring (import an Oura file for those).")
+                Text("Beta. * is an on-device estimate or needs overnight qualification. Skin temp is a trend versus your own baseline, steps are a raw motion count, and HRV needs you to be still. SpO2 requires automatic measurement to be enabled on the ring. NOOP never reads Oura Readiness or Sleep scores.")
                     .font(StrandFont.footnote)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -980,7 +980,8 @@ struct AddDeviceWizard: View {
     /// label): a tick for decoded-and-used, * for a best-effort on-device estimate, a dash for
     /// not-available-off-the-ring. gen3/gen4 are the verified path; gen5's live HR + firmware reads are
     /// least proven so they read as estimates. PARITY: the marks match the Android `ouraCapabilityRows`
-    /// exactly. No Oura Readiness/Sleep score or absolute SpO2 % ever comes off the ring.
+    /// exactly. Oura Readiness/Sleep scores never come off the ring; SpO2 is shown only from qualified
+    /// percentage records when automatic measurement is enabled.
     private func ouraCapabilityRows(for gen: OuraRingGen) -> [(mark: String, label: String)] {
         let live = (gen == .gen5) ? "*" : "✓"   // newer rings: live HR is best-effort
         let firm = (gen == .gen5) ? "*" : "✓"   // resting HR / sleep / battery
@@ -988,11 +989,12 @@ struct AddDeviceWizard: View {
             (live, String(localized: "Live heart rate")),
             ("*", "HRV (rMSSD)"),
             (firm, String(localized: "Resting heart rate")),
-            (firm, String(localized: "Sleep staging")),
+            (firm, String(localized: "Sleep window")),
+            ("*", String(localized: "Sleep stages")),
             ("*", String(localized: "Skin-temperature trend")),
             ("*", String(localized: "Steps / motion")),
             (firm, String(localized: "Battery")),
-            ("-", String(localized: "Blood oxygen (SpO2 %)")),
+            ("*", String(localized: "Blood oxygen (SpO2 %)")),
             ("-", String(localized: "Oura Readiness / Sleep score")),
         ]
     }
@@ -1392,8 +1394,8 @@ struct AddDeviceWizard: View {
 
     /// Map the protocol package's per-gen `OuraMetric` set onto the app's `Metric` set for registration.
     /// Gen3+ all expose the same dictionary, so this is currently uniform, but it is gen-filtered so a
-    /// future gen-specific gate is a one-line change (per OURA_PROTOCOL.md s7.2). SpO2 registers as the
-    /// `.spo2` capability for the RAW ADC signal only; NO absolute SpO2 percentage is ever claimed.
+    /// future gen-specific gate is a one-line change (per OURA_PROTOCOL.md s7.2). SpO2 registers only
+    /// because the durable path now distinguishes qualified percentages from raw optical values.
     private func ouraCapabilities(for gen: OuraRingGen) -> Set<Metric> {
         var caps: Set<Metric> = []
         for m in gen.capabilities {

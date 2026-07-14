@@ -66,6 +66,8 @@ enum class OuraEventTag(val raw: Int) {
     // --- Sleep phase codes (Tier A: 2-bit phase codes are byte-for-byte verified) ---
     SLEEP_PHASE(0x4E),        // sleep_phase_details (2-bit codes), OURA_PROTOCOL.md s6.12
     SLEEP_PHASE_ALT(0x5A),    // sleep_phase_details alias, OURA_PROTOCOL.md s6.12
+    SLEEP_PERIOD(0x6A),       // sleep_period_info_2 (open periodic measurements), s6.12
+    BEDTIME_PERIOD(0x76),     // verified start/end ring-clock sleep bounds, s6.12
 
     // --- Activity / MET (Tier B, UNVERIFIED) ---
     ACTIVITY_INFO(0x50),      // activity_info (MET-class), OURA_PROTOCOL.md s6.13 (UNVERIFIED)
@@ -122,6 +124,8 @@ enum class OuraEventTag(val raw: Int) {
             SLEEP_SUMMARY_F -> "SLEEP_SUMMARY_58"
             SLEEP_PHASE -> "SLEEP_PHASE"
             SLEEP_PHASE_ALT -> "SLEEP_PHASE_ALT"
+            SLEEP_PERIOD -> "SLEEP_PERIOD"
+            BEDTIME_PERIOD -> "BEDTIME_PERIOD"
             ACTIVITY_INFO -> "ACTIVITY_INFO"
             ACTIVITY_SUMMARY_1 -> "ACTIVITY_SUMMARY_1"
             ACTIVITY_SUMMARY_2 -> "ACTIVITY_SUMMARY_2"

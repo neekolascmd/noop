@@ -84,15 +84,21 @@ class OuraStreamMappingTest {
     }
 
     @Test
-    fun spo2UsesSingleChannelIrStaysZero() {
+    fun spo2UsesQualifiedPercentageAndDropsRawDc() {
         val s = OuraStreamMapping.streams(
-            listOf(OuraEvent.Spo2(OuraSpO2(ringTimestamp = 1, value = 97))),
+            listOf(
+                OuraEvent.Spo2(
+                    OuraSpO2(ringTimestamp = 1, value = 97, unit = "percent", sampleOffsetSeconds = -1),
+                ),
+                OuraEvent.Spo2(OuraSpO2(ringTimestamp = 1, value = 12345, unit = "dc_raw")),
+            ),
             anchor,
         )
         assertEquals(1, s.spo2.size)
-        assertEquals(97, s.spo2.first().red)
+        assertEquals(970, s.spo2.first().red)
         assertEquals(0, s.spo2.first().ir) // unread channel, never a fabricated second reading
-        assertEquals(base + 1, s.spo2.first().ts)
+        assertEquals("tenths_percent", s.spo2.first().unit)
+        assertEquals(base, s.spo2.first().ts)
     }
 
     @Test

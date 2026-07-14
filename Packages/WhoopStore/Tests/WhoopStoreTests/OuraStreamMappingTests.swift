@@ -52,15 +52,15 @@ final class OuraStreamMappingTests: XCTestCase {
 
     // MARK: - SpO2 -> spo2:[SpO2Sample]
 
-    func testSpO2MapsToSpO2StreamPreservingUnit() {
+    func testSpO2MapsOnlyQualifiedPercentagesWithDistinctOffsets() {
         let s = OuraStreamMapping.streams(from: [
-            .spo2(OuraSpO2(ringTimestamp: 100, value: 970, unit: "raw")),
+            .spo2(OuraSpO2(ringTimestamp: 100, value: 97, unit: "percent", sampleOffsetSeconds: -1)),
             .spo2(OuraSpO2(ringTimestamp: 101, value: 12345, unit: "dc_raw")),
         ], at: ts)
-        XCTAssertEqual(s.spo2.map { $0.red }, [970, 12345])
-        XCTAssertEqual(s.spo2.map { $0.ir }, [0, 0])
-        XCTAssertEqual(s.spo2.map { $0.unit }, ["raw", "dc_raw"])
-        XCTAssertEqual(s.spo2.map { $0.ts }, [ts, ts])
+        XCTAssertEqual(s.spo2.map { $0.red }, [970])
+        XCTAssertEqual(s.spo2.map { $0.ir }, [0])
+        XCTAssertEqual(s.spo2.map { $0.unit }, ["tenths_percent"])
+        XCTAssertEqual(s.spo2.map { $0.ts }, [ts - 1])
     }
 
     // MARK: - Temp 0x46/0x75 -> skinTemp:[SkinTempSample] (centi-degree-C, parity with Kotlin)
@@ -89,6 +89,16 @@ final class OuraStreamMappingTests: XCTestCase {
         XCTAssertEqual(s.events.map { $0.payload["phase"] }, [.int(2), .int(3)])
         XCTAssertEqual(s.events.map { $0.payload["index"] }, [.int(0), .int(1)])
         XCTAssertEqual(s.events.map { $0.ts }, [ts, ts])
+    }
+
+    func testSleepPeriodPreservesVerifiedFieldsWithoutInventingStages() {
+        let s = OuraStreamMapping.streams(from: [
+            .sleepPeriod(OuraSleepPeriod(ringTimestamp: 100, averageHeartRate: 55.5,
+                                         respirationRate: 14.25, motionCount: 3, sleepState: 1)),
+        ], at: ts)
+        XCTAssertEqual(s.events.first?.kind, OuraStreamMapping.sleepPeriodEventKind)
+        XCTAssertEqual(s.events.first?.payload["sleep_state"], .int(1))
+        XCTAssertNil(s.events.first?.payload["phase"])
     }
 
     // MARK: - Battery -> battery:[BatterySample]
@@ -142,7 +152,7 @@ final class OuraStreamMappingTests: XCTestCase {
             .hr(OuraHR(ringTimestamp: 1, bpm: 55, ibiMs: 1090)),
             .ibi(OuraIBI(ringTimestamp: 1, ibiMs: 1090)),
             .hrv(OuraHRV(ringTimestamp: 1, timeMs: 0, b1: 40, b2: 1)),
-            .spo2(OuraSpO2(ringTimestamp: 1, value: 965)),
+            .spo2(OuraSpO2(ringTimestamp: 1, value: 96, unit: "percent")),
             .temp(OuraTemp(ringTimestamp: 1, celsius: 34.0)),
             .sleepPhase(OuraSleepPhase(ringTimestamp: 1, index: 0, stage: .light)),
             .battery(OuraBattery(percent: 88)),

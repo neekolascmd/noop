@@ -43,8 +43,13 @@ data class OuraHR(val ringTimestamp: Long, val bpm: Int, val ibiMs: Int)
  */
 data class OuraHRV(val ringTimestamp: Long, val timeMs: Int, val b1: Int, val b2: Int)
 
-/** One decoded SpO2 sample. `value` is the raw SpO2 reading; `unit` documents its scale. */
-data class OuraSpO2(val ringTimestamp: Long, val value: Int, val unit: String = "raw")
+/** One decoded SpO2 sample; offset places multi-value 0x6F records on distinct wall-clock seconds. */
+data class OuraSpO2(
+    val ringTimestamp: Long,
+    val value: Int,
+    val unit: String = "raw",
+    val sampleOffsetSeconds: Int = 0,
+)
 
 /** One decoded skin-temperature sample in degrees C (value already / 100). */
 data class OuraTemp(val ringTimestamp: Long, val celsius: Double)
@@ -54,6 +59,17 @@ data class OuraTemp(val ringTimestamp: Long, val celsius: Double)
  * is the [4..6] fallback estimate (fixture-validated per generation, may be null).
  */
 data class OuraBattery(val percent: Int, val voltageMv: Int? = null, val charging: Boolean? = null)
+
+/** Read-only 0x21 feature status; feature 0x04 is automatic SpO2 and mode 1 is automatic. */
+data class OuraFeatureStatus(
+    val feature: Int,
+    val mode: Int,
+    val status: Int,
+    val state: Int,
+    val subscription: Int,
+) {
+    val isSpO2Automatic: Boolean? get() = if (feature == 0x04) mode == 0x01 else null
+}
 
 /** Sleep phase code (OURA_PROTOCOL.md s6.12): 2-bit codes 0=awake, 1=light, 2=deep, 3=REM. */
 enum class OuraSleepStage(val raw: Int) {
@@ -70,6 +86,22 @@ enum class OuraSleepStage(val raw: Int) {
 
 /** One decoded sleep-phase code in order within a 0x4E/0x5A record (OURA_PROTOCOL.md s6.12). */
 data class OuraSleepPhase(val ringTimestamp: Long, val index: Int, val stage: OuraSleepStage)
+
+/** One verified `0x6A` sleep-period record. Open on-device measurements, not encrypted Oura scores. */
+data class OuraSleepPeriod(
+    val ringTimestamp: Long,
+    val averageHeartRate: Double,
+    val respirationRate: Double,
+    val motionCount: Int,
+    val sleepState: Int,
+)
+
+/** Verified Ring 4 `0x76` bedtime bounds in the ring-clock domain. */
+data class OuraBedtimePeriod(
+    val ringTimestamp: Long,
+    val startRingTimestamp: Long,
+    val endRingTimestamp: Long,
+)
 
 /** Motion state (OURA_PROTOCOL.md s6.13): 0 NO_MOTION, 1 RESTLESS, 2 TOSSING, 3 ACTIVE. */
 enum class OuraMotionState(val raw: Int) {
@@ -90,8 +122,18 @@ data class OuraMotion(val ringTimestamp: Long, val index: Int, val state: OuraMo
 /** Device lifecycle state (OURA_PROTOCOL.md s6.15) decoded from a 0x45/0x53 record. */
 data class OuraState(val ringTimestamp: Long, val stateCode: Int, val text: String? = null)
 
-/** A UTC anchor / time-sync event (OURA_PROTOCOL.md s6.11): epoch ms + timezone offset seconds. */
-data class OuraTimeSync(val ringTimestamp: Long, val epochMs: Long, val tzOffsetSeconds: Int)
+/**
+ * A UTC anchor / time-sync event. [epochMs] retains the original API name, but verified wire values
+ * are unix seconds. Ring 4 additionally selects 100 ms/tick normally or 1 ms/tick with token 0xFD.
+ */
+data class OuraTimeSync(
+    val ringTimestamp: Long,
+    val epochMs: Long,
+    val tzOffsetSeconds: Int,
+    val factorMsPerTick: Int = 100,
+    /** Ring 4 request/indication correlation token; null on legacy layouts. */
+    val token: Int? = null,
+)
 
 /** A secondary 1-second-granularity RTC beacon (OURA_PROTOCOL.md s6.15, tag 0x85). */
 data class OuraRtcBeacon(val ringTimestamp: Long, val unixSeconds: Long)
@@ -155,6 +197,8 @@ sealed class OuraEvent {
     data class Temp(val value: OuraTemp) : OuraEvent()
     data class Battery(val value: OuraBattery) : OuraEvent()
     data class SleepPhaseEvent(val value: OuraSleepPhase) : OuraEvent()
+    data class SleepPeriodEvent(val value: OuraSleepPeriod) : OuraEvent()
+    data class BedtimePeriodEvent(val value: OuraBedtimePeriod) : OuraEvent()
     data class MotionEvent(val value: OuraMotion) : OuraEvent()
     data class StateEvent(val value: OuraState) : OuraEvent()
     data class TimeSyncEvent(val value: OuraTimeSync) : OuraEvent()

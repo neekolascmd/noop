@@ -328,7 +328,14 @@ private suspend fun readTimeline(
                 .map { (ts, v) -> TimelinePoint(ts, v) }
         TimelineMetric.Spo2 ->
             runCatching { repo.spo2Samples(deviceId, from, to, 200_000) }.getOrDefault(emptyList())
-                .mapNotNull { if (it.ir > 0) TimelinePoint(it.ts, it.red.toDouble() / it.ir) else null }
+                .mapNotNull {
+                    when {
+                        it.unit == "tenths_percent" && it.ir == 0 && it.red in 700..1000 ->
+                            TimelinePoint(it.ts, it.red / 10.0)
+                        it.ir > 0 -> TimelinePoint(it.ts, it.red.toDouble() / it.ir)
+                        else -> null
+                    }
+                }
         TimelineMetric.SkinTemp -> {
             // #938: family-aware raw→°C — 5/MG centidegrees (raw/100, #156), a WHOOP 4.0 v24 raw ADC map.
             // Resolve the strap family from [deviceId]'s registry model; a positively-identified 4.0 → WHOOP4,

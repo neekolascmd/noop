@@ -30,8 +30,21 @@ public enum OuraTransition: Equatable, Sendable {
     case authCompleted(OuraAuthStatus)
     /// A live-HR enable/subscribe ACK arrived; advance the triplet (or, when done, mark streaming).
     case enableAckReceived
-    /// The app wants to fetch buffered history from this cursor (optional path).
-    case startHistoryFetch(cursor: UInt32)
+    /// The app wants to sync the ring clock, then fetch buffered history from this cursor.
+    case startHistoryFetch(cursor: UInt32, unixSeconds: Int)
+    /// Ring 4 acknowledged the active SyncTime request. Only now flush/fetch, so the freshly-created
+    /// 0x42 anchor record is included in the history stream instead of racing later control writes.
+    case timeSyncAcknowledged(cursor: UInt32)
+    /// Some Ring 4 firmware returns a well-formed 0x13 whose echo does not correlate. After a short,
+    /// transport-owned timeout, release the fetch once; the matching 0x42 token+counter remains the
+    /// mandatory commit authority, so this fallback cannot persist stale or misdated history.
+    case timeSyncReleaseTimedOut(cursor: UInt32)
+    /// Read the next provisional Ring 4 history page from a record high-water without ACKing, flushing,
+    /// or resetting the active SyncTime correlation. The transport bounds this anchor search.
+    case continueProvisionalHistory(cursor: UInt32)
+    /// A bounded bootstrap scan found a trustworthy historical 0x42 after skipping earlier pages.
+    /// Re-read from the durable cursor with that anchor; the skipped records were never ACKed.
+    case restartHistoryFromBootstrap(cursor: UInt32)
     /// The last GetEvents response advanced the cursor to this value; continue or stop.
     case historyCursorAdvanced(cursor: UInt32, moreData: Bool)
 }
@@ -60,6 +73,8 @@ public final class OuraDriver {
     /// needsKeyInstall and writes nothing dangerous. Only an explicit opt-in adopt flow sets this true.
     /// Per OURA_PROTOCOL.md s3.2 (the 0x24 SetAuthKey is a DANGEROUS, one-time provisioning write).
     public let allowKeyInstall: Bool
+    /// Deterministic token injection for replay/tests; production leaves nil and uses a fresh random byte.
+    private let fixedTimeSyncToken: UInt8?
 
     public private(set) var phase: OuraDriverPhase = .idle
     /// Tracks how many of the live-HR enable triplet ACKs have been seen.
@@ -68,13 +83,32 @@ public final class OuraDriver {
     /// records and carry no timestamp of their own).
     private var lastRingTimestamp: UInt32 = 0
     /// Ring-time -> UTC anchor (OURA_PROTOCOL.md s5.5): the ring's clock ticks at 100 ms/tick by default
-    /// (burst-mode 1 ms/tick, s5.5, is NOT modeled in v1). Set from the ring's own 0x42 time-sync event
+    /// and 1 ms/tick when Ring 4's 0x42 token is 0xFD. Set from the ring's own 0x42 time-sync event
     /// (primary) or, only while no 0x42 has arrived yet THIS session, the coarser 1s-granularity 0x85 RTC
     /// beacon (secondary). nil until the first anchor event of this session: a record decoded before then
     /// has no computable UTC time, and `unixSeconds(forRingTimestamp:)` honestly returns nil rather than
     /// guessing. A stale anchor from a PREVIOUS session is never reused - the ring may have rebooted.
     private var anchorUtcMs: Int64?
     private var anchorRingTime: UInt32?
+    /// Generation/token-specific ring-clock scale selected by the primary 0x42 anchor.
+    private var anchorFactorMs: Int64 = 100
+    /// Ring 4 counter sent by the active SyncTime request. A fetched 0x42 may replace the session anchor
+    /// only when its coarse epoch matches this counter, so a plausible-but-stale backlog anchor cannot win.
+    private var pendingSyncCounter: UInt32?
+    /// The random request token must match the fetched 0x42 as well as the coarse counter.
+    private var pendingSyncToken: UInt8?
+    /// A cursor commit needs an anchor created for THIS fetch, not merely an older session anchor.
+    private var activeFetchHasFreshAnchor = false
+    /// Makes a duplicate/late 0x13 acknowledgement unable to enqueue a second flush/fetch pair.
+    private var timeSyncReleaseIssued = false
+    /// Enabled only after the transport crosses its bounded in-memory event cap. In this mode a
+    /// plausible historical 0x42 may bootstrap the clock; skipped pages are refetched before commit.
+    private var historicalAnchorBootstrapEnabled = false
+    /// Ring 4's event-category masks are session configuration, not per-poll commands. A new driver is
+    /// created for every BLE connection, so this naturally resets on reconnect.
+    private var ring4HistoryCategoriesConfigured = false
+    /// True cursor for the active batch: max ringTimestamp across every structurally-valid inner record.
+    public private(set) var activeHistoryHighWater: UInt32?
     /// The freshly-provisioned key the transport generated during an adopt flow (s3.2). Once set by
     /// beginKeyInstall it becomes the effective key for the post-install re-auth. nil otherwise.
     private var installedKey: [UInt8]?
@@ -84,11 +118,12 @@ public final class OuraDriver {
     private var effectiveKey: [UInt8]? { installedKey ?? authKey }
 
     public init(ringGen: OuraRingGen, authKey: [UInt8]?, allowTierB: Bool = false,
-                allowKeyInstall: Bool = false) {
+                allowKeyInstall: Bool = false, timeSyncToken: UInt8? = nil) {
         self.ringGen = ringGen
         self.authKey = authKey
         self.allowTierB = allowTierB
         self.allowKeyInstall = allowKeyInstall
+        self.fixedTimeSyncToken = timeSyncToken
     }
 
     // MARK: - Command flow
@@ -108,8 +143,12 @@ public final class OuraDriver {
                 return identity
             }
             phase = .authenticating
-            // Ring 4 firmware 2.12.3 stalls control traffic around SetNotification. The transport-level
-            // CCCD subscriptions are sufficient, so request the nonce directly.
+            // Ring 4's official sequence performs its serial-free identity read and two read-only
+            // session probes before requesting the nonce. Keep Gen 3's already-qualified ordering.
+            if ringGen == .gen4 {
+                return identity + OuraCommands.ring4PreAuthSessionReads()
+                    + [OuraCommand(label: "get_nonce", bytes: OuraAuth.getAuthNonceCommand())]
+            }
             return [OuraCommand(label: "get_nonce", bytes: OuraAuth.getAuthNonceCommand())] + identity
 
         case .nonceReceived(let nonce):
@@ -153,15 +192,73 @@ public final class OuraDriver {
             phase = .streaming
             return []
 
-        case .startHistoryFetch(let cursor):
+        case .startHistoryFetch(let cursor, let unixSeconds):
             phase = .fetchingHistory
-            // Flush flash buffer first, then fetch up to 255 events from the cursor (s5.3).
+            activeHistoryHighWater = nil
+            activeFetchHasFreshAnchor = false
+            timeSyncReleaseIssued = false
+            if ringGen == .gen4, unixSeconds >= 0 {
+                let sync = OuraCommands.syncTime(unixSeconds: unixSeconds,
+                                                 token: fixedTimeSyncToken ?? .random(in: .min ... .max))
+                pendingSyncCounter = UInt32(unixSeconds / 256) & 0x00FF_FFFF
+                pendingSyncToken = sync.bytes[2]
+                // Ring 4's official sequence enables the event stream before SyncTime and gates the
+                // data-plane writes on the 0x13 response. Sending
+                // SyncTime, Flush and GetEvents back-to-back can make real hardware return history before
+                // it has emitted the correlated 0x13/0x42 pair. Keep the batch provisional by issuing only
+                // stream-enable + SyncTime here; acknowledgement (or the guarded timeout) releases
+                // Flush + GetEvents.
+                var commands = [OuraCommands.enableEventStream(), sync]
+                if !ring4HistoryCategoriesConfigured {
+                    commands.append(OuraCommands.ring4PostSyncStatePulse())
+                    commands.append(contentsOf: OuraCommands.ring4EventCategorySubscriptions())
+                    commands.append(OuraCommands.getBattery())
+                    let parameterReads = OuraCommands.ring4HistoryParameterReads()
+                    commands.append(contentsOf: parameterReads.prefix(2))
+                    commands.append(OuraCommands.ring4HistorySessionMode())
+                    commands.append(contentsOf: parameterReads.dropFirst(2))
+                    ring4HistoryCategoriesConfigured = true
+                }
+                return commands
+            }
+            // Gen 3 retains its legacy sequence until its generation-specific 0x13 layout is qualified.
+            return [OuraCommands.syncTime(unixSeconds: unixSeconds),
+                    OuraCommands.flushBuffer(),
+                    OuraCommands.getEvents(cursor: cursor, maxEvents: 255)]
+
+        case .timeSyncAcknowledged(let cursor), .timeSyncReleaseTimedOut(let cursor):
+            guard ringGen == .gen4, phase == .fetchingHistory, pendingSyncCounter != nil,
+                  !timeSyncReleaseIssued else { return [] }
+            timeSyncReleaseIssued = true
+            return [OuraCommands.flushBuffer(),
+                    OuraCommands.getEvents(cursor: cursor, maxEvents: 255)]
+
+        case .continueProvisionalHistory(let cursor):
+            guard ringGen == .gen4, phase == .fetchingHistory,
+                  !hasFreshAnchorForActiveFetch else { return [] }
+            // Deliberately no max=0 ACK and no flush: this is a read-only look-ahead for the correlated
+            // 0x42 while the transport keeps decoded events parked and the durable cursor unchanged.
+            return [OuraCommands.getEvents(cursor: cursor, maxEvents: 255)]
+
+        case .restartHistoryFromBootstrap(let cursor):
+            guard ringGen == .gen4, phase == .fetchingHistory, hasUtcAnchor else { return [] }
+            historicalAnchorBootstrapEnabled = false
+            activeHistoryHighWater = nil
+            activeFetchHasFreshAnchor = true
+            pendingSyncCounter = nil
+            pendingSyncToken = nil
+            timeSyncReleaseIssued = true
             return [OuraCommands.flushBuffer(),
                     OuraCommands.getEvents(cursor: cursor, maxEvents: 255)]
 
         case .historyCursorAdvanced(let cursor, let moreData):
             guard moreData else {
                 phase = .streaming
+                pendingSyncCounter = nil
+                pendingSyncToken = nil
+                activeFetchHasFreshAnchor = false
+                timeSyncReleaseIssued = false
+                activeHistoryHighWater = nil
                 return []
             }
             // Ack-fetch (max=0) at the new cursor advances without re-pulling data (s5.3 step 4).
@@ -212,9 +309,62 @@ public final class OuraDriver {
         installedKey = nil
         anchorUtcMs = nil
         anchorRingTime = nil
+        anchorFactorMs = 100
+        pendingSyncCounter = nil
+        pendingSyncToken = nil
+        activeFetchHasFreshAnchor = false
+        timeSyncReleaseIssued = false
+        historicalAnchorBootstrapEnabled = false
+        activeHistoryHighWater = nil
     }
 
     // MARK: - Ring-time -> UTC anchor (s5.5)
+
+    /// Accept a well-formed Ring 4 `0x13` while a SyncTime request is active. Tested firmware returns
+    /// nonstandard status/echo fields and the official transport treats this as one-way liveness. This
+    /// never anchors or commits by itself; a plausible `0x42` remains mandatory.
+    @discardableResult
+    public func handleSyncTimeAcknowledgement(body: [UInt8]) -> Bool {
+        guard ringGen == .gen4,
+              OuraFraming.parseSyncTimeResponse(body) != nil,
+              pendingSyncCounter != nil else { return false }
+        return true
+    }
+
+    /// Permit one bounded scan to use a plausible backlog 0x42 as a bootstrap anchor. The transport
+    /// must refetch every skipped page from its durable cursor before committing anything.
+    public func enableHistoricalAnchorBootstrap() {
+        guard ringGen == .gen4, phase == .fetchingHistory else { return }
+        historicalAnchorBootstrapEnabled = true
+    }
+
+    /// True only when this session has a complete UTC/ring-time pair. Transports use this to keep a
+    /// fetched cursor provisional until its samples can be dated and durably flushed.
+    public var hasUtcAnchor: Bool { anchorUtcMs != nil && anchorRingTime != nil }
+
+    /// Stronger commit gate for the active fetch. Ring 4 must have received a matching token+counter
+    /// 0x42 during this fetch; legacy generations retain the session-anchor rule until qualified.
+    public var hasFreshAnchorForActiveFetch: Bool {
+        ringGen == .gen4 ? (phase == .fetchingHistory && activeFetchHasFreshAnchor && hasUtcAnchor) : hasUtcAnchor
+    }
+
+    /// Timestamping gate used while ingesting. Outside a fetch, the session anchor remains useful for
+    /// spontaneous records; during a Ring 4 fetch only its freshly-correlated anchor may resolve history.
+    public var canResolveHistoryTimestamps: Bool {
+        if ringGen == .gen4, phase == .fetchingHistory { return hasFreshAnchorForActiveFetch }
+        return hasUtcAnchor
+    }
+
+    private func invalidateAnchor() {
+        anchorUtcMs = nil
+        anchorRingTime = nil
+        anchorFactorMs = 100
+        pendingSyncCounter = nil
+        pendingSyncToken = nil
+        activeFetchHasFreshAnchor = false
+        timeSyncReleaseIssued = false
+        activeHistoryHighWater = nil
+    }
 
     /// Convert a record's ring-clock timestamp to unix seconds using the current session's anchor
     /// (OURA_PROTOCOL.md s5.5). Returns nil when no anchor has arrived yet this session, so the caller
@@ -222,7 +372,7 @@ public final class OuraDriver {
     public func unixSeconds(forRingTimestamp rt: UInt32) -> Int? {
         guard let anchorUtcMs, let anchorRingTime else { return nil }
         let deltaTicks = Int64(rt) - Int64(anchorRingTime)
-        let ms = anchorUtcMs + deltaTicks * 100   // default 100 ms/tick (s5.5); bounded input, no overflow
+        let ms = anchorUtcMs + deltaTicks * anchorFactorMs
         // #968: a corrupt/misaligned ring timestamp (seen on a full cursor=0 history dump) can convert to
         // an implausible epoch. Gate the RESULT to the same 2020-2035 plausible window used for anchoring
         // (was a weak `ms > 0`), so the caller honestly falls back to arrival time instead of banking a
@@ -250,6 +400,13 @@ public final class OuraDriver {
     /// Decode one parsed TLV inner record into zero or more events. A malformed/short record (or an
     /// unknown tag) yields []. Tier-B tags yield [] unless allowTierB is set. Per OURA_PROTOCOL.md s6.
     public func ingest(record: OuraRecord) -> [OuraEvent] {
+        let previousRingTimestamp = lastRingTimestamp
+        // Only real inner-record tag space may affect ring-time state. Unknown but structurally-valid
+        // 0x41+ records still count toward the history ACK high-water, exactly like the official client.
+        guard record.type >= 0x41 else { return [] }
+        if phase == .fetchingHistory {
+            activeHistoryHighWater = max(activeHistoryHighWater ?? 0, record.ringTimestamp)
+        }
         lastRingTimestamp = record.ringTimestamp
         guard let tag = OuraEventTag(rawValue: record.type) else {
             // Unknown tag: decode to nothing, never a guessed value (honest-data invariant).
@@ -306,15 +463,27 @@ public final class OuraDriver {
         // --- Tier A: Sleep phase (2-bit codes are verified) ---
         case .sleepPhase, .sleepPhaseAlt:
             return (OuraDecoders.decodeSleepPhase(record) ?? []).map { OuraEvent.sleepPhase($0) }
+        case .sleepPeriod:
+            guard let period = OuraDecoders.decodeSleepPeriod(record) else { return [] }
+            return [.sleepPeriod(period)]
+        case .bedtimePeriod:
+            guard let period = OuraDecoders.decodeBedtimePeriod(record) else { return [] }
+            return [.bedtimePeriod(period)]
 
         // --- Tier A: Lifecycle / state / time ---
         case .timeSync:
             // Primary UTC anchor (s5.5): always wins over a secondary RTC-beacon anchor already set.
-            guard let ts = OuraDecoders.decodeTimeSync(record) else { return [] }
-            // UNIT CORRECTION (s6.11): the 0x42 wire value is unix SECONDS, not ms. OURA_PROTOCOL.md s6.11
-            // cited it as ms from an unverified write-up; treating it as ms anchored history-fetched samples
-            // to ~1970. The decoder stays a faithful byte-level parse of the documented layout (OuraTimeSync.
-            // epochMs still names what the doc claims); the seconds->ms conversion lives here.
+            guard let ts = OuraDecoders.decodeTimeSync(record, ringGen: ringGen) else { return [] }
+            if ringGen == .gen4 {
+                let matchesActiveRequest = pendingSyncCounter.map { ts.epochMs == Int64($0) * 256 } == true
+                    && pendingSyncToken.map { ts.token == $0 } == true
+                guard matchesActiveRequest || historicalAnchorBootstrapEnabled else {
+                    // Preserve the decoded diagnostic event, but never let a stale backlog 0x42 replace
+                    // the session anchor outside the explicitly-bounded bootstrap scan.
+                    return [.timeSync(ts)]
+                }
+            }
+            // The decoded wire value is unix seconds; the seconds->ms conversion lives here.
             // CRASH-SAFETY (s6.11): a full cursor=0 history dump can hit a 0x42 record with an implausible
             // raw value (a misaligned/corrupt record deep in the backlog); a naive `* 1000` overflows Int64
             // and traps. plausibleAnchorMs bounds-checks BEFORE multiplying, so an implausible value is
@@ -322,6 +491,8 @@ public final class OuraDriver {
             if let ms = Self.plausibleAnchorMs(fromEpochSeconds: ts.epochMs) {
                 anchorUtcMs = ms
                 anchorRingTime = ts.ringTimestamp
+                anchorFactorMs = Int64(ts.factorMsPerTick)
+                if ringGen == .gen4 { activeFetchHasFreshAnchor = true }
             }
             return [.timeSync(ts)]
         case .rtcBeacon:
@@ -331,6 +502,7 @@ public final class OuraDriver {
             if anchorUtcMs == nil, let ms = Self.plausibleAnchorMs(fromEpochSeconds: Int64(r.unixSeconds)) {
                 anchorUtcMs = ms
                 anchorRingTime = r.ringTimestamp
+                anchorFactorMs = 100
             }
             return [.rtcBeacon(r)]
         case .stateChange, .wearEvent:
@@ -342,9 +514,11 @@ public final class OuraDriver {
             }
             return []
         case .ringStart:
-            // 0x41 ring_start_ind: a lifecycle marker (the app uses it to invalidate the UTC anchor on
-            // rt regression). It carries no biometric value, so emit nothing here. Per OURA_PROTOCOL.md
-            // s5.5 / s6.15. The app observes ring-start via the record stream directly.
+            // A reboot can reset the ring clock. Invalidate the entire UTC pair when ring-start regresses;
+            // the next correlated SyncTime/0x42 establishes a fresh one.
+            if previousRingTimestamp != 0, record.ringTimestamp < previousRingTimestamp {
+                invalidateAnchor()
+            }
             return []
 
         // --- Tier B (only reached when allowTierB == true; otherwise dropped above) ---
@@ -408,6 +582,14 @@ public final class OuraDriver {
         // Live-HR enable ACKs advance the triplet (s5.6): 0x21 is the dhr_read feature-read ACK from
         // step 1 (`2f 06 21 02 01 11 02 00`), 0x23 acks the enable write (step 2), 0x27 acks the
         // subscribe write (step 3). All three must be recognised or the sequencer stalls at step 0.
+        if frame.subop == 0x21, phase != .enablingLiveHR,
+           frame.subBody.count >= 5, frame.subBody[0] == 0x04 {
+            return .featureStatus(OuraFeatureStatus(feature: frame.subBody[0],
+                                                    mode: frame.subBody[1],
+                                                    status: frame.subBody[2],
+                                                    state: frame.subBody[3],
+                                                    subscription: frame.subBody[4]))
+        }
         if frame.subop == 0x21 || frame.subop == 0x23 || frame.subop == 0x27 {
             return .enableAck
         }
@@ -420,6 +602,7 @@ public final class OuraDriver {
         case authStatus(OuraAuthStatus)
         case liveHRPush([UInt8])
         case enableAck
+        case featureStatus(OuraFeatureStatus)
         case unhandled
     }
 }

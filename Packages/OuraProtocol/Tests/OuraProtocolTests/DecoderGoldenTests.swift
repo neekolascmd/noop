@@ -79,8 +79,8 @@ final class DecoderGoldenTests: XCTestCase {
         let rec = record("6f0802000100105f60ff")
         let s = OuraDecoders.decodeSpO2PerSample(rec)
         XCTAssertEqual(s, [
-            OuraSpO2(ringTimestamp: rt, value: 95),
-            OuraSpO2(ringTimestamp: rt, value: 96),
+            OuraSpO2(ringTimestamp: rt, value: 95, unit: "percent", sampleOffsetSeconds: -1),
+            OuraSpO2(ringTimestamp: rt, value: 96, unit: "percent"),
         ])
     }
 
@@ -90,7 +90,20 @@ final class DecoderGoldenTests: XCTestCase {
         // BE 0x03CA = 970. If decoded LE it would be 0xCA03 = 51715, so this proves the BE path.
         let rec = record("7b060200010003ca")
         let s = OuraDecoders.decodeSpO2Stable(rec)
-        XCTAssertEqual(s, OuraSpO2(ringTimestamp: rt, value: 970))
+        XCTAssertEqual(s, OuraSpO2(ringTimestamp: rt, value: 970, unit: "tenths_percent"))
+    }
+
+    func testSleepPeriod0x6AAndBedtimeBounds0x76() {
+        let sleep = record("6a0e020001006e000000700003010000")
+        XCTAssertEqual(OuraDecoders.decodeSleepPeriod(sleep),
+                       OuraSleepPeriod(ringTimestamp: rt, averageHeartRate: 55,
+                                       respirationRate: 14, motionCount: 3, sleepState: 1))
+
+        let bedtime = record("760c02000100e8030000740e0000")
+        XCTAssertEqual(OuraDecoders.decodeBedtimePeriod(bedtime),
+                       OuraBedtimePeriod(ringTimestamp: rt,
+                                         startRingTimestamp: 1000,
+                                         endRingTimestamp: 3700))
     }
 
     // MARK: - 0x46 temperature (int16 LE / 100)
@@ -105,13 +118,30 @@ final class DecoderGoldenTests: XCTestCase {
         ])
     }
 
-    // MARK: - 0x42 time sync (int64 LE epoch ms + tz int8 x1800)
+    // MARK: - 0x42 time sync (generation-specific)
 
     func testTimeSync0x42() {
         // epoch 1719662400000 ms, tz byte 2 -> 3600 s.
         let rec = record("420d0200010000d2dd639001000002")
         let ts = OuraDecoders.decodeTimeSync(rec)
         XCTAssertEqual(ts, OuraTimeSync(ringTimestamp: rt, epochMs: 1_719_662_400_000, tzOffsetSeconds: 3600))
+    }
+
+    func testRing4TimeSync0x42UsesCompressedEpochAndTokenFactor() {
+        // token 0x00, counter 0x6553F1 LE -> 6,640,625 * 256 = 1,700,000,000 seconds.
+        let normal = record("420d0200010000f1536500000000f6")
+        XCTAssertEqual(
+            OuraDecoders.decodeTimeSync(normal, ringGen: .gen4),
+            OuraTimeSync(ringTimestamp: rt, epochMs: 1_700_000_000,
+                         tzOffsetSeconds: 0, factorMsPerTick: 100, token: 0x00)
+        )
+
+        let burst = record("420d02000100fdf1536500000000f6")
+        XCTAssertEqual(
+            OuraDecoders.decodeTimeSync(burst, ringGen: .gen4),
+            OuraTimeSync(ringTimestamp: rt, epochMs: 1_700_000_000,
+                         tzOffsetSeconds: 0, factorMsPerTick: 1, token: 0xFD)
+        )
     }
 
     // MARK: - 0x4E sleep phase (2-bit codes MSB-first; header byte skipped)

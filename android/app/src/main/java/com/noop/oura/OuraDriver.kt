@@ -43,8 +43,20 @@ sealed class OuraTransition {
     /** A live-HR enable/subscribe ACK arrived; advance the triplet (or, when done, mark streaming). */
     object EnableAckReceived : OuraTransition()
 
-    /** The app wants to fetch buffered history from this cursor (optional path). */
-    data class StartHistoryFetch(val cursor: Long) : OuraTransition()
+    /** The app wants to sync the ring clock, then fetch buffered history from this cursor. */
+    data class StartHistoryFetch(val cursor: Long, val unixSeconds: Long) : OuraTransition()
+
+    /** Ring 4 acknowledged SyncTime; release Flush + GetEvents only after that correlation point. */
+    data class TimeSyncAcknowledged(val cursor: Long) : OuraTransition()
+
+    /** Guarded one-shot fallback; a matching fresh 0x42 is still mandatory before cursor commit. */
+    data class TimeSyncReleaseTimedOut(val cursor: Long) : OuraTransition()
+
+    /** Read the next provisional page without ACK/flush while retaining active SyncTime correlation. */
+    data class ContinueProvisionalHistory(val cursor: Long) : OuraTransition()
+
+    /** Refetch skipped pages from the durable cursor after a bounded scan finds a real 0x42 anchor. */
+    data class RestartHistoryFromBootstrap(val cursor: Long) : OuraTransition()
 
     /** The last GetEvents response advanced the cursor to this value; continue or stop. */
     data class HistoryCursorAdvanced(val cursor: Long, val moreData: Boolean) : OuraTransition()
@@ -86,6 +98,8 @@ class OuraDriver(
      * Per OURA_PROTOCOL.md s3.2 (the 0x24 SetAuthKey is a DANGEROUS, one-time provisioning write).
      */
     val allowKeyInstall: Boolean = false,
+    /** Deterministic token injection for replay/tests; production uses a fresh random byte. */
+    private val timeSyncToken: Int? = null,
 ) {
     var phase: OuraDriverPhase = OuraDriverPhase.Idle
         private set
@@ -101,7 +115,7 @@ class OuraDriver(
 
     /**
      * Ring-time -> UTC anchor (OURA_PROTOCOL.md s5.5): the ring's clock ticks at 100 ms/tick by default
-     * (burst-mode 1 ms/tick, s5.5, is NOT modeled in v1). Set from the ring's own 0x42 time-sync event
+     * and 1 ms/tick when Ring 4's 0x42 token is 0xFD. Set from the ring's own 0x42 time-sync event
      * (primary) or, only while no 0x42 has arrived yet THIS session, the coarser 1s-granularity 0x85 RTC
      * beacon (secondary). null until the first anchor event of this session: a record decoded before then
      * has no computable UTC time, and [unixSeconds] honestly returns null rather than guessing. A stale
@@ -110,6 +124,23 @@ class OuraDriver(
      */
     private var anchorUtcMs: Long? = null
     private var anchorRingTime: Long? = null
+    /** Generation/token-specific ring-clock scale selected by the primary 0x42 anchor. */
+    private var anchorFactorMs: Long = 100L
+    /** Counter from the active Ring 4 SyncTime request; used to reject stale backlog 0x42 anchors. */
+    private var pendingSyncCounter: Long? = null
+    /** Random request token; the fetched 0x42 must match it as well as the counter. */
+    private var pendingSyncToken: Int? = null
+    /** Cursor commit requires an anchor created for this fetch, not an older session anchor. */
+    private var activeFetchHasFreshAnchor = false
+    /** Duplicate/late 0x13 responses must not enqueue duplicate flush/fetch writes. */
+    private var timeSyncReleaseIssued = false
+    /** Allows a plausible backlog 0x42 only during the transport's bounded bootstrap scan. */
+    private var historicalAnchorBootstrapEnabled = false
+    /** Ring 4 category masks are configured once per driver/BLE session, not each periodic fetch. */
+    private var ring4HistoryCategoriesConfigured = false
+    /** Max ring timestamp across every structurally-valid inner record in the active history batch. */
+    var activeHistoryHighWater: Long? = null
+        private set
 
     /**
      * The freshly-provisioned key the transport generated during an adopt flow (s3.2). Once set by
@@ -142,9 +173,12 @@ class OuraDriver(
                 identity
             } else {
                 phase = OuraDriverPhase.Authenticating
-                // Ring 4 firmware 2.12.3 stalls control traffic around SetNotification. Transport-level
-                // CCCD subscriptions are sufficient, so request the nonce directly.
-                listOf(OuraCommand("get_nonce", OuraAuth.getAuthNonceCommand())) + identity
+                if (ringGen == OuraRingGen.GEN4) {
+                    identity + OuraCommands.ring4PreAuthSessionReads() +
+                        OuraCommand("get_nonce", OuraAuth.getAuthNonceCommand())
+                } else {
+                    listOf(OuraCommand("get_nonce", OuraAuth.getAuthNonceCommand())) + identity
+                }
             }
         }
 
@@ -207,16 +241,96 @@ class OuraDriver(
 
         is OuraTransition.StartHistoryFetch -> {
             phase = OuraDriverPhase.FetchingHistory
-            // Flush flash buffer first, then fetch up to 255 events from the cursor (s5.3).
-            listOf(
+            activeHistoryHighWater = null
+            activeFetchHasFreshAnchor = false
+            timeSyncReleaseIssued = false
+            if (ringGen == OuraRingGen.GEN4 && after.unixSeconds >= 0L) {
+                val sync = if (timeSyncToken == null) OuraCommands.syncTime(after.unixSeconds)
+                else OuraCommands.syncTime(after.unixSeconds, token = timeSyncToken)
+                pendingSyncCounter = (after.unixSeconds / 256L) and 0x00FF_FFFFL
+                pendingSyncToken = sync.bytes[2] and 0xFF
+                // Enable the Ring 4 event stream, then gate data-plane writes on its correlated 0x13.
+                // Back-to-back
+                // SyncTime/Flush/GetEvents writes race on real hardware and can deliver history before
+                // the fresh 0x42 anchor exists.
+                buildList {
+                    add(OuraCommands.enableEventStream())
+                    add(sync)
+                    if (!ring4HistoryCategoriesConfigured) {
+                        add(OuraCommands.ring4PostSyncStatePulse())
+                        addAll(OuraCommands.ring4EventCategorySubscriptions())
+                        add(OuraCommands.getBattery())
+                        val parameterReads = OuraCommands.ring4HistoryParameterReads()
+                        addAll(parameterReads.take(2))
+                        add(OuraCommands.ring4HistorySessionMode())
+                        addAll(parameterReads.drop(2))
+                        ring4HistoryCategoriesConfigured = true
+                    }
+                }
+            } else {
+                // Gen 3 retains its legacy sequence until its response layout is hardware-qualified.
+                listOf(
+                    OuraCommands.syncTime(after.unixSeconds),
+                    OuraCommands.flushBuffer(),
+                    OuraCommands.getEvents(cursor = after.cursor, maxEvents = 255),
+                )
+            }
+        }
+
+        is OuraTransition.TimeSyncAcknowledged,
+        is OuraTransition.TimeSyncReleaseTimedOut -> {
+            val cursor = when (after) {
+                is OuraTransition.TimeSyncAcknowledged -> after.cursor
+                is OuraTransition.TimeSyncReleaseTimedOut -> after.cursor
+                else -> error("unreachable")
+            }
+            if (ringGen != OuraRingGen.GEN4 || phase != OuraDriverPhase.FetchingHistory ||
+                pendingSyncCounter == null || timeSyncReleaseIssued) {
+                emptyList()
+            } else {
+                timeSyncReleaseIssued = true
+                listOf(
                 OuraCommands.flushBuffer(),
-                OuraCommands.getEvents(cursor = after.cursor, maxEvents = 255),
-            )
+                OuraCommands.getEvents(cursor = cursor, maxEvents = 255),
+                )
+            }
+        }
+
+        is OuraTransition.ContinueProvisionalHistory -> {
+            if (ringGen != OuraRingGen.GEN4 || phase != OuraDriverPhase.FetchingHistory ||
+                hasFreshAnchorForActiveFetch) {
+                emptyList()
+            } else {
+                // Read-only look-ahead: never ACK (max=0), flush, or reset active SyncTime correlation.
+                listOf(OuraCommands.getEvents(cursor = after.cursor, maxEvents = 255))
+            }
+        }
+
+        is OuraTransition.RestartHistoryFromBootstrap -> {
+            if (ringGen != OuraRingGen.GEN4 || phase != OuraDriverPhase.FetchingHistory || !hasUtcAnchor) {
+                emptyList()
+            } else {
+                historicalAnchorBootstrapEnabled = false
+                activeHistoryHighWater = null
+                activeFetchHasFreshAnchor = true
+                pendingSyncCounter = null
+                pendingSyncToken = null
+                timeSyncReleaseIssued = true
+                listOf(
+                    OuraCommands.flushBuffer(),
+                    OuraCommands.getEvents(cursor = after.cursor, maxEvents = 255),
+                )
+            }
         }
 
         is OuraTransition.HistoryCursorAdvanced -> {
             if (!after.moreData) {
                 phase = OuraDriverPhase.Streaming
+                pendingSyncCounter = null
+                pendingSyncToken = null
+                activeFetchHasFreshAnchor = false
+                timeSyncReleaseIssued = false
+                activeHistoryHighWater = null
                 emptyList()
             } else {
                 // Ack-fetch (max=0) at the new cursor advances without re-pulling data (s5.3 step 4).
@@ -280,9 +394,63 @@ class OuraDriver(
         // A stale anchor must not survive stop()/a new session - the ring may have rebooted (s5.5).
         anchorUtcMs = null
         anchorRingTime = null
+        anchorFactorMs = 100L
+        pendingSyncCounter = null
+        pendingSyncToken = null
+        activeFetchHasFreshAnchor = false
+        timeSyncReleaseIssued = false
+        historicalAnchorBootstrapEnabled = false
+        activeHistoryHighWater = null
     }
 
     // MARK: - Ring-time -> UTC anchor (s5.5)
+
+    /**
+     * Accept any well-formed Ring 4 0x13 while a SyncTime request is active. This is liveness only;
+     * a plausible 0x42 remains mandatory for anchor/cursor commit.
+     */
+    fun handleSyncTimeAcknowledgement(body: IntArray): Boolean {
+        if (ringGen != OuraRingGen.GEN4) return false
+        if (OuraFraming.parseSyncTimeResponse(body) == null) return false
+        return pendingSyncCounter != null
+    }
+
+    /** Enable bounded backlog-anchor bootstrap; skipped pages must be refetched before commit. */
+    fun enableHistoricalAnchorBootstrap() {
+        if (ringGen == OuraRingGen.GEN4 && phase == OuraDriverPhase.FetchingHistory) {
+            historicalAnchorBootstrapEnabled = true
+        }
+    }
+
+    /** True only while this session has a complete UTC/ring-time pair. */
+    val hasUtcAnchor: Boolean get() = anchorUtcMs != null && anchorRingTime != null
+
+    /** Strong commit gate for the active Ring 4 fetch; legacy generations retain session-anchor gating. */
+    val hasFreshAnchorForActiveFetch: Boolean
+        get() = if (ringGen == OuraRingGen.GEN4) {
+            phase == OuraDriverPhase.FetchingHistory && activeFetchHasFreshAnchor && hasUtcAnchor
+        } else {
+            hasUtcAnchor
+        }
+
+    /** An old session anchor remains useful outside a fetch, never while a Ring 4 batch is provisional. */
+    val canResolveHistoryTimestamps: Boolean
+        get() = if (ringGen == OuraRingGen.GEN4 && phase == OuraDriverPhase.FetchingHistory) {
+            hasFreshAnchorForActiveFetch
+        } else {
+            hasUtcAnchor
+        }
+
+    private fun invalidateAnchor() {
+        anchorUtcMs = null
+        anchorRingTime = null
+        anchorFactorMs = 100L
+        pendingSyncCounter = null
+        pendingSyncToken = null
+        activeFetchHasFreshAnchor = false
+        timeSyncReleaseIssued = false
+        activeHistoryHighWater = null
+    }
 
     /**
      * Convert a record's ring-clock timestamp to unix seconds using the current session's anchor
@@ -294,7 +462,7 @@ class OuraDriver(
         val anchorMs = anchorUtcMs ?: return null
         val anchorRt = anchorRingTime ?: return null
         val deltaTicks = forRingTimestamp - anchorRt
-        val ms = anchorMs + deltaTicks * 100   // default 100 ms/tick (s5.5); bounded input, no overflow
+        val ms = anchorMs + deltaTicks * anchorFactorMs
         // #968: a corrupt/misaligned ring timestamp (seen on a full cursor=0 history dump) can convert to
         // an implausible epoch. Gate the RESULT to the same 2020-2035 plausible window used for anchoring
         // (was a weak `ms <= 0`), so the caller honestly falls back to arrival time instead of banking a
@@ -310,12 +478,19 @@ class OuraDriver(
      * gap only while no time-sync anchor exists yet). Kotlin twin of the anchor-set logic inlined in the
      * Swift driver's `.timeSync` / `.rtcBeacon` ingest cases.
      */
-    private fun setAnchorIfPlausible(epochSeconds: Long, ringTimestamp: Long, preferPrimary: Boolean) {
+    private fun setAnchorIfPlausible(
+        epochSeconds: Long,
+        ringTimestamp: Long,
+        preferPrimary: Boolean,
+        factorMsPerTick: Int = 100,
+    ): Boolean {
         // A secondary (beacon) anchor never displaces an already-set primary (time-sync) anchor.
-        if (!preferPrimary && anchorUtcMs != null) return
-        val ms = plausibleAnchorMs(epochSeconds) ?: return
+        if (!preferPrimary && anchorUtcMs != null) return false
+        val ms = plausibleAnchorMs(epochSeconds) ?: return false
         anchorUtcMs = ms
         anchorRingTime = ringTimestamp
+        anchorFactorMs = factorMsPerTick.toLong()
+        return true
     }
 
     /**
@@ -337,6 +512,13 @@ class OuraDriver(
      * unknown tag) yields []. Tier-B tags yield [] unless allowTierB is set. Per OURA_PROTOCOL.md s6.
      */
     fun ingest(record: OuraRecord): List<OuraEvent> {
+        val previousRingTimestamp = lastRingTimestamp
+        // Only real inner tag space may mutate ring-time state. Unknown but structurally-valid records
+        // still advance the batch high-water used for the durable history ACK.
+        if (record.type < 0x41) return emptyList()
+        if (phase == OuraDriverPhase.FetchingHistory) {
+            activeHistoryHighWater = maxOf(activeHistoryHighWater ?: 0L, record.ringTimestamp)
+        }
         lastRingTimestamp = record.ringTimestamp
         val tag = OuraEventTag.fromRaw(record.type)
             // Unknown tag: decode to nothing, never a guessed value (honest-data invariant).
@@ -390,18 +572,33 @@ class OuraDriver(
             // --- Tier A: Sleep phase (2-bit codes are verified) ---
             OuraEventTag.SLEEP_PHASE, OuraEventTag.SLEEP_PHASE_ALT ->
                 (OuraDecoders.decodeSleepPhase(record) ?: emptyList()).map { OuraEvent.SleepPhaseEvent(it) }
+            OuraEventTag.SLEEP_PERIOD ->
+                OuraDecoders.decodeSleepPeriod(record)?.let { listOf(OuraEvent.SleepPeriodEvent(it)) } ?: emptyList()
+            OuraEventTag.BEDTIME_PERIOD ->
+                OuraDecoders.decodeBedtimePeriod(record)?.let { listOf(OuraEvent.BedtimePeriodEvent(it)) } ?: emptyList()
 
             // --- Tier A: Lifecycle / state / time ---
             OuraEventTag.TIME_SYNC -> {
                 // Primary UTC anchor (s5.5): always wins over a secondary RTC-beacon anchor already set.
-                val ts = OuraDecoders.decodeTimeSync(record) ?: return emptyList()
-                // UNIT CORRECTION (s6.11): the 0x42 wire value is unix SECONDS, not ms (treating it as ms
-                // anchored history-fetched samples to ~1970). OuraTimeSync.epochMs still names what the doc
-                // claims; the seconds->ms conversion lives in the anchor gate.
+                val ts = OuraDecoders.decodeTimeSync(record, ringGen) ?: return emptyList()
+                if (ringGen == OuraRingGen.GEN4) {
+                    val matchesActiveRequest = pendingSyncCounter?.let { ts.epochMs == it * 256L } == true &&
+                        pendingSyncToken?.let { ts.token == it } == true
+                    if (!matchesActiveRequest && !historicalAnchorBootstrapEnabled) {
+                        return listOf(OuraEvent.TimeSyncEvent(ts))
+                    }
+                }
+                // The decoded wire value is unix seconds; the seconds->ms conversion lives in the anchor gate.
                 // CRASH-SAFETY (s6.11): a full cursor=0 history dump can hit a 0x42 record with an
                 // implausible raw value; plausibleAnchorMs bounds-checks BEFORE multiplying, so an
                 // implausible value is safely ignored (never anchors to garbage) instead of overflowing.
-                setAnchorIfPlausible(ts.epochMs, ts.ringTimestamp, preferPrimary = true)
+                val anchored = setAnchorIfPlausible(
+                    ts.epochMs,
+                    ts.ringTimestamp,
+                    preferPrimary = true,
+                    factorMsPerTick = ts.factorMsPerTick,
+                )
+                if (ringGen == OuraRingGen.GEN4 && anchored) activeFetchHasFreshAnchor = true
                 listOf(OuraEvent.TimeSyncEvent(ts))
             }
             OuraEventTag.RTC_BEACON -> {
@@ -417,11 +614,12 @@ class OuraDriver(
                 OuraDecoders.decodeDebugText(record)?.let {
                     listOf(OuraEvent.DebugTextEvent(ringTimestamp = record.ringTimestamp, text = it))
                 } ?: emptyList()
-            OuraEventTag.RING_START ->
-                // 0x41 ring_start_ind: a lifecycle marker (the app uses it to invalidate the UTC anchor on
-                // rt regression). It carries no biometric value, so emit nothing here. Per OURA_PROTOCOL.md
-                // s5.5 / s6.15. The app observes ring-start via the record stream directly.
+            OuraEventTag.RING_START -> {
+                if (previousRingTimestamp != 0L && record.ringTimestamp < previousRingTimestamp) {
+                    invalidateAnchor()
+                }
                 emptyList()
+            }
 
             // --- Tier B (only reached when allowTierB == true; otherwise dropped above) ---
             OuraEventTag.SLEEP_SUMMARY_1, OuraEventTag.SLEEP_SUMMARY_B, OuraEventTag.SLEEP_SUMMARY_C,
@@ -512,6 +710,18 @@ class OuraDriver(
         // Live-HR enable ACKs advance the triplet (s5.6): 0x21 is the dhr_read feature-read ACK from
         // step 1 (`2f 06 21 02 01 11 02 00`), 0x23 acks the enable write (step 2), 0x27 acks the
         // subscribe write (step 3). All three must be recognised or the sequencer stalls at step 0.
+        if (frame.subop == 0x21 && phase != OuraDriverPhase.EnablingLiveHR &&
+            frame.subBody.size >= 5 && frame.subBody[0] == 0x04) {
+            return SecureRouting.FeatureStatus(
+                OuraFeatureStatus(
+                    feature = frame.subBody[0],
+                    mode = frame.subBody[1],
+                    status = frame.subBody[2],
+                    state = frame.subBody[3],
+                    subscription = frame.subBody[4],
+                ),
+            )
+        }
         if (frame.subop == 0x21 || frame.subop == 0x23 || frame.subop == 0x27) {
             return SecureRouting.EnableAck
         }
@@ -541,6 +751,7 @@ class OuraDriver(
         }
 
         object EnableAck : SecureRouting()
+        data class FeatureStatus(val value: OuraFeatureStatus) : SecureRouting()
         object Unhandled : SecureRouting()
     }
 

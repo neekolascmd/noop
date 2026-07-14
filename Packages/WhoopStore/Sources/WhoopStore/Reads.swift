@@ -139,11 +139,11 @@ extension WhoopStore {
     public func spo2Samples(deviceId: String, from: Int, to: Int, limit: Int) async throws -> [SpO2Sample] {
         try syncRead { db in
             try Row.fetchAll(db, sql: """
-                SELECT ts, red, ir FROM spo2Sample
+                SELECT ts, red, ir, unit FROM spo2Sample
                 WHERE deviceId = ? AND ts >= ? AND ts <= ?
                 ORDER BY ts ASC LIMIT ?
                 """, arguments: [deviceId, from, to, limit])
-                .map { SpO2Sample(ts: $0["ts"], red: $0["red"], ir: $0["ir"]) }
+                .map { SpO2Sample(ts: $0["ts"], red: $0["red"], ir: $0["ir"], unit: $0["unit"]) }
         }
     }
 

@@ -455,6 +455,7 @@ final class AppModel: ObservableObject {
         coordinator.start()
         self.deviceRegistry = registry
         self.sourceCoordinator = coordinator
+        bindOuraAdoptMirror()
         // Shared chrome observes AppModel, not DeviceRegistry directly. Forward registry mutations so an
         // active-device switch or rename updates every device-aware label immediately rather than waiting
         // for an unrelated heart-rate/battery publication to trigger a redraw.
@@ -890,6 +891,9 @@ final class AppModel: ObservableObject {
     /// The active Oura ring's honest needs-pairing message (mirrored off the live source), surfaced verbatim
     /// on the wizard's Failed step. nil when the ring is fine or no Oura source is live.
     @Published private(set) var ouraNeedsPairing: String?
+    /// Read-only feature-0x04 state for the active ring. nil until the ring replies or when no Oura
+    /// source is connected; false is surfaced so the user can explicitly opt in from Devices.
+    @Published private(set) var ouraSpO2AutomaticEnabled: Bool?
     /// Combine subscriptions mirroring the live Oura source's `adoptPhase` / `needsPairing` into the two
     /// published properties above. Re-bound whenever the active Oura source changes.
     private var ouraAdoptCancellables = Set<AnyCancellable>()
@@ -906,6 +910,11 @@ final class AppModel: ObservableObject {
         ouraNeedsPairing = nil
         registerDevice(device, makeActive: true)
         bindOuraAdoptMirror()
+    }
+
+    /// Called only after the Devices-screen confirmation explains the ring-setting change.
+    func enableOuraAutomaticSpO2() {
+        sourceCoordinator?.requestOuraAutomaticSpO2Enable()
     }
 
     /// (Re)bind the adopt-outcome mirror to whichever `OuraLiveSource` the coordinator has live now and on
@@ -929,6 +938,14 @@ final class AppModel: ObservableObject {
             }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] in self?.ouraNeedsPairing = $0 }
+            .store(in: &ouraAdoptCancellables)
+        coordinator.$ouraSource
+            .flatMap { source -> AnyPublisher<Bool?, Never> in
+                source?.$spo2AutomaticEnabled.eraseToAnyPublisher()
+                    ?? Just(nil).eraseToAnyPublisher()
+            }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in self?.ouraSpO2AutomaticEnabled = $0 }
             .store(in: &ouraAdoptCancellables)
     }
 

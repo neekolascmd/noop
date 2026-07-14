@@ -1,5 +1,6 @@
 import XCTest
 import CoreBluetooth
+import WhoopStore
 @testable import Strand
 
 /// Pins the #78 give-up hardening added alongside #747/#750:
@@ -12,6 +13,35 @@ import CoreBluetooth
 ///    attempt while the pause is latched - what makes the give-up provably unable to strand a strap the
 ///    user has since freed, while never re-entering the refusal hammer.
 final class BondLoopHardeningTests: XCTestCase {
+
+    // MARK: system reconnect gate
+
+    /// A radio poweredOn callback must not resurrect WHOOP after SourceCoordinator deliberately stopped it
+    /// for an active Oura ring / generic strap. Switching back to WHOOP uses the explicit connect path.
+    func testSystemReconnect_staysSuppressedAfterIntentionalTeardown() {
+        XCTAssertFalse(BLEManager.shouldConnectFromSystem(intentionalDisconnect: true,
+                                                          whoopConnectionAllowed: true))
+        XCTAssertFalse(BLEManager.shouldConnectFromSystem(intentionalDisconnect: false,
+                                                          whoopConnectionAllowed: false))
+        XCTAssertFalse(BLEManager.shouldConnectFromSystem(intentionalDisconnect: false,
+                                                          whoopConnectionAllowed: nil))
+        XCTAssertTrue(BLEManager.shouldConnectFromSystem(intentionalDisconnect: false,
+                                                         whoopConnectionAllowed: true))
+    }
+
+    /// The cold-launch classifier must not route WHOOP bootstrap writes into an active Oura/generic row.
+    func testRegistryClassifier_acceptsOnlyWhoopIdentity() {
+        let now = Int(Date().timeIntervalSince1970)
+        let whoop = PairedDevice(id: "my-whoop", brand: "WHOOP", model: "WHOOP", sourceKind: .liveBLE,
+                                 capabilities: [.hr], status: .active, addedAt: now, lastSeenAt: now)
+        let oura = PairedDevice(id: "ring-test", brand: "Oura", model: "Oura Ring 4", sourceKind: .oura,
+                                capabilities: [.hr], status: .active, addedAt: now, lastSeenAt: now)
+        let polar = PairedDevice(id: "strap-test", brand: "Polar", model: "H10", sourceKind: .liveBLE,
+                                 capabilities: [.hr], status: .active, addedAt: now, lastSeenAt: now)
+        XCTAssertTrue(BLEManager.registryDeviceIsWhoop(whoop))
+        XCTAssertFalse(BLEManager.registryDeviceIsWhoop(oura))
+        XCTAssertFalse(BLEManager.registryDeviceIsWhoop(polar))
+    }
 
     // MARK: isInsufficientAuthError (hole 1)
 

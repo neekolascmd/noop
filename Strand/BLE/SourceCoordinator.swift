@@ -349,6 +349,15 @@ final class SourceCoordinator: ObservableObject {
     /// (nil → the source drives its HONEST `needsPairing` path and streams nothing, never a fake value).
     private func startOuraSource(id: String) {
         let ringGen = OuraRingGen.from(model: model(for: id) ?? "")
+        let ringName = model(for: id) ?? "Oura Ring"
+        // Repair/seed the generic device metadata under the ring's own identity. Older startup ordering
+        // could let BLEManager label this row "WHOOP 4.0" before SourceCoordinator took over; reconnecting
+        // the Oura source now self-heals that presentation without touching biometric samples.
+        Task { [storeHandle] in
+            if let store = await storeHandle() {
+                try? await store.upsertDevice(id: id, mac: nil, name: ringName)
+            }
+        }
         // Adopt consent is consumed for exactly this start: only the session the user explicitly granted may
         // install a key (s3.2). Clearing it here means a later reconnect of the SAME ring is a normal
         // read-only session that re-authenticates with the now-stored key and never re-installs.
@@ -361,6 +370,15 @@ final class SourceCoordinator: ObservableObject {
             authKey: { OuraKeyStore.read(deviceId: id) },
             persist: { [storeHandle] streams in
                 Task { if let store = await storeHandle() { _ = try? await store.insert(streams, deviceId: id) } }
+            },
+            persistSleepSession: { [storeHandle] start, end in
+                Task {
+                    guard let store = await storeHandle() else { return }
+                    let session = CachedSleepSession(startTs: start, endTs: end,
+                                                     efficiency: nil, restingHr: nil,
+                                                     avgHrv: nil, stagesJSON: nil)
+                    _ = try? await store.upsertSleepSessions([session], deviceId: id + "-noop")
+                }
             },
             log: straplog,
             onBattery: { [live] pct in live.setBattery(Double(pct)) },
@@ -380,6 +398,11 @@ final class SourceCoordinator: ObservableObject {
     /// active. Per OURA_PROTOCOL.md s3.2 the install is a one-time, consent-gated provisioning write.
     func requestOuraAdopt(deviceId: String) {
         pendingAdoptDeviceId = deviceId
+    }
+
+    /// Forward the Devices-screen's explicit opt-in to the currently active Oura source.
+    func requestOuraAutomaticSpO2Enable() {
+        ouraSource?.requestAutomaticSpO2Enable()
     }
 
     /// Stop whichever non-WHOOP source (standard strap, FTMS machine, Huami device, or Oura ring) is live,

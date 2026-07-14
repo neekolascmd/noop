@@ -53,7 +53,7 @@ data class RrRow(val ts: Long, val rrMs: Int)
 /** payloadJSON is the deterministic sorted-keys JSON for the remaining parsed fields. */
 data class EventEntry(val ts: Long, val kind: String, val payloadJSON: String)
 data class BatteryRow(val ts: Long, val soc: Double?, val mv: Int?, val charging: Boolean? = null)
-data class Spo2Row(val ts: Long, val red: Int, val ir: Int)
+data class Spo2Row(val ts: Long, val red: Int, val ir: Int, val unit: String = "raw_adc")
 data class SkinTempRow(val ts: Long, val raw: Int)
 /**
  * Cumulative u16 step/motion counter at [ts] (WHOOP5 step_motion_counter@57). deviceId attached on insert. (#78)
@@ -178,7 +178,7 @@ class WhoopRepository(private val dao: WhoopDao) {
         val batIds = if (streams.battery.isEmpty()) emptyList() else
             dao.insertBattery(streams.battery.map { BatterySample(deviceId, it.ts, it.soc, it.mv, it.charging) })
         val spo2Ids = if (streams.spo2.isEmpty()) emptyList() else
-            dao.insertSpo2(streams.spo2.map { Spo2Sample(deviceId, it.ts, it.red, it.ir) })
+            dao.insertSpo2(streams.spo2.map { Spo2Sample(deviceId, it.ts, it.red, it.ir, it.unit) })
         val skinIds = if (streams.skinTemp.isEmpty()) emptyList() else
             dao.insertSkinTemp(streams.skinTemp.map { SkinTempSample(deviceId, it.ts, it.raw) })
         // activityClass (#316, v13 column) is the @63 activity-class enum (0=still/1=walk/2=run) the decoder

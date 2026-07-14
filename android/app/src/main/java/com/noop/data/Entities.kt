@@ -127,6 +127,7 @@ data class Spo2Sample(
     val ts: Long,
     val red: Int,
     val ir: Int,
+    @ColumnInfo(defaultValue = "'raw_adc'") val unit: String = "raw_adc",
     val synced: Int = 0,
 )
 

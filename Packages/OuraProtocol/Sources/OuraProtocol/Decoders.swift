@@ -203,13 +203,14 @@ public enum OuraDecoders {
         // byte6 high nibble [7:4] is a base/status field, NOT an offset to add to each sample. Real Gen 3
         // captures (#968, pipiche38) show samples[] are DIRECT SpO2 percentages (~95-96), so adding the
         // scaled base produced impossible ~223% readings. The samples themselves are the percentage.
+        let samples = b.dropFirst().prefix { $0 != 0xFF }.map(Int.init)
         var out: [OuraSpO2] = []
-        var i = 1
-        while i < b.count {
-            let raw = Int(b[i])
-            if raw == 0xFF { break }                  // terminator
-            out.append(OuraSpO2(ringTimestamp: rec.ringTimestamp, value: raw))
-            i += 1
+        for (index, raw) in samples.enumerated() {
+            // The record timestamp belongs to the newest value; preceding bytes are one second apart,
+            // ordered oldest -> newest.
+            let offset = index - (samples.count - 1)
+            out.append(OuraSpO2(ringTimestamp: rec.ringTimestamp, value: raw,
+                                unit: "percent", sampleOffsetSeconds: offset))
         }
         return out.isEmpty ? nil : out
     }
@@ -222,7 +223,7 @@ public enum OuraDecoders {
         let b = rec.payload
         guard b.count >= 2 else { return nil }
         let value = u16be(b, 0)                       // BIG-endian footgun
-        return OuraSpO2(ringTimestamp: rec.ringTimestamp, value: value)
+        return OuraSpO2(ringTimestamp: rec.ringTimestamp, value: value, unit: "tenths_percent")
     }
 
     // MARK: - SpO2 DC, sign-magnitude deltas (0x77; s6.7)
@@ -320,17 +321,30 @@ public enum OuraDecoders {
 
     // MARK: - Time sync (0x42; s6.11)
 
-    /// Decode the 0x42 time-sync ind: bytes 6-13 = int64 LE epoch ms; byte14 = int8 tz offset in
-    /// 30-min units (x1800 = seconds). Per OURA_PROTOCOL.md s6.11. Returns nil on a short body.
-    public static func decodeTimeSync(_ rec: OuraRecord) -> OuraTimeSync? {
+    /// Decode the generation-specific 0x42 time-sync indication (OURA_PROTOCOL.md s6.11).
+    /// Ring 4: token + u24 counter where unix seconds = counter * 256, followed by five constants.
+    /// Gen 3 (and unverified Gen 5 fallback): int64 LE unix seconds + int8 timezone half-hours.
+    public static func decodeTimeSync(_ rec: OuraRecord, ringGen: OuraRingGen = .gen3) -> OuraTimeSync? {
         let b = rec.payload
-        // body[0..8] = epoch ms (8 bytes), body[8] = tz offset.
         guard b.count >= 9 else { return nil }
+        if ringGen == .gen4 {
+            let token = b[0]
+            let counter = UInt32(b[1]) | (UInt32(b[2]) << 8) | (UInt32(b[3]) << 16)
+            return OuraTimeSync(ringTimestamp: rec.ringTimestamp,
+                                epochMs: Int64(counter) * 256,
+                                tzOffsetSeconds: 0,
+                                factorMsPerTick: token == 0xFD ? 1 : 100,
+                                token: token)
+        }
+
+        // Legacy body[0..7] = unix seconds, body[8] = timezone offset.
         var epoch: UInt64 = 0
         for k in 0..<8 { epoch |= UInt64(b[k]) << (8 * k) }
         let tz = Int(Int8(bitPattern: b[8])) * 1800
         return OuraTimeSync(ringTimestamp: rec.ringTimestamp,
-                            epochMs: Int64(bitPattern: epoch), tzOffsetSeconds: tz)
+                            epochMs: Int64(bitPattern: epoch),
+                            tzOffsetSeconds: tz,
+                            factorMsPerTick: 100)
     }
 
     // MARK: - RTC beacon (0x85; s6.15)
@@ -390,6 +404,40 @@ public enum OuraDecoders {
             }
         }
         return out.isEmpty ? nil : out
+    }
+
+    // MARK: - Sleep period measurements (0x6A; s6.12)
+
+    /// Decode the verified 10-byte `sleep_period_info_2` body. The ring reports average HR at 0.5 bpm
+    /// per LSB, respiration at 1/8 breath/min, a bounded motion count, and a bounded 0/1/2 sleep state.
+    public static func decodeSleepPeriod(_ rec: OuraRecord) -> OuraSleepPeriod? {
+        let b = rec.payload
+        guard b.count >= 10 else { return nil }
+        let averageHeartRate = Double(b[0]) * 0.5
+        let respirationRate = Double(b[4]) / 8.0
+        let motionCount = Int(b[6])
+        let sleepState = Int(Int8(bitPattern: b[7]))
+        guard averageHeartRate >= 30, averageHeartRate <= 220,
+              respirationRate >= 4, respirationRate <= 40,
+              motionCount < 121,
+              (0...2).contains(sleepState) else { return nil }
+        return OuraSleepPeriod(ringTimestamp: rec.ringTimestamp,
+                               averageHeartRate: averageHeartRate,
+                               respirationRate: respirationRate,
+                               motionCount: motionCount,
+                               sleepState: sleepState)
+    }
+
+    /// Decode Ring 4's verified `0x76` bedtime bounds: two uint32-LE ring-clock values.
+    public static func decodeBedtimePeriod(_ rec: OuraRecord) -> OuraBedtimePeriod? {
+        let b = rec.payload
+        guard b.count >= 8 else { return nil }
+        let start = u32le(b, 0)
+        let end = u32le(b, 4)
+        guard start < end else { return nil }
+        return OuraBedtimePeriod(ringTimestamp: rec.ringTimestamp,
+                                 startRingTimestamp: UInt32(start),
+                                 endRingTimestamp: UInt32(end))
     }
 
     // MARK: - Motion period, 2-bit MOTION_STATE codes (0x6B; s6.13)

@@ -221,13 +221,17 @@ object OuraDecoders {
         // byte6 high nibble [7:4] is a base/status field, NOT an offset to add to each sample. Real Gen 3
         // captures (#968, pipiche38) show samples[] are DIRECT SpO2 percentages (~95-96), so adding the
         // scaled base produced impossible ~223% readings. The samples themselves are the percentage.
+        val values = b.drop(1).takeWhile { it != 0xFF }
         val out = ArrayList<OuraSpO2>()
-        var i = 1
-        while (i < b.size) {
-            val raw = b[i]
-            if (raw == 0xFF) break                       // terminator
-            out.add(OuraSpO2(ringTimestamp = rec.ringTimestamp, value = raw))
-            i += 1
+        values.forEachIndexed { index, raw ->
+            out.add(
+                OuraSpO2(
+                    ringTimestamp = rec.ringTimestamp,
+                    value = raw,
+                    unit = "percent",
+                    sampleOffsetSeconds = index - (values.size - 1),
+                ),
+            )
         }
         return if (out.isEmpty()) null else out
     }
@@ -242,7 +246,7 @@ object OuraDecoders {
         val b = rec.payload
         if (b.size < 2) return null
         val value = u16be(b, 0)                          // BIG-endian footgun
-        return OuraSpO2(ringTimestamp = rec.ringTimestamp, value = value)
+        return OuraSpO2(ringTimestamp = rec.ringTimestamp, value = value, unit = "tenths_percent")
     }
 
     // MARK: - SpO2 DC, sign-magnitude deltas (0x77; s6.7)
@@ -348,18 +352,34 @@ object OuraDecoders {
 
     // MARK: - Time sync (0x42; s6.11)
 
-    /**
-     * Decode the 0x42 time-sync ind: bytes 6-13 = int64 LE epoch ms; byte14 = int8 tz offset in
-     * 30-min units (x1800 = seconds). Per OURA_PROTOCOL.md s6.11. Returns null on a short body.
-     */
-    fun decodeTimeSync(rec: OuraRecord): OuraTimeSync? {
+    /** Decode the generation-specific 0x42 time-sync indication (OURA_PROTOCOL.md s6.11). */
+    fun decodeTimeSync(rec: OuraRecord, ringGen: OuraRingGen = OuraRingGen.GEN3): OuraTimeSync? {
         val b = rec.payload
-        // body[0..8] = epoch ms (8 bytes), body[8] = tz offset.
         if (b.size < 9) return null
+        if (ringGen == OuraRingGen.GEN4) {
+            val token = b[0] and 0xFF
+            val counter = (b[1].toLong() and 0xFFL) or
+                ((b[2].toLong() and 0xFFL) shl 8) or
+                ((b[3].toLong() and 0xFFL) shl 16)
+            return OuraTimeSync(
+                ringTimestamp = rec.ringTimestamp,
+                epochMs = counter * 256L,
+                tzOffsetSeconds = 0,
+                factorMsPerTick = if (token == 0xFD) 1 else 100,
+                token = token,
+            )
+        }
+
+        // Legacy body[0..7] = unix seconds, body[8] = timezone offset.
         var epoch = 0L
         for (k in 0 until 8) epoch = epoch or ((b[k].toLong() and 0xFFL) shl (8 * k))
         val tz = i8(b[8]) * 1800
-        return OuraTimeSync(ringTimestamp = rec.ringTimestamp, epochMs = epoch, tzOffsetSeconds = tz)
+        return OuraTimeSync(
+            ringTimestamp = rec.ringTimestamp,
+            epochMs = epoch,
+            tzOffsetSeconds = tz,
+            factorMsPerTick = 100,
+        )
     }
 
     // MARK: - RTC beacon (0x85; s6.15)
@@ -433,6 +453,42 @@ object OuraDecoders {
             }
         }
         return if (out.isEmpty()) null else out
+    }
+
+    // MARK: - Sleep period measurements (0x6A; s6.12)
+
+    /** Decode the verified 10-byte sleep_period_info_2 body. */
+    fun decodeSleepPeriod(rec: OuraRecord): OuraSleepPeriod? {
+        val b = rec.payload
+        if (b.size < 10) return null
+        val averageHeartRate = b[0] * 0.5
+        val respirationRate = b[4] / 8.0
+        val motionCount = b[6]
+        val sleepState = b[7].toByte().toInt()
+        if (averageHeartRate !in 30.0..220.0 || respirationRate !in 4.0..40.0 ||
+            motionCount !in 0..120 || sleepState !in 0..2
+        ) return null
+        return OuraSleepPeriod(
+            ringTimestamp = rec.ringTimestamp,
+            averageHeartRate = averageHeartRate,
+            respirationRate = respirationRate,
+            motionCount = motionCount,
+            sleepState = sleepState,
+        )
+    }
+
+    /** Decode Ring 4's verified `0x76` bedtime bounds: two uint32-LE ring-clock values. */
+    fun decodeBedtimePeriod(rec: OuraRecord): OuraBedtimePeriod? {
+        val b = rec.payload
+        if (b.size < 8) return null
+        val start = u32le(b, 0)
+        val end = u32le(b, 4)
+        if (start >= end) return null
+        return OuraBedtimePeriod(
+            ringTimestamp = rec.ringTimestamp,
+            startRingTimestamp = start,
+            endRingTimestamp = end,
+        )
     }
 
     // MARK: - Motion period, 2-bit MOTION_STATE codes (0x6B; s6.13)

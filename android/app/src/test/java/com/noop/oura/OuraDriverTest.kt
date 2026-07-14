@@ -78,6 +78,22 @@ class OuraDriverTest {
     }
 
     @Test
+    fun testRing4ReadyUsesOfficialReadOnlyPreAuthOrder() {
+        val d = OuraDriver(ringGen = OuraRingGen.GEN4, authKey = key)
+        val commands = d.nextStep(OuraTransition.Ready)
+        assertEquals(
+            listOf(
+                "get_firmware", "get_hardware",
+                "ring4_pre_auth_session_00", "ring4_pre_auth_session_01", "get_nonce",
+            ),
+            commands.map { it.label },
+        )
+        assertArrayEquals(intArrayOf(0x2F, 0x02, 0x01, 0x00), commands[2].bytes)
+        assertArrayEquals(intArrayOf(0x2F, 0x02, 0x01, 0x01), commands[3].bytes)
+        assertArrayEquals(intArrayOf(0x2F, 0x01, 0x2B), commands[4].bytes)
+    }
+
+    @Test
     fun testFactoryResetStatusDrivesNeedsKeyInstall() {
         val d = OuraDriver(ringGen = OuraRingGen.GEN3, authKey = key)
         d.nextStep(OuraTransition.Ready)
@@ -170,15 +186,61 @@ class OuraDriverTest {
     // MARK: - History fetch loop
 
     @Test
-    fun testHistoryFetchFlushesThenFetchesThenAcks() {
-        val d = OuraDriver(ringGen = OuraRingGen.GEN3, authKey = key)
-        val start = d.nextStep(OuraTransition.StartHistoryFetch(cursor = 0L))
+    fun testRing4HistoryFetchWaitsForTimeSyncAckThenFlushesFetchesAndAcks() {
+        val d = OuraDriver(ringGen = OuraRingGen.GEN4, authKey = key, timeSyncToken = 0x5A)
+        val start = d.nextStep(OuraTransition.StartHistoryFetch(cursor = 0L, unixSeconds = 256L))
         assertEquals(OuraDriverPhase.FetchingHistory, d.phase)
-        assertEquals(listOf("flush_buffer", "get_events"), start.map { it.label })
+        assertEquals(
+            listOf(
+                "event_stream_enable", "sync_time", "ring4_post_sync_state",
+                "event_category_14", "event_category_18", "event_category_28",
+                "event_category_34", "event_category_04", "event_category_08",
+                "get_battery", "ring4_param_read_02", "ring4_param_read_04",
+                "ring4_history_session_mode",
+                "ring4_param_read_0b", "ring4_param_read_0d", "ring4_param_read_03",
+                "ring4_param_read_0b_again", "ring4_param_read_10",
+            ),
+            start.map { it.label },
+        )
+        assertArrayEquals(intArrayOf(0x16, 0x01, 0x02), start[0].bytes)
+        assertArrayEquals(intArrayOf(0x1C, 0x01, 0xBF), start[2].bytes)
+        assertArrayEquals(intArrayOf(0x12, 0x09), start[1].bytes.copyOfRange(0, 2))
+        assertArrayEquals(intArrayOf(0x01, 0x00, 0x00), start[1].bytes.copyOfRange(3, 6))
+        assertArrayEquals(intArrayOf(0x00, 0x00, 0x00, 0x00, 0xF6), start[1].bytes.copyOfRange(6, 11))
+        val expectedCategoryFrames = listOf(
+            intArrayOf(0x18, 0x03, 0x14, 0x00, 0x10),
+            intArrayOf(0x18, 0x03, 0x18, 0x00, 0x10),
+            intArrayOf(0x18, 0x03, 0x28, 0x00, 0x09),
+            intArrayOf(0x18, 0x03, 0x34, 0x00, 0x04),
+            intArrayOf(0x18, 0x03, 0x04, 0x00, 0x10),
+            intArrayOf(0x18, 0x03, 0x08, 0x00, 0x10),
+        )
+        start.drop(3).zip(expectedCategoryFrames).forEach { (actual, expected) ->
+            assertArrayEquals(expected, actual.bytes)
+        }
+        assertArrayEquals(intArrayOf(0x0C, 0x00), start[9].bytes)
+        val expectedParameterReads = listOf(
+            intArrayOf(0x2F, 0x02, 0x20, 0x02),
+            intArrayOf(0x2F, 0x02, 0x20, 0x04),
+            intArrayOf(0x2F, 0x02, 0x03, 0x01),
+            intArrayOf(0x2F, 0x02, 0x20, 0x0B),
+            intArrayOf(0x2F, 0x02, 0x20, 0x0D),
+            intArrayOf(0x2F, 0x02, 0x20, 0x03),
+            intArrayOf(0x2F, 0x02, 0x20, 0x0B),
+            intArrayOf(0x2F, 0x02, 0x20, 0x10),
+        )
+        start.drop(10).zip(expectedParameterReads).forEach { (actual, expected) ->
+            assertArrayEquals(expected, actual.bytes)
+        }
+
+        val fetch = d.nextStep(OuraTransition.TimeSyncAcknowledged(cursor = 0L))
+        assertEquals(listOf("flush_buffer", "get_events"), fetch.map { it.label })
+        assertTrue(d.nextStep(OuraTransition.TimeSyncAcknowledged(cursor = 0L)).isEmpty())
+        assertTrue(d.nextStep(OuraTransition.TimeSyncReleaseTimedOut(cursor = 0L)).isEmpty())
         // get_events cursor 0, max 255, flags FFFFFFFF.
         assertArrayEquals(
             intArrayOf(0x10, 0x09, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF),
-            start[1].bytes,
+            fetch[1].bytes,
         )
 
         // More data -> ack-fetch (max 0) at the advanced cursor.
@@ -193,6 +255,26 @@ class OuraDriverTest {
         val stop = d.nextStep(OuraTransition.HistoryCursorAdvanced(cursor = 0x12345678L, moreData = false))
         assertTrue(stop.isEmpty())
         assertEquals(OuraDriverPhase.Streaming, d.phase)
+
+        val nextPoll = d.nextStep(OuraTransition.StartHistoryFetch(cursor = 0x12345678L, unixSeconds = 512L))
+        assertEquals(listOf("event_stream_enable", "sync_time"), nextPoll.map { it.label })
+    }
+
+    @Test
+    fun ring4TimeSyncTimeout_releasesExactlyOneGuardedFetch() {
+        val d = OuraDriver(ringGen = OuraRingGen.GEN4, authKey = key, timeSyncToken = 0x5A)
+        d.nextStep(OuraTransition.StartHistoryFetch(cursor = 7L, unixSeconds = 256L))
+        val fetch = d.nextStep(OuraTransition.TimeSyncReleaseTimedOut(cursor = 7L))
+        assertEquals(listOf("flush_buffer", "get_events"), fetch.map { it.label })
+        val provisional = d.nextStep(OuraTransition.ContinueProvisionalHistory(cursor = 0x12345678L))
+        assertEquals(listOf("get_events"), provisional.map { it.label })
+        assertArrayEquals(
+            intArrayOf(0x10, 0x09, 0x78, 0x56, 0x34, 0x12, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF),
+            provisional[0].bytes,
+        )
+        assertTrue(d.nextStep(OuraTransition.TimeSyncReleaseTimedOut(cursor = 7L)).isEmpty())
+        assertTrue(d.nextStep(OuraTransition.TimeSyncAcknowledged(cursor = 7L)).isEmpty())
+        assertTrue(!d.hasFreshAnchorForActiveFetch)
     }
 
     // MARK: - Ring-time -> UTC anchor (s5.5)
@@ -209,6 +291,28 @@ class OuraDriverTest {
     fun testNoAnchorBeforeAnyTimeSyncOrBeacon() {
         val d = OuraDriver(ringGen = OuraRingGen.GEN3, authKey = key)
         assertNull(d.unixSeconds(forRingTimestamp = rt))
+    }
+
+    @Test
+    fun testSyncTimeResponseIsAckOnlyAndDoesNotAnchor() {
+        val d = OuraDriver(ringGen = OuraRingGen.GEN4, authKey = key, timeSyncToken = 0x5A)
+        val requested = 1_800_000_123L
+        d.nextStep(OuraTransition.StartHistoryFetch(cursor = 0L, unixSeconds = requested))
+        val counter = requested / 256L
+        val body = intArrayOf(
+            0x00, (counter and 0xFF).toInt(), ((counter shr 8) and 0xFF).toInt(),
+            ((counter shr 16) and 0xFF).toInt(), 0x00,
+        )
+        val response = OuraFraming.parseSyncTimeResponse(body)
+        assertEquals(0, response?.ackCode)
+        assertEquals(counter, response?.counterEcho)
+        assertTrue(d.handleSyncTimeAcknowledgement(body))
+        val nonZeroStatus = body.copyOf().also { it[0] = 0x7F }
+        assertTrue(d.handleSyncTimeAcknowledgement(nonZeroStatus))
+        assertTrue(d.handleSyncTimeAcknowledgement(intArrayOf(0x00, 0x01, 0x02, 0x03, 0x00)))
+        assertTrue(!d.handleSyncTimeAcknowledgement(intArrayOf(0x00, 0x01)))
+        assertNull(d.unixSeconds(forRingTimestamp = 1_000L))
+        assertTrue(!d.hasUtcAnchor)
     }
 
     @Test
@@ -236,6 +340,88 @@ class OuraDriverTest {
         assertEquals(anchorEpochSeconds - 10, d.unixSeconds(forRingTimestamp = anchorRt - 100))
         // 100 ticks AFTER the anchor -> 10s later.
         assertEquals(anchorEpochSeconds + 10, d.unixSeconds(forRingTimestamp = anchorRt + 100))
+    }
+
+    @Test
+    fun testRing4TimeSyncSetsNormalAndBurstClockFactors() {
+        val epochSeconds = 1_700_000_000L
+        val counter = epochSeconds / 256L
+        fun payload(token: Int) = intArrayOf(
+            token, (counter and 0xFF).toInt(), ((counter shr 8) and 0xFF).toInt(),
+            ((counter shr 16) and 0xFF).toInt(), 0, 0, 0, 0, 0xF6,
+        )
+
+        val normal = OuraDriver(ringGen = OuraRingGen.GEN4, authKey = key, timeSyncToken = 0x00)
+        normal.nextStep(OuraTransition.StartHistoryFetch(cursor = 0L, unixSeconds = epochSeconds))
+        normal.ingest(OuraRecord(OuraEventTag.TIME_SYNC.raw, 10_000L, payload(0x00)))
+        assertEquals(epochSeconds + 1, normal.unixSeconds(forRingTimestamp = 10_010L))
+
+        val burst = OuraDriver(ringGen = OuraRingGen.GEN4, authKey = key, timeSyncToken = 0xFD)
+        burst.nextStep(OuraTransition.StartHistoryFetch(cursor = 0L, unixSeconds = epochSeconds))
+        burst.ingest(OuraRecord(OuraEventTag.TIME_SYNC.raw, 20_000L, payload(0xFD)))
+        assertEquals(epochSeconds + 1, burst.unixSeconds(forRingTimestamp = 21_000L))
+    }
+
+    @Test
+    fun testRing4RejectsStaleAnchorAndRingStartRegressionClearsFreshAnchor() {
+        val requested = 1_700_000_000L
+        fun payload(epochSeconds: Long, token: Int): IntArray {
+            val counter = epochSeconds / 256L
+            return intArrayOf(
+                token, (counter and 0xFF).toInt(), ((counter shr 8) and 0xFF).toInt(),
+                ((counter shr 16) and 0xFF).toInt(), 0, 0, 0, 0, 0xF6,
+            )
+        }
+
+        val d = OuraDriver(ringGen = OuraRingGen.GEN4, authKey = key, timeSyncToken = 0x5A)
+        d.nextStep(OuraTransition.StartHistoryFetch(cursor = 0L, unixSeconds = requested))
+        d.ingest(OuraRecord(OuraEventTag.TIME_SYNC.raw, 9_000L, payload(requested - 256L, 0x5A)))
+        assertTrue("a plausible stale anchor must not match the active request", !d.hasUtcAnchor)
+
+        d.ingest(OuraRecord(OuraEventTag.TIME_SYNC.raw, 10_000L, payload(requested, 0x01)))
+        assertTrue(!d.hasUtcAnchor)
+        d.ingest(OuraRecord(OuraEventTag.TIME_SYNC.raw, 10_001L, payload(requested, 0x5A)))
+        assertTrue(d.hasUtcAnchor)
+        assertTrue(d.hasFreshAnchorForActiveFetch)
+        d.ingest(OuraRecord(OuraEventTag.RING_START.raw, 1L, intArrayOf()))
+        assertTrue(!d.hasUtcAnchor)
+        assertNull(d.unixSeconds(forRingTimestamp = 10_000L))
+    }
+
+    @Test
+    fun testRing4BoundedBootstrapAcceptsHistoricalAnchorThenRefetchesDurableCursor() {
+        val requested = 1_700_000_000L
+        val historical = requested - 256L
+        val counter = historical / 256L
+        val payload = intArrayOf(
+            0x11, (counter and 0xFF).toInt(), ((counter shr 8) and 0xFF).toInt(),
+            ((counter shr 16) and 0xFF).toInt(), 0, 0, 0, 0, 0xF6,
+        )
+        val d = OuraDriver(ringGen = OuraRingGen.GEN4, authKey = key, timeSyncToken = 0x5A)
+        d.nextStep(OuraTransition.StartHistoryFetch(cursor = 77L, unixSeconds = requested))
+        d.enableHistoricalAnchorBootstrap()
+        d.ingest(OuraRecord(OuraEventTag.TIME_SYNC.raw, 9_000L, payload))
+        assertTrue(d.hasFreshAnchorForActiveFetch)
+        val restart = d.nextStep(OuraTransition.RestartHistoryFromBootstrap(cursor = 77L))
+        assertEquals(listOf("flush_buffer", "get_events"), restart.map { it.label })
+        assertArrayEquals(
+            intArrayOf(0x10, 0x09, 0x4D, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF),
+            restart[1].bytes,
+        )
+        assertTrue(d.hasFreshAnchorForActiveFetch)
+        assertNull(d.activeHistoryHighWater)
+    }
+
+    @Test
+    fun testHistoryHighWaterUsesEveryValidInnerRecordAndStartsEmpty() {
+        val d = OuraDriver(ringGen = OuraRingGen.GEN4, authKey = key, timeSyncToken = 0x5A)
+        d.nextStep(OuraTransition.StartHistoryFetch(cursor = 0L, unixSeconds = 1_700_000_000L))
+        assertNull(d.activeHistoryHighWater)
+        d.ingest(OuraRecord(type = 0x99, ringTimestamp = 10L, payload = intArrayOf()))
+        d.ingest(OuraRecord(type = OuraEventTag.STATE_CHANGE.raw, ringTimestamp = 42L,
+                            payload = intArrayOf(1)))
+        d.ingest(OuraRecord(type = 0x13, ringTimestamp = 999L, payload = intArrayOf()))
+        assertEquals(42L, d.activeHistoryHighWater)
     }
 
     @Test
@@ -318,7 +504,10 @@ class OuraDriverTest {
         // 0x7B SpO2 stable record -> one spo2 event (970, BE).
         val rec = OuraFraming.parseRecord(bytes("7b060200010003ca"))!!
         val events = d.ingest(rec)
-        assertEquals(listOf(OuraEvent.Spo2(OuraSpO2(ringTimestamp = rt, value = 970))), events)
+        assertEquals(
+            listOf(OuraEvent.Spo2(OuraSpO2(ringTimestamp = rt, value = 970, unit = "tenths_percent"))),
+            events,
+        )
     }
 
     @Test
@@ -327,6 +516,17 @@ class OuraDriverTest {
         // 0x99 is not in the dictionary -> [] (never a guessed value).
         val rec = OuraRecord(type = 0x99, ringTimestamp = rt, payload = intArrayOf(0x01, 0x02))
         assertEquals(emptyList<OuraEvent>(), d.ingest(rec))
+    }
+
+    @Test
+    fun testUnknownOuterOpcodeCannotChangeLivePushRingTime() {
+        val d = OuraDriver(ringGen = OuraRingGen.GEN3, authKey = key)
+        val valid = OuraFraming.parseRecord(bytes("420d0200010000d2dd639001000002"))!!
+        d.ingest(valid)
+        d.ingest(OuraRecord(type = 0x13, ringTimestamp = 0xDEAD_BEEFL, payload = intArrayOf()))
+
+        val events = d.ingestLiveHRPush(bytes("020002000001040000000000007f"))
+        assertEquals(OuraEvent.Hr(OuraHR(ringTimestamp = rt, bpm = 59, ibiMs = 1025)), events.first())
     }
 
     // MARK: - Tier-B gating
@@ -527,6 +727,12 @@ class OuraDriverTest {
         val dhrReadAck = OuraSecureFrame(subop = 0x21, subBody = bytes("0201110200"))
         assertEquals(OuraDriver.SecureRouting.EnableAck, d.handleSecureFrame(dhrReadAck))
 
+        val spo2Status = OuraSecureFrame(subop = 0x21, subBody = bytes("0401000000"))
+        assertEquals(
+            OuraDriver.SecureRouting.FeatureStatus(OuraFeatureStatus(0x04, 0x01, 0, 0, 0)),
+            d.handleSecureFrame(spo2Status),
+        )
+
         // The push subBody is the 14 bytes AFTER `2f 0f 28` from the s5.6 wire frame (IBI at [5..6]).
         val pushBody = bytes("020002000001040000000000007f")
         assertEquals(14, pushBody.size)
@@ -565,7 +771,10 @@ class OuraDriverTest {
         val events = d.ingest(notification = value, reassembler = reassembler)
         // 36.50 and 36.55 are computed identically (IEEE-754 Int/100.0) in both ports.
         assertEquals(3, events.size)
-        assertEquals(OuraEvent.Spo2(OuraSpO2(ringTimestamp = rt, value = 970)), events[0])
+        assertEquals(
+            OuraEvent.Spo2(OuraSpO2(ringTimestamp = rt, value = 970, unit = "tenths_percent")),
+            events[0],
+        )
         assertTrue(events[1] is OuraEvent.Temp)
         assertEquals(36.50, (events[1] as OuraEvent.Temp).value.celsius, 1e-9)
         assertEquals(36.55, (events[2] as OuraEvent.Temp).value.celsius, 1e-9)
@@ -592,7 +801,7 @@ class OuraDriverTest {
     @Test
     fun testSyncTimeCommandCounter() {
         // counter = floor(unix / 256). For unix = 256 -> counter 1 -> bytes 01 00 00, trailer 0xF6.
-        val cmd = OuraCommands.syncTime(unixSeconds = 256L)
+        val cmd = OuraCommands.syncTime(unixSeconds = 256L, token = 0)
         assertArrayEquals(
             intArrayOf(0x12, 0x09, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF6),
             cmd.bytes,
@@ -609,5 +818,15 @@ class OuraDriverTest {
         // The normal command builders never produce a reboot/reset opcode.
         assertTrue(OuraCommands.getBattery().bytes[0] != 0x0E)
         assertTrue(OuraCommands.getBattery().bytes[0] != 0x1A)
+    }
+
+    @Test
+    fun testAutomaticSpO2CommandsAreByteExactAndExplicitlyNamed() {
+        assertArrayEquals(intArrayOf(0x2F, 0x02, 0x20, 0x04), OuraCommands.spO2ReadStatus().bytes)
+        assertArrayEquals(
+            intArrayOf(0x2F, 0x03, 0x22, 0x04, 0x01),
+            OuraCommands.spO2EnableAutomatic().bytes,
+        )
+        assertEquals("spo2_enable_automatic", OuraCommands.spO2EnableAutomatic().label)
     }
 }

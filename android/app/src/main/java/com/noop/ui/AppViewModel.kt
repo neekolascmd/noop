@@ -238,6 +238,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      *  failure too. Mirrors Swift `AppModel.ouraNeedsPairing`. */
     val ouraNeedsPairing: StateFlow<String?> = noopApp.sourceCoordinator.ouraNeedsPairing
 
+    /** Read-only automatic-SpO2 state for the active ring. */
+    val ouraSpO2AutomaticEnabled: StateFlow<Boolean?> =
+        noopApp.sourceCoordinator.ouraSpO2AutomaticEnabled
+
+    /** Called only after the Devices-screen confirmation. */
+    fun enableOuraAutomaticSpO2() = noopApp.sourceCoordinator.requestOuraAutomaticSpO2Enable()
+
     /**
      * Point the WHOOP scan at a specific family, then present nearby straps WITHOUT auto-connecting (the
      * Add-a-device wizard's WHOOP path). [WhoopBleClient.prepareForPresentScan] KEEPS a live same-model

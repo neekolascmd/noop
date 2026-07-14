@@ -110,6 +110,9 @@ object OuraFraming {
      */
     const val getEventsResponseOp = 0x11
 
+    /** Ring 4 SyncTime acknowledgement outer opcode. See [parseSyncTimeResponse]. */
+    const val syncTimeResponseOp = 0x13
+
     /**
      * The GetBattery response outer opcode (OURA_PROTOCOL.md s4.1/s6.10). Below the event-tag range
      * (tags are >= 0x41), so it round-trips safely through the TLV decoder as an "unknown tag" no-op if a
@@ -123,9 +126,9 @@ object OuraFraming {
     /**
      * Parse a 0x11 GetEvents response body: `status:1 sub_status:1 last_ring_timestamp:4LE pad:2`
      * (OURA_PROTOCOL.md s5.2). `status` 0x00 = empty/no more; any other value = data follows. The
-     * `last_ring_timestamp` is the new cursor to resume the fetch from. Returns null on a short body
-     * (never guesses a cursor). Kotlin twin of Swift's parseGetEventsResponse; `cursor` is the unsigned
-     * 32-bit ring timestamp carried as a Long (0..0xFFFFFFFF).
+     * `last_ring_timestamp` is batch metadata, not the durable ACK cursor; callers derive that from the
+     * maximum ringTimestamp across actual inner records. Returns null on a short body. Kotlin twin of
+     * Swift's parseGetEventsResponse.
      */
     fun parseGetEventsResponse(body: IntArray): GetEventsSummary? {
         if (body.size < 6) return null
@@ -135,6 +138,18 @@ object OuraFraming {
             ((body[4].toLong() and 0xFFL) shl 16) or
             ((body[5].toLong() and 0xFFL) shl 24)
         return GetEventsSummary(cursor = cursor, moreData = status != 0x00)
+    }
+
+    /** Parsed Ring 4 `0x13` body. It carries no record/ring timestamp. */
+    data class SyncTimeResponse(val ackCode: Int, val counterEcho: Long)
+
+    /** Parse `ack_code:u8 counter_echo:u24LE reserved:u8`; return null on a short body. */
+    fun parseSyncTimeResponse(body: IntArray): SyncTimeResponse? {
+        if (body.size < 5) return null
+        val counterEcho = (body[1].toLong() and 0xFFL) or
+            ((body[2].toLong() and 0xFFL) shl 8) or
+            ((body[3].toLong() and 0xFFL) shl 16)
+        return SyncTimeResponse(ackCode = body[0] and 0xFF, counterEcho = counterEcho)
     }
 
     /**
@@ -185,6 +200,8 @@ object OuraFraming {
     fun parseRecord(bytes: IntArray): OuraRecord? {
         if (bytes.size < 2) return null
         val type = bytes[0]
+        // Values below 0x41 are outer command/response opcodes, never inner event tags.
+        if (type < 0x41) return null
         val len = bytes[1]
         if (len < minRecordLen) return null
         val total = 2 + len
@@ -223,6 +240,11 @@ class OuraReassembler {
         for (b in fragment) buf.add(b and 0xFF)
         val out = ArrayList<OuraRecord>()
         while (buf.size >= 2) {
+            // Strip outer-protocol bytes rather than treating them as a plausible TLV header.
+            if (buf[0] < 0x41) {
+                buf.removeAt(0)
+                continue
+            }
             val len = buf[1]
             // A record must cover its 4 timestamp bytes. A len < 4 here is a misaligned byte: drop one
             // and resync rather than emit garbage (honest-data invariant).
