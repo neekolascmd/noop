@@ -369,22 +369,21 @@ class SourceCoordinator(
                 // mid-session (the adopt install) is picked up on the post-install re-auth.
                 authKey = { OuraInstallKeyStore.load(ctx, id) },
                 persist = { batch: StreamBatch, deviceId: String ->
-                    scope.launch { runCatching { repo.insert(batch, deviceId) } }
+                    runCatching { repo.insert(batch, deviceId); true }.getOrDefault(false)
                 },
                 persistSleepSession = { start, end ->
-                    scope.launch {
-                        runCatching {
-                            repo.upsertSleepSessions(
-                                listOf(
-                                    com.noop.data.SleepSession(
-                                        deviceId = "$id-noop",
-                                        startTs = start,
-                                        endTs = end,
-                                    ),
+                    runCatching {
+                        repo.upsertSleepSessions(
+                            listOf(
+                                com.noop.data.SleepSession(
+                                    deviceId = "$id-noop",
+                                    startTs = start,
+                                    endTs = end,
                                 ),
-                            )
-                        }
-                    }
+                            ),
+                        )
+                        true
+                    }.getOrDefault(false)
                 },
                 log = straplog,           // Oura connect/auth/stream lifecycle → the SAME exported strap log (#421)
                 onBattery = batterySink,  // ring battery → the same live state the WHOOP strap battery uses

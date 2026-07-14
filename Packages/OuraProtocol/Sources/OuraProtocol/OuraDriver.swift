@@ -85,13 +85,24 @@ public final class OuraDriver {
     /// Ring-time -> UTC anchor (OURA_PROTOCOL.md s5.5): the ring's clock ticks at 100 ms/tick by default
     /// and 1 ms/tick when Ring 4's 0x42 token is 0xFD. Set from the ring's own 0x42 time-sync event
     /// (primary) or, only while no 0x42 has arrived yet THIS session, the coarser 1s-granularity 0x85 RTC
-    /// beacon (secondary). nil until the first anchor event of this session: a record decoded before then
-    /// has no computable UTC time, and `unixSeconds(forRingTimestamp:)` honestly returns nil rather than
-    /// guessing. A stale anchor from a PREVIOUS session is never reused - the ring may have rebooted.
+    /// beacon (secondary). A validated persisted primary anchor may restore this mapping after reconnect,
+    /// but it cannot authorize a history commit until the active stream proves monotonic continuity beyond
+    /// the saved cursor and anchor. Without either source, `unixSeconds(forRingTimestamp:)` returns nil.
     private var anchorUtcMs: Int64?
     private var anchorRingTime: UInt32?
     /// Generation/token-specific ring-clock scale selected by the primary 0x42 anchor.
     private var anchorFactorMs: Int64 = 100
+    /// The primary 0x42-derived mapping that is safe to persist alongside the durable cursor. A 0x85 RTC
+    /// beacon may help within one connection, but is deliberately never exported as durable state.
+    private var primaryTimeAnchor: OuraTimeAnchor?
+    /// A durable primary anchor is useful for timestamp translation immediately after reconnect, but it
+    /// does not authorize a history ACK until the active stream proves its ring clock continued beyond
+    /// both the saved cursor and saved anchor.
+    private var persistedAnchorNeedsContinuity = false
+    /// One-shot signal for the transport to clear the coherent durable cursor + anchor after a ring-start
+    /// record proves the ring clock regressed.
+    private var persistentTimeStateInvalidated = false
+    private var activeFetchStartCursor: UInt32 = 0
     /// Ring 4 counter sent by the active SyncTime request. A fetched 0x42 may replace the session anchor
     /// only when its coarse epoch matches this counter, so a plausible-but-stale backlog anchor cannot win.
     private var pendingSyncCounter: UInt32?
@@ -118,12 +129,22 @@ public final class OuraDriver {
     private var effectiveKey: [UInt8]? { installedKey ?? authKey }
 
     public init(ringGen: OuraRingGen, authKey: [UInt8]?, allowTierB: Bool = false,
-                allowKeyInstall: Bool = false, timeSyncToken: UInt8? = nil) {
+                allowKeyInstall: Bool = false, timeSyncToken: UInt8? = nil,
+                persistedTimeAnchor: OuraTimeAnchor? = nil) {
         self.ringGen = ringGen
         self.authKey = authKey
         self.allowTierB = allowTierB
         self.allowKeyInstall = allowKeyInstall
         self.fixedTimeSyncToken = timeSyncToken
+        if ringGen == .gen4,
+           let persistedTimeAnchor,
+           Self.isValidTimeAnchor(persistedTimeAnchor) {
+            anchorUtcMs = persistedTimeAnchor.utcMilliseconds
+            anchorRingTime = persistedTimeAnchor.ringTimestamp
+            anchorFactorMs = persistedTimeAnchor.factorMillisecondsPerTick
+            primaryTimeAnchor = persistedTimeAnchor
+            persistedAnchorNeedsContinuity = true
+        }
     }
 
     // MARK: - Command flow
@@ -196,6 +217,8 @@ public final class OuraDriver {
             phase = .fetchingHistory
             activeHistoryHighWater = nil
             activeFetchHasFreshAnchor = false
+            activeFetchStartCursor = cursor
+            persistedAnchorNeedsContinuity = ringGen == .gen4 && primaryTimeAnchor != nil
             timeSyncReleaseIssued = false
             if ringGen == .gen4, unixSeconds >= 0 {
                 let sync = OuraCommands.syncTime(unixSeconds: unixSeconds,
@@ -257,6 +280,7 @@ public final class OuraDriver {
                 pendingSyncCounter = nil
                 pendingSyncToken = nil
                 activeFetchHasFreshAnchor = false
+                persistedAnchorNeedsContinuity = false
                 timeSyncReleaseIssued = false
                 activeHistoryHighWater = nil
                 return []
@@ -310,6 +334,10 @@ public final class OuraDriver {
         anchorUtcMs = nil
         anchorRingTime = nil
         anchorFactorMs = 100
+        primaryTimeAnchor = nil
+        persistedAnchorNeedsContinuity = false
+        persistentTimeStateInvalidated = false
+        activeFetchStartCursor = 0
         pendingSyncCounter = nil
         pendingSyncToken = nil
         activeFetchHasFreshAnchor = false
@@ -342,6 +370,15 @@ public final class OuraDriver {
     /// fetched cursor provisional until its samples can be dated and durably flushed.
     public var hasUtcAnchor: Bool { anchorUtcMs != nil && anchorRingTime != nil }
 
+    /// The validated primary 0x42 anchor suitable for atomic persistence with the history cursor. A
+    /// session-only 0x85 beacon is intentionally excluded.
+    public var currentPrimaryTimeAnchor: OuraTimeAnchor? {
+        guard ringGen == .gen4,
+              let primaryTimeAnchor,
+              Self.isValidTimeAnchor(primaryTimeAnchor) else { return nil }
+        return primaryTimeAnchor
+    }
+
     /// Stronger commit gate for the active fetch. Ring 4 must have received a matching token+counter
     /// 0x42 during this fetch; legacy generations retain the session-anchor rule until qualified.
     public var hasFreshAnchorForActiveFetch: Bool {
@@ -355,15 +392,32 @@ public final class OuraDriver {
         return hasUtcAnchor
     }
 
-    private func invalidateAnchor() {
+    private func invalidateAnchor(invalidatePersistentState: Bool = false) {
         anchorUtcMs = nil
         anchorRingTime = nil
         anchorFactorMs = 100
+        primaryTimeAnchor = nil
+        persistedAnchorNeedsContinuity = false
         pendingSyncCounter = nil
         pendingSyncToken = nil
         activeFetchHasFreshAnchor = false
         timeSyncReleaseIssued = false
         activeHistoryHighWater = nil
+        if invalidatePersistentState { persistentTimeStateInvalidated = true }
+    }
+
+    /// Consume a proven ring-clock reset exactly once so the transport can atomically clear its saved
+    /// cursor + primary anchor. Session teardown and ordinary missing-anchor paths never set this signal.
+    public func consumePersistentTimeStateInvalidation() -> Bool {
+        let invalidated = persistentTimeStateInvalidated
+        persistentTimeStateInvalidated = false
+        return invalidated
+    }
+
+    /// Explicit transport hook for a durable-cursor regression discovered in the batch summary. This
+    /// clears both the mapping and its exportable primary form before the cursor is reset to zero.
+    public func invalidateTimeAnchorForRingClockRegression() {
+        invalidateAnchor()
     }
 
     /// Convert a record's ring-clock timestamp to unix seconds using the current session's anchor
@@ -395,6 +449,16 @@ public final class OuraDriver {
         return seconds * 1000   // safe: bounded input, cannot overflow
     }
 
+    /// Validate an anchor loaded from durable storage before it is allowed to translate any history.
+    public static func isValidTimeAnchor(_ anchor: OuraTimeAnchor) -> Bool {
+        guard anchor.ringTimestamp > 0,
+              anchor.factorMillisecondsPerTick == 1 || anchor.factorMillisecondsPerTick == 100 else {
+            return false
+        }
+        let seconds = anchor.utcMilliseconds / 1000
+        return seconds >= minPlausibleEpochSeconds && seconds <= maxPlausibleEpochSeconds
+    }
+
     // MARK: - Record ingest (decode)
 
     /// Decode one parsed TLV inner record into zero or more events. A malformed/short record (or an
@@ -406,6 +470,18 @@ public final class OuraDriver {
         guard record.type >= 0x41 else { return [] }
         if phase == .fetchingHistory {
             activeHistoryHighWater = max(activeHistoryHighWater ?? 0, record.ringTimestamp)
+            // A persisted mapping is translation state, not commit authority. Promote it only after a
+            // structurally-valid record proves this fetch is monotonic beyond both durable boundaries and
+            // the mapped result is still a plausible UTC instant. A ring-start/cursor regression clears it.
+            if ringGen == .gen4,
+               persistedAnchorNeedsContinuity,
+               let anchorRingTime,
+               record.ringTimestamp >= activeFetchStartCursor,
+               record.ringTimestamp >= anchorRingTime,
+               unixSeconds(forRingTimestamp: record.ringTimestamp) != nil {
+                persistedAnchorNeedsContinuity = false
+                activeFetchHasFreshAnchor = true
+            }
         }
         lastRingTimestamp = record.ringTimestamp
         guard let tag = OuraEventTag(rawValue: record.type) else {
@@ -492,6 +568,12 @@ public final class OuraDriver {
                 anchorUtcMs = ms
                 anchorRingTime = ts.ringTimestamp
                 anchorFactorMs = Int64(ts.factorMsPerTick)
+                primaryTimeAnchor = OuraTimeAnchor(
+                    ringTimestamp: ts.ringTimestamp,
+                    utcMilliseconds: ms,
+                    factorMillisecondsPerTick: Int64(ts.factorMsPerTick)
+                )
+                persistedAnchorNeedsContinuity = false
                 if ringGen == .gen4 { activeFetchHasFreshAnchor = true }
             }
             return [.timeSync(ts)]
@@ -516,8 +598,10 @@ public final class OuraDriver {
         case .ringStart:
             // A reboot can reset the ring clock. Invalidate the entire UTC pair when ring-start regresses;
             // the next correlated SyncTime/0x42 establishes a fresh one.
-            if previousRingTimestamp != 0, record.ringTimestamp < previousRingTimestamp {
-                invalidateAnchor()
+            let durableFloor = max(activeFetchStartCursor, primaryTimeAnchor?.ringTimestamp ?? 0)
+            if (previousRingTimestamp != 0 && record.ringTimestamp < previousRingTimestamp)
+                || (durableFloor > 0 && record.ringTimestamp < durableFloor) {
+                invalidateAnchor(invalidatePersistentState: true)
             }
             return []
 

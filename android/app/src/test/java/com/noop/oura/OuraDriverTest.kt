@@ -294,6 +294,118 @@ class OuraDriverTest {
     }
 
     @Test
+    fun persistedPrimaryAnchorMapsImmediatelyButNeedsHistoryContinuityForCommit() {
+        val anchor = OuraTimeAnchor(
+            ringTimestamp = 10_000L,
+            utcMilliseconds = 1_700_000_000_000L,
+            factorMillisecondsPerTick = 100L,
+        )
+        val d = OuraDriver(
+            ringGen = OuraRingGen.GEN4,
+            authKey = key,
+            persistedPrimaryAnchor = anchor,
+            durableCursor = 10_100L,
+            timeSyncToken = 0x5A,
+        )
+        assertEquals(anchor, d.currentPrimaryAnchor)
+        assertEquals(1_700_000_010L, d.unixSeconds(forRingTimestamp = 10_100L))
+
+        d.nextStep(OuraTransition.StartHistoryFetch(cursor = 10_100L, unixSeconds = 1_700_000_000L))
+        assertTrue("a loaded mapping alone must never authorize ACK", !d.activeFetchCommitAuthorized)
+
+        // A structurally valid record below the durable cursor cannot qualify continuity.
+        d.ingest(OuraRecord(OuraEventTag.STATE_CHANGE.raw, 10_099L, intArrayOf(1)))
+        assertTrue(!d.activeFetchCommitAuthorized)
+        // Reaching both the durable cursor and anchor proves this ring-time sequence is continuous.
+        d.ingest(OuraRecord(OuraEventTag.STATE_CHANGE.raw, 10_100L, intArrayOf(1)))
+        assertTrue(d.activeFetchCommitAuthorized)
+    }
+
+    @Test
+    fun persistedAnchorValidationRejectsMalformedTriples() {
+        val invalid = listOf(
+            OuraTimeAnchor(0L, 1_700_000_000_000L, 100L),
+            OuraTimeAnchor(1L, 1_500_000_000_000L, 100L),
+            OuraTimeAnchor(1L, 1_700_000_000_000L, 10L),
+        )
+        for (candidate in invalid) {
+            val d = OuraDriver(
+                ringGen = OuraRingGen.GEN4,
+                authKey = key,
+                persistedPrimaryAnchor = candidate,
+                durableCursor = 1L,
+            )
+            assertNull(candidate.toString(), d.currentPrimaryAnchor)
+            assertNull(candidate.toString(), d.unixSeconds(forRingTimestamp = 1L))
+        }
+    }
+
+    @Test
+    fun nonRing4DriverNeverImportsOrExportsReconnectDurableAnchor() {
+        val anchor = OuraTimeAnchor(1_000L, 1_700_000_000_000L, 100L)
+        val d = OuraDriver(
+            ringGen = OuraRingGen.GEN3,
+            authKey = key,
+            persistedPrimaryAnchor = anchor,
+            durableCursor = 1_000L,
+        )
+
+        assertNull(d.currentPrimaryAnchor)
+        assertNull(d.unixSeconds(forRingTimestamp = 1_000L))
+    }
+
+    @Test
+    fun persistedAnchorPreservesNormalAndBurstFactorsAcrossDriverRecreation() {
+        val normal = OuraDriver(
+            ringGen = OuraRingGen.GEN4,
+            authKey = key,
+            persistedPrimaryAnchor = OuraTimeAnchor(1_000L, 1_700_000_000_000L, 100L),
+            durableCursor = 1_000L,
+        )
+        val burst = OuraDriver(
+            ringGen = OuraRingGen.GEN4,
+            authKey = key,
+            persistedPrimaryAnchor = OuraTimeAnchor(1_000L, 1_700_000_000_000L, 1L),
+            durableCursor = 1_000L,
+        )
+        assertEquals(1_700_000_001L, normal.unixSeconds(forRingTimestamp = 1_010L))
+        assertEquals(1_700_000_001L, burst.unixSeconds(forRingTimestamp = 2_000L))
+    }
+
+    @Test
+    fun persistedAnchorRegressionInvalidatesMappingAndCommitAuthority() {
+        val anchor = OuraTimeAnchor(10_000L, 1_700_000_000_000L, 100L)
+        val d = OuraDriver(
+            ringGen = OuraRingGen.GEN4,
+            authKey = key,
+            persistedPrimaryAnchor = anchor,
+            durableCursor = 10_100L,
+        )
+        d.nextStep(OuraTransition.StartHistoryFetch(cursor = 10_100L, unixSeconds = 1_700_000_000L))
+        d.ingest(OuraRecord(OuraEventTag.RING_START.raw, 5L, intArrayOf()))
+        assertNull(d.currentPrimaryAnchor)
+        assertNull(d.unixSeconds(forRingTimestamp = 10_100L))
+        assertTrue(!d.activeFetchCommitAuthorized)
+        assertTrue(d.consumePersistentStateInvalidation())
+        assertTrue(!d.consumePersistentStateInvalidation())
+    }
+
+    @Test
+    fun terminalHighWaterBelowDurableCursorInvalidatesPersistedState() {
+        val d = OuraDriver(
+            ringGen = OuraRingGen.GEN4,
+            authKey = key,
+            persistedPrimaryAnchor = OuraTimeAnchor(500L, 1_700_000_000_000L, 100L),
+            durableCursor = 1_000L,
+        )
+        d.nextStep(OuraTransition.StartHistoryFetch(cursor = 1_000L, unixSeconds = 1_700_000_000L))
+        d.ingest(OuraRecord(OuraEventTag.STATE_CHANGE.raw, 900L, intArrayOf(1)))
+        assertTrue(d.invalidatePersistedStateIfHistoryRegressed())
+        assertTrue(d.consumePersistentStateInvalidation())
+        assertNull(d.currentPrimaryAnchor)
+    }
+
+    @Test
     fun testSyncTimeResponseIsAckOnlyAndDoesNotAnchor() {
         val d = OuraDriver(ringGen = OuraRingGen.GEN4, authKey = key, timeSyncToken = 0x5A)
         val requested = 1_800_000_123L
@@ -355,11 +467,19 @@ class OuraDriverTest {
         normal.nextStep(OuraTransition.StartHistoryFetch(cursor = 0L, unixSeconds = epochSeconds))
         normal.ingest(OuraRecord(OuraEventTag.TIME_SYNC.raw, 10_000L, payload(0x00)))
         assertEquals(epochSeconds + 1, normal.unixSeconds(forRingTimestamp = 10_010L))
+        assertEquals(
+            OuraTimeAnchor(10_000L, epochSeconds * 1_000L, 100L),
+            normal.currentPrimaryAnchor,
+        )
 
         val burst = OuraDriver(ringGen = OuraRingGen.GEN4, authKey = key, timeSyncToken = 0xFD)
         burst.nextStep(OuraTransition.StartHistoryFetch(cursor = 0L, unixSeconds = epochSeconds))
         burst.ingest(OuraRecord(OuraEventTag.TIME_SYNC.raw, 20_000L, payload(0xFD)))
         assertEquals(epochSeconds + 1, burst.unixSeconds(forRingTimestamp = 21_000L))
+        assertEquals(
+            OuraTimeAnchor(20_000L, epochSeconds * 1_000L, 1L),
+            burst.currentPrimaryAnchor,
+        )
     }
 
     @Test
@@ -413,6 +533,28 @@ class OuraDriverTest {
     }
 
     @Test
+    fun newPostFetchSyncRequiresFreshCorrelationAfterHistoricalBootstrapMode() {
+        val requested = 1_700_000_000L
+        val stale = requested - 256L
+        fun payload(epochSeconds: Long): IntArray {
+            val counter = epochSeconds / 256L
+            return intArrayOf(
+                0x11, (counter and 0xFF).toInt(), ((counter shr 8) and 0xFF).toInt(),
+                ((counter shr 16) and 0xFF).toInt(), 0, 0, 0, 0, 0xF6,
+            )
+        }
+        val d = OuraDriver(ringGen = OuraRingGen.GEN4, authKey = key, timeSyncToken = 0x5A)
+        d.nextStep(OuraTransition.StartHistoryFetch(cursor = 0L, unixSeconds = requested))
+        d.enableHistoricalAnchorBootstrap()
+
+        // The delayed/high-water retry starts a new SyncTime request and must close historical acceptance.
+        d.nextStep(OuraTransition.StartHistoryFetch(cursor = 9_000L, unixSeconds = requested))
+        d.ingest(OuraRecord(OuraEventTag.TIME_SYNC.raw, 9_001L, payload(stale)))
+        assertNull("the retry must wait for its newly-correlated 0x42", d.currentPrimaryAnchor)
+        assertTrue(!d.activeFetchCommitAuthorized)
+    }
+
+    @Test
     fun testHistoryHighWaterUsesEveryValidInnerRecordAndStartsEmpty() {
         val d = OuraDriver(ringGen = OuraRingGen.GEN4, authKey = key, timeSyncToken = 0x5A)
         d.nextStep(OuraTransition.StartHistoryFetch(cursor = 0L, unixSeconds = 1_700_000_000L))
@@ -437,6 +579,7 @@ class OuraDriverTest {
         val beaconRec = OuraRecord(type = OuraEventTag.RTC_BEACON.raw, ringTimestamp = beaconRt, payload = beaconPayload)
         d.ingest(beaconRec)
         assertEquals(beaconUnixSeconds, d.unixSeconds(forRingTimestamp = beaconRt))
+        assertNull("a secondary 0x85 must never become durable primary state", d.currentPrimaryAnchor)
 
         // A later, more precise 0x42 time-sync must override the coarser beacon anchor.
         val syncEpochSeconds = 1_700_001_000L

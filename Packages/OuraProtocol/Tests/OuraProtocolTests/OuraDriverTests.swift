@@ -365,6 +365,76 @@ final class OuraDriverTests: XCTestCase {
         XCTAssertNil(d.activeHistoryHighWater)
     }
 
+    func testRing4PersistedAnchorTranslatesButNeedsMonotonicContinuityToCommit() {
+        let anchor = OuraTimeAnchor(ringTimestamp: 1_000,
+                                    utcMilliseconds: 1_700_000_000_000,
+                                    factorMillisecondsPerTick: 100)
+        let d = OuraDriver(ringGen: .gen4, authKey: key, timeSyncToken: 0x5A,
+                           persistedTimeAnchor: anchor)
+        XCTAssertEqual(d.currentPrimaryTimeAnchor, anchor)
+        XCTAssertEqual(d.unixSeconds(forRingTimestamp: 1_100), 1_700_000_010)
+
+        _ = d.nextStep(after: .startHistoryFetch(cursor: 1_100, unixSeconds: 1_700_000_100))
+        XCTAssertFalse(d.hasFreshAnchorForActiveFetch,
+                       "loading a mapping must never authorize a cursor ACK by itself")
+        XCTAssertFalse(d.canResolveHistoryTimestamps,
+                       "history must stay parked until continuity authorizes the active fetch")
+
+        _ = d.ingest(record: OuraRecord(type: 0x99, ringTimestamp: 1_099, payload: []))
+        XCTAssertFalse(d.hasFreshAnchorForActiveFetch,
+                       "a record behind the durable cursor cannot prove continuity")
+        _ = d.ingest(record: OuraRecord(type: 0x99, ringTimestamp: 1_100, payload: []))
+        XCTAssertTrue(d.hasFreshAnchorForActiveFetch)
+        XCTAssertTrue(d.canResolveHistoryTimestamps)
+    }
+
+    func testRing4RejectsInvalidPersistedAnchors() {
+        let zeroRingTime = OuraTimeAnchor(ringTimestamp: 0,
+                                          utcMilliseconds: 1_700_000_000_000,
+                                          factorMillisecondsPerTick: 100)
+        let badFactor = OuraTimeAnchor(ringTimestamp: 1_000,
+                                       utcMilliseconds: 1_700_000_000_000,
+                                       factorMillisecondsPerTick: 10)
+        let futureEpoch = OuraTimeAnchor(ringTimestamp: 1_000,
+                                         utcMilliseconds: 2_200_000_000_000,
+                                         factorMillisecondsPerTick: 100)
+        for anchor in [zeroRingTime, badFactor, futureEpoch] {
+            let d = OuraDriver(ringGen: .gen4, authKey: key, persistedTimeAnchor: anchor)
+            XCTAssertNil(d.currentPrimaryTimeAnchor)
+            XCTAssertFalse(d.hasUtcAnchor)
+        }
+    }
+
+    func testPersistedAnchorRingStartRegressionSignalsDurableStateInvalidationOnce() {
+        let anchor = OuraTimeAnchor(ringTimestamp: 1_000,
+                                    utcMilliseconds: 1_700_000_000_000,
+                                    factorMillisecondsPerTick: 100)
+        let d = OuraDriver(ringGen: .gen4, authKey: key, persistedTimeAnchor: anchor)
+        _ = d.nextStep(after: .startHistoryFetch(cursor: 1_100, unixSeconds: 1_700_000_100))
+
+        _ = d.ingest(record: OuraRecord(type: OuraEventTag.ringStart.rawValue,
+                                        ringTimestamp: 5, payload: []))
+
+        XCTAssertNil(d.currentPrimaryTimeAnchor)
+        XCTAssertFalse(d.hasUtcAnchor)
+        XCTAssertTrue(d.consumePersistentTimeStateInvalidation())
+        XCTAssertFalse(d.consumePersistentTimeStateInvalidation())
+    }
+
+    func testRtcBeaconIsNeverExportedAsDurablePrimaryAnchor() {
+        let d = OuraDriver(ringGen: .gen4, authKey: key)
+        let seconds = 1_700_000_500
+        let beaconPayload: [UInt8] = [
+            UInt8(seconds & 0xFF), UInt8((seconds >> 8) & 0xFF),
+            UInt8((seconds >> 16) & 0xFF), UInt8((seconds >> 24) & 0xFF),
+        ]
+        _ = d.ingest(record: OuraRecord(type: OuraEventTag.rtcBeacon.rawValue,
+                                        ringTimestamp: 5_000, payload: beaconPayload))
+        XCTAssertTrue(d.hasUtcAnchor, "the beacon remains useful within this connection")
+        XCTAssertNil(d.currentPrimaryTimeAnchor,
+                     "the secondary beacon must not become reconnect-durable state")
+    }
+
     func testHistoryHighWaterUsesEveryValidInnerRecordAndStartsEmpty() {
         let d = OuraDriver(ringGen: .gen4, authKey: key, timeSyncToken: 0x5A)
         _ = d.nextStep(after: .startHistoryFetch(cursor: 0, unixSeconds: 1_700_000_000))

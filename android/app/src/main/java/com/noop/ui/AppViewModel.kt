@@ -213,7 +213,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             ringGen = com.noop.oura.OuraRingGen.GEN3,
             liveSink = { _, _ -> },
             authKey = { null },
-            persist = { _, _ -> },
+            persist = { _, _ -> true },
             // Route the scanner's diagnostics into the SAME exported strap log the active path uses
             // (issue #421 parity), so a tester's Oura wizard scan is captured. The source self-prefixes
             // "Oura: "; [externalLog] redacts addresses. Statuses / service UUIDs / counts only, never a

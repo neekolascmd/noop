@@ -220,6 +220,23 @@ public struct OuraTimeSync: Equatable, Sendable, Codable {
     }
 }
 
+/// A validated ring-clock -> UTC mapping that may be persisted alongside the history cursor. The
+/// official Ring 4 client retains this pair across app restarts and invalidates it only when a ring-start
+/// record proves the clock regressed. Keeping the factor explicit preserves the token-selected 1 ms/tick
+/// burst clock without guessing it on reconnect.
+public struct OuraTimeAnchor: Equatable, Sendable, Codable {
+    public let ringTimestamp: UInt32
+    public let utcMilliseconds: Int64
+    public let factorMillisecondsPerTick: Int64
+
+    public init(ringTimestamp: UInt32, utcMilliseconds: Int64,
+                factorMillisecondsPerTick: Int64) {
+        self.ringTimestamp = ringTimestamp
+        self.utcMilliseconds = utcMilliseconds
+        self.factorMillisecondsPerTick = factorMillisecondsPerTick
+    }
+}
+
 /// A secondary 1-second-granularity RTC beacon (OURA_PROTOCOL.md s6.15, tag 0x85).
 public struct OuraRtcBeacon: Equatable, Sendable, Codable {
     public let ringTimestamp: UInt32

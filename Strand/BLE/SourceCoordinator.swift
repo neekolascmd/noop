@@ -369,15 +369,24 @@ final class SourceCoordinator: ObservableObject {
             ringGen: ringGen,
             authKey: { OuraKeyStore.read(deviceId: id) },
             persist: { [storeHandle] streams in
-                Task { if let store = await storeHandle() { _ = try? await store.insert(streams, deviceId: id) } }
+                guard let store = await storeHandle() else { return false }
+                do {
+                    _ = try await store.insert(streams, deviceId: id)
+                    return true
+                } catch {
+                    return false
+                }
             },
             persistSleepSession: { [storeHandle] start, end in
-                Task {
-                    guard let store = await storeHandle() else { return }
+                guard let store = await storeHandle() else { return false }
+                do {
                     let session = CachedSleepSession(startTs: start, endTs: end,
                                                      efficiency: nil, restingHr: nil,
                                                      avgHrv: nil, stagesJSON: nil)
-                    _ = try? await store.upsertSleepSessions([session], deviceId: id + "-noop")
+                    _ = try await store.upsertSleepSessions([session], deviceId: id + "-noop")
+                    return true
+                } catch {
+                    return false
                 }
             },
             log: straplog,

@@ -135,6 +135,16 @@ data class OuraTimeSync(
     val token: Int? = null,
 )
 
+/**
+ * A validated ring-clock -> UTC mapping persisted with the history cursor. Ring 4's official client
+ * keeps this pair across process restarts and invalidates it when a ring-start proves clock regression.
+ */
+data class OuraTimeAnchor(
+    val ringTimestamp: Long,
+    val utcMilliseconds: Long,
+    val factorMillisecondsPerTick: Long,
+)
+
 /** A secondary 1-second-granularity RTC beacon (OURA_PROTOCOL.md s6.15, tag 0x85). */
 data class OuraRtcBeacon(val ringTimestamp: Long, val unixSeconds: Long)
 

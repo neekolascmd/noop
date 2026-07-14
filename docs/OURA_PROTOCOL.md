@@ -269,10 +269,10 @@ Gen 5 example `0912 020100 020103 010001 090329 665544332211`. [open_oura-r5]
 
 ### 5.3 Canonical fetch loop (NOOP)
 1. Before authentication on Ring 4, preserve the official read-only order: firmware/hardware identity, session probes `2f 02 01 00` and `2f 02 01 01`, then the nonce request. After authentication, send event-stream enable (`16 01 02`), then SyncTime (§5.4). On the first pass of each BLE connection, follow it with the byte-exact post-sync state pulse (`1c 01 bf`), the six official `0x18` event-category masks (`14/18/28/34/04/08`), a battery read, and the official setup sweep: parameter reads `02/04`, the still-semantically-provisional session-state selector `2f 02 03 01`, then parameter reads `0b/0d/03/0b/10`. The selectors are session-scoped and are not used for reset, pairing, or biometric-data mutation. Keep all writes on the serialized 350 ms queue.
-2. Treat any well-formed Ring 4 `0x13` as a one-way liveness acknowledgement while a request is active; tested firmware can return nonstandard status/echo fields. A one-second idempotent fallback still releases the fetch when no usable reply arrives. Neither path authorizes persistence: only a plausible `0x42` can establish the ring-time/UTC pair.
+2. Treat any well-formed Ring 4 `0x13` as a one-way liveness acknowledgement while a request is active; tested firmware can return nonstandard status/echo fields. A one-second idempotent fallback still releases the fetch when no usable reply arrives. Neither path authorizes persistence: a plausible `0x42`, or a previously validated primary anchor whose ring clock proves monotonic continuity beyond both saved boundaries, must establish the ring-time/UTC pair.
 3. Only then send `28 01 00` to flush flash-buffered events followed by `0x10` with the stored cursor and `max=255`.
 4. Receive the `0x11` summary and inner TLV records (§6), including the fresh `0x42` created by SyncTime. The summary can precede its record notifications, so hold it until the TLV stream has been idle for 500 ms. If a page contains records but no anchor, keep its decoded events parked and issue only another `max=255` read from the actual record high-water: no `max=0` ACK, cursor save, flush, or persistence. Each in-memory window stops at 32 pages or 4,096 parked events. At that bound, discard provisional RAM only and continue from the record high-water for at most eight read-only bootstrap windows; the ring data remains unacknowledged. During that explicitly bounded bootstrap, a plausible historical `0x42` may establish the clock as open_ring does. No-progress or terminal responses still stop the scan.
-5. If the anchor arrived after any window was skipped, discard the current provisional RAM and refetch from the unchanged durable cursor under that anchor. Resolve and durably persist the complete refetch, then save its cumulative record high-water. If the bounded bootstrap finds no anchor, the cursor remains unchanged; one post-fetch SyncTime retry is allowed only when the in-memory bound was not exceeded.
+5. If the anchor arrived after any window was skipped, discard the current provisional RAM and refetch from the unchanged durable cursor under that anchor. Resolve the complete refetch, await every SQLite stream/sleep insert, then atomically save its cumulative record high-water together with the primary `0x42` anchor. A write failure leaves both local state and ring ACK unchanged, so natural-key inserts safely retry. If the bounded bootstrap finds no anchor, the cursor remains unchanged; one post-fetch SyncTime retry is allowed only when the in-memory bound was not exceeded.
 6. Only after that commit send ack-fetch (`max=0`, cursor = the maximum structurally-valid inner-record `ringTimestamp`).
 7. A missing matching `0x42` anchor leaves both ring history unacknowledged and the local cursor unchanged, so a later refetch cannot skip data. [open_ring]
 
@@ -300,7 +300,13 @@ Response: `13 05 <ack> <counter_echo:3 LE> 00`. [open_ring]
 - Anchor from event `0x42` (time-sync ind, §6.11): set `anchor.utc_ms` from the event's epoch and `anchor.ring_time` from current `ringTimestamp`.
 - Conversion: `utc_ms = anchor.utc_ms + factor × (target_rt − anchor.ring_time)`, `factor ∈ {100,1}`. [open_ring]
 - On `0x41` (ring start) with `rt` regression → invalidate anchor (zero it). [open_ring]
-- `0x85` RTC beacon gives 1-second-granularity `unix_s` as a secondary source. [open_ring]
+- Persist the validated primary `0x42` anchor atomically with the history cursor and a save timestamp.
+  On reconnect it may translate timestamps immediately, but it is **mapping state only** until a
+  structurally-valid record reaches both the durable cursor and anchor ring time with a plausible mapped
+  epoch. Only then may the active fetch commit. A cursor/ring-start regression clears the anchor. Legacy
+  cursor-only state migrates without inventing an anchor.
+- `0x85` RTC beacon gives 1-second-granularity `unix_s` as a secondary source. It is session-only and is
+  never persisted as the primary reconnect anchor. [open_ring]
 
 ### 5.6 Live-HR realtime enable (Gen 3 verified; same path Gen 4/5)
 Three writes to `…0002`, each gated on its ACK; daytime-HR feature id = `0x02`: [relue][open_oura-r3]
