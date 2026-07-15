@@ -6,7 +6,7 @@ enum ProjectInfo {
     static let tagline = "Your strap. Your data. Your machine. Local-first, no cloud."
     static let version = "0.1.0"
     /// Public contact for questions, feedback, bug reports. Baked into every platform.
-    static let contactEmail = "thenoopapp@gmail.com"
+    static let contactEmail = "noopapp@tuta.io"
 
     /// Open-source reverse-engineering this is built on.
     static let attributions: [(repo: String, note: String)] = [

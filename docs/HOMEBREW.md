@@ -57,7 +57,7 @@ rides along with them. Fewer secrets, nothing to fail, one less surface to keep 
 ## Anonymity checklist
 
 - Tap repo + commits under the anonymous **NoopApp** identity (the script commits as
-  `NoopApp <thenoopapp@gmail.com>`).
+  `NoopApp <noopapp@tuta.io>`).
 - Token read from the local file only; never echoed. Scope it to the repos it needs and no more.
 - The cask installs the **already-anonymized** release zip (scrubbed by `Tools/anonymize-macos-app.sh`
   at build time) — no new surface.

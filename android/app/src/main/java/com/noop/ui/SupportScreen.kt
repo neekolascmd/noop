@@ -52,7 +52,7 @@ fun SupportScreen() {
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text("Get in touch", style = NoopType.headline, color = Palette.textPrimary)
                     Text(
-                        "Questions, feedback, bugs - thenoopapp@gmail.com",
+                        "Questions, feedback, bugs - noopapp@tuta.io",
                         style = NoopType.subhead, color = Palette.textSecondary,
                     )
                 }
