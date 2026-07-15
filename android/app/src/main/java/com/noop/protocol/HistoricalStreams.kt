@@ -307,13 +307,11 @@ private fun decodeWhoop5Historical(frame: ByteArray): Map<String, Any?>? {
     // worn vs off-wrist). Optical/perfusion @69/71 still doesn't decode consistently and is left raw.
     frame.histF32(41)?.let { if (it.isFinite() && it in 0.0..8.0) out["dynamic_acceleration"] = it }
     frame.histU16(57)?.let { out["step_motion_counter"] = it }
-    // @59 a per-step cadence-like byte (never 0; lower when moving faster). Raw — no unit asserted.
-    frame.histU8(59)?.let { out["step_cadence"] = it }
-    frame.histU8(63)?.let { if (it in 0..2) out["motion_wear_quality"] = it }
-    // @63 also reads as a small validated ACTIVITY-CLASS enum (community finding, #316): 0=still, 1=walk,
-    // 2=run, 0xFF=invalid. A lightweight, no-cloud per-record activity readout that rides alongside the
-    // step counter. Only the four known codes are surfaced — anything else (incl. 0xFF) stores nothing so
-    // an unmapped firmware can't inject garbage.
+    // @59 is motion-correlated but a labelled capture found the same response during walking and arm-only
+    // movement, so it is not safe to label as gait cadence or assign a unit. Preserve it neutrally.
+    frame.histU8(59)?.let { out["motion_byte_59"] = it }
+    // @63 is a motion class. 0 is pinned to still; 1 appeared during walking AND arm-only movement, and 2
+    // also appeared during arm-only movement, disproving the old 1=walk / 2=run labels.
     frame.histU8(63)?.let { if (it == 0 || it == 1 || it == 2) out["activity_class"] = it }
     // Auxiliary thermal readings adjacent to the main skin-temperature register, read off a digital
     // skin-temperature sensor. Carried raw; °C = raw/10. Signed i16, gated to a plausible thermal range
@@ -332,12 +330,13 @@ private fun decodeWhoop5Historical(frame: ByteArray): Map<String, Any?>? {
     frame.histU16(77)?.let { out["status_word_1"] = it }
     frame.histU16(79)?.let { out["status_word_2"] = it }
     // @81 packs several band flags into one byte. High nibble (bits 4-5) tracks a scored night:
-    // 0 wake / 1 still / 2 asleep / 3 up. bits 2-3 a wake-quality field; bits 0-1 an on-wrist flag.
-    // Deep/REM/light are computed off-band, not here.
+    // 0 wake / 1 still / 2 asleep / 3 up. Preserve the low bit-pairs structurally: a labelled daytime
+    // capture showed both varying with motion while the device stayed worn, disproving the former
+    // on-wrist / wake-quality labels. Deep/REM/light are computed off-band, not here.
     frame.histU8(81)?.let {
         out["sleep_state"] = (it shr 4) and 3
-        out["wake_quality"] = (it shr 2) and 3
-        out["onwrist"] = it and 3
+        out["state_bits_2_3"] = (it shr 2) and 3
+        out["state_bits_0_1"] = it and 3
     }
     // @82 a single raw byte adjacent to the flag byte; carried raw, meaning not pinned.
     frame.histU8(82)?.let { out["aux_byte_82"] = it }
@@ -672,7 +671,7 @@ fun extractHistoricalStreams(
                 // step_motion_counter@57 is the WHOOP5 CUMULATIVE u16 counter (decoded but, until now,
                 // dropped). Stored raw; AnalyticsEngine derives the daily step total from counter deltas.
                 // APPROXIMATE — @57 semantics unverified vs the official app (see decodeWhoop5Historical). (#78)
-                // activity_class@63 (0=still/1=walk/2=run) rides on the same record — null when invalid/absent.
+                // activity_class@63 (0=still; 1/2 neutral motion classes) rides on the same record.
                 p.intOrNull("step_motion_counter")?.let { c ->
                     steps.add(StepRow(ts, c, activityClass = p.intOrNull("activity_class")))
                 }

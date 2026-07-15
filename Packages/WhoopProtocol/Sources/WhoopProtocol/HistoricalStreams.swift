@@ -204,7 +204,7 @@ public func extractHistoricalStreams(_ parsed: [ParsedFrame],
             // step_motion_counter@57 is the WHOOP5 cumulative u16 counter — decoded but, until now,
             // dropped on macOS (Android persists it). APPROXIMATE; semantics unverified vs the app (#78).
             if let c = p["step_motion_counter"]?.intValue {
-                // activity_class@63 (0=still/1=walk/2=run) rides on the same record — nil when invalid/absent.
+                // activity_class@63 (0=still; 1/2 neutral motion classes) rides on the same record.
                 out.steps.append(StepSample(ts: ts, counter: c, activityClass: p["activity_class"]?.intValue))
             }
             // Band sleep_state (#175): the strap's OWN @81 high-nibble state (0 wake/1 still/2 asleep/3 up),

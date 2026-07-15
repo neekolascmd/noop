@@ -72,8 +72,7 @@ class Whoop5HistoricalDecodeTest {
         assertEquals(3057, p["skin_temp_raw"]) // 30.57 °C
         // @57 decodes as the FULL little-endian u16 at [57:59], not byte @57 alone (the over-count fix).
         assertEquals(50, p["step_motion_counter"])
-        assertEquals(0, p["motion_wear_quality"])
-        // @63 also reads as the activity-class enum (#316): this worn-still frame's byte is 0 => still.
+        // @63 is a motion-class enum: this worn-still frame pins byte 0 to still.
         assertEquals(0, p["activity_class"])
         assertTrue((p["dynamic_acceleration"] as Double) in 0.0..8.0)
     }
@@ -125,11 +124,11 @@ class Whoop5HistoricalDecodeTest {
 
     @Test
     fun decodesV18ActivityClassEnum() {
-        // @63 is a small validated activity-class enum: 0=still, 1=walk, 2=run, 0xFF=invalid (#316).
-        // The four known codes map through; 0xFF and any other value store nothing (null).
+        // @63 is a motion-class enum: 0=still; 1/2 remain neutral after both occurred during a labelled
+        // arm-only phase. The observed codes map through; 0xFF and any other value store nothing (null).
         assertEquals(0, decodeHistorical(mutateAndReCrc(63, 0), DeviceFamily.WHOOP5)!!["activity_class"]) // still
-        assertEquals(1, decodeHistorical(mutateAndReCrc(63, 1), DeviceFamily.WHOOP5)!!["activity_class"]) // walk
-        assertEquals(2, decodeHistorical(mutateAndReCrc(63, 2), DeviceFamily.WHOOP5)!!["activity_class"]) // run
+        assertEquals(1, decodeHistorical(mutateAndReCrc(63, 1), DeviceFamily.WHOOP5)!!["activity_class"]) // motion class 1
+        assertEquals(2, decodeHistorical(mutateAndReCrc(63, 2), DeviceFamily.WHOOP5)!!["activity_class"]) // motion class 2
         assertNull(decodeHistorical(mutateAndReCrc(63, 0xFF), DeviceFamily.WHOOP5)!!["activity_class"])   // invalid
         assertNull(decodeHistorical(mutateAndReCrc(63, 7), DeviceFamily.WHOOP5)!!["activity_class"])      // unknown
     }
@@ -150,7 +149,7 @@ class Whoop5HistoricalDecodeTest {
         assertEquals(25443699, p["record_index"])               // @11 per-record counter
         assertEquals(25997, p["hr_fixed_8_8"])                  // @36 value/256 ≈ HR (101.55 ≈ 102)
         assertEquals(101, (p["hr_fixed_8_8"] as Int) / 256)
-        assertEquals(170, p["step_cadence"])                    // @59 cadence-like byte (raw)
+        assertEquals(170, p["motion_byte_59"])                 // @59 motion-correlated byte (raw)
         assertEquals(1792, p["status_word"])                    // @75 not a deep-sleep marker
         assertEquals(0, p["sleep_state"])                       // @81 worn daytime frame = wake
         assertEquals(25444, p["rr_packed"])
@@ -164,15 +163,15 @@ class Whoop5HistoricalDecodeTest {
         assertEquals(3057, p["skin_temp_raw"])  // @73 raw u16, °C = raw/100 ≈ 30.57 (physiological)
         assertEquals(3073, p["status_word_1"])  // @77 raw u16
         assertEquals(3074, p["status_word_2"])  // @79 raw u16
-        assertEquals(0, p["wake_quality"])      // @81 bits 2-3
-        assertEquals(0, p["onwrist"])           // @81 bits 0-1 (worn daytime, low nibble 0)
+        assertEquals(0, p["state_bits_2_3"])    // @81 bits 2-3, raw
+        assertEquals(0, p["state_bits_0_1"])    // @81 bits 0-1, raw
         assertEquals(0, p["aux_byte_82"])       // @82 raw byte
     }
 
     @Test
     fun decodesV18AuxFieldsAcrossDevices() {
-        // The aux thermal pair, status words, on-wrist bit, and aux byte read consistently off the
-        // other real fixtures. The second-device HR57 frame has the @81 on-wrist bit set (low nibble 1).
+        // The aux thermal pair, status words, raw @81 bit-pairs and aux byte read consistently off the
+        // other real fixtures. The second-device HR57 frame has low bits 0-1 set to 1.
         val ack = decodeHistorical(bytes(androidAckCaptureV18), DeviceFamily.WHOOP5)!!
         assertEquals(294, ack["temp_aux_1_raw"])
         assertEquals(310, ack["temp_aux_2_raw"])
@@ -181,18 +180,18 @@ class Whoop5HistoricalDecodeTest {
         assertEquals(3238, ack["skin_temp_raw"]) // 32.38 °C with the /100 scale
 
         val dev57 = decodeHistorical(bytes(secondDeviceHR57), DeviceFamily.WHOOP5)!!
-        assertEquals(1, dev57["onwrist"])         // @81 low nibble = 1 on this frame
-        assertEquals(0, dev57["wake_quality"])
+        assertEquals(1, dev57["state_bits_0_1"])
+        assertEquals(0, dev57["state_bits_2_3"])
         assertEquals(0, dev57["sleep_state"])
         assertEquals(2962, dev57["skin_temp_raw"]) // 29.62 °C
     }
 
     @Test
-    fun band81NibblesSplitIndependently() {
-        // @81 packs sleep_state (bits 4-5), wake_quality (bits 2-3) and onwrist (bits 0-1). Override the
+    fun band81BitPairsSplitIndependently() {
+        // @81 packs sleep_state (bits 4-5) and two raw two-bit fields. Override the
         // byte on the real fixture and re-stamp the CRC32 (over frame[8..len-4], per Framing) so it passes
         // the gate, then check each sub-field is sliced independently.
-        data class Exp(val raw: Int, val sleep: Int, val wakeQ: Int, val onwrist: Int)
+        data class Exp(val raw: Int, val sleep: Int, val bits23: Int, val bits01: Int)
         for (e in listOf(
             Exp(0x00, 0, 0, 0),
             Exp(0x39, 3, 2, 1),   // 0b00_11_10_01
@@ -206,8 +205,8 @@ class Whoop5HistoricalDecodeTest {
             f[end + 2] = ((crc shr 16) and 0xFF).toByte(); f[end + 3] = ((crc shr 24) and 0xFF).toByte()
             val p = decodeHistorical(f, DeviceFamily.WHOOP5)!!
             assertEquals(e.sleep, p["sleep_state"])
-            assertEquals(e.wakeQ, p["wake_quality"])
-            assertEquals(e.onwrist, p["onwrist"])
+            assertEquals(e.bits23, p["state_bits_2_3"])
+            assertEquals(e.bits01, p["state_bits_0_1"])
         }
     }
 

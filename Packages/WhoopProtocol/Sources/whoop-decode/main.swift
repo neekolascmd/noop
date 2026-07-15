@@ -256,12 +256,15 @@ for (n, rec) in records.enumerated() {
     // the per-field metadata the live pipeline skips.
     let parsed = parseFrame(frame, family: family, collectFields: true)
     total += 1
-    if parsed.ok { okCount += 1 }
+    // A structurally parsed frame with a failed CRC is still raw evidence, not a fully decoded success.
+    // Keep it on the --raw-only worklist and out of the success count.
+    let fullyDecoded = parsed.ok && parsed.crcOK != false
+    if fullyDecoded { okCount += 1 }
     typeCounts[parsed.typeName, default: 0] += 1
     let version = parsed.parsed["hist_version"]?.intValue.map { " v\($0)" } ?? ""
     layoutCounts["\(parsed.typeName)\(version) · \(frame.count)B · \(rec.char ?? "unknown-char")", default: 0] += 1
 
-    if rawOnly && parsed.ok { continue }
+    if rawOnly && fullyDecoded { continue }
 
     if jsonOut {
         decodedOut.append(DecodedOut(char: rec.char, hr: rec.hr, tsMs: rec.tsMs,

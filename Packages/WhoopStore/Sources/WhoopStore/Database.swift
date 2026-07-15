@@ -376,7 +376,7 @@ extension WhoopStore {
         }
 
         // v19 (#316 / @63 activity class): the per-record activity-class enum the decoder ALREADY reads off
-        // @63 (0=still, 1=walk, 2=run; 0xFF/invalid stores nothing) but which was DROPPED at the storage
+        // @63 (0=still; 1/2 neutral motion classes; 0xFF/invalid stores nothing) but which was DROPPED at the storage
         // boundary, `StepSample` carried `activityClass` yet the v10 stepSample INSERT only listed
         // (deviceId, ts, counter), so it could never be persisted, read, or shown. This ALTER adds a NULLABLE
         // `activityClass INTEGER` to stepSample: additive only, no DEFAULT (a null means "no class for this
