@@ -478,35 +478,29 @@ reference or app export needed:
   (`corr(amplitude, |Δgravity|) = +0.35` — mild motion artifact, not the signal) — so it is optical,
   not a ballistocardiographic IMU reading.
 
-**Time-multiplexed optical channels.** Byte `frame[21]` is the channel index: the strap sweeps **26
-optical channels (values 1…26)**, one per ~40-frame (~39 s) block, revisiting a given channel only
-~20 min later — so a full 1→26 sweep is spread over hours and **no two channels are ever sampled
-simultaneously**. Each channel's waveform autocorrelates to the heart rate (lag 14 ≈ 103 bpm) with its
-own DC baseline. Which physical LED each index maps to is **not** verifiable from the data, so the raw
-index is surfaced (`ppg_channel`, gated to 1…26) with no colour claim. *(An earlier read at `frame[12]`
-— the "two channels `0x41`/`0x46`" — was a high-entropy counter byte mistaken for the channel during a
-short 2-burst capture; verified against a 22 h overnight corpus, `frame[12]` takes 67 distinct values
-while `frame[21]` takes exactly 26. The PPG **sample** decode (LE i16 @[27:75]) is unaffected and
-correct.) This 26-way time-multiplex is also why **SpO₂ is not recoverable offline** — it needs
-*simultaneous* red+IR, and no two channels are ever co-sampled.
+**Optical channel identity is not mapped.** Byte `frame[21]` was previously labelled as a 1…26 channel
+index after two short captures happened to read small values. A later capture reached `65`, disproving
+that interpretation; the decoder now exposes it only as the neutral raw `burst_index`. Byte `frame[12]`
+is part of the monotonic `record_index`, not an optical channel either. The PPG **sample** decode (LE i16
+@[27:75]) is unaffected and remains hardware-backed. No LED colour or red/IR pairing is asserted, and the
+old claim that offline SpO₂ is impossible because of a proven 26-way time-multiplex is withdrawn. Current
+captures do not establish a stable simultaneous red/IR pair, so SpO₂ remains unmapped rather than ruled out.
 
 The full v26 byte map (88 bytes; CRC32 @84):
 
 | Bytes | Field | Status |
 |---|---|---|
 | 8 / 9 | type 47 / version 26 | — |
-| 10, 13, 14 | `0x80` / `0x84` / `0x01` | constant header |
-| 11 | per-record counter (+1/s) | sequence |
-| **12** | **`ppg_channel`** (`0x41` / `0x46`) | **mapped** — optical channel id |
+| 10 | `0x80` | observed layout marker |
+| 11–14 | `record_index` u32 LE | mapped — monotonic lifetime record index |
 | **15** | **`unix`** u32 LE | **mapped** — real seconds (v18's slot) |
-| 19 | `0x000147AE` constant | config param |
-| 23–26 | high-entropy (DC / checksum?) | raw — no ground truth |
+| 19 / 21 / 23 / 25 | neutral raw bytes; `@21` exposed as `burst_index` | raw — no channel/LED meaning |
 | **27–74** | **`ppg_waveform`** 24× LE-i16 | **mapped** — 24 Hz PPG, HR-locked |
-| 75–83 | footer (random + `0x50`,`0x08` const) | raw — no ground truth |
+| 75 / 79 / 81 / 82 | neutral footer bytes | raw — no ground truth |
 
-`decodeWhoop5HistoricalV26` exposes `ppg_waveform` (+ `ppg_sample_count`), `ppg_channel`, and `unix`. The
-samples are raw AC-coupled ADC counts — PPG has no absolute unit — so no scale is invented; the
-high-entropy `23–26` and the footer are left raw (no internal ground truth). Reproduce the proof with
+`decodeWhoop5HistoricalV26` exposes `record_index`, `unix`, `burst_index`, the neutral raw bytes, and
+`ppg_waveform` (+ `ppg_sample_count`). The samples are raw AC-coupled ADC counts — PPG has no absolute
+unit — so no scale is invented and no optical-channel identity is claimed. Reproduce the proof with
 `tools/linux-capture/analyze_v26_waveform.py`; parity tests `Whoop5PpgWaveformTests.swift`.
 
 ### The WHOOP 5.0 / MG type-47 records (versions 20 & 21) — bulk multi-channel sensor stream

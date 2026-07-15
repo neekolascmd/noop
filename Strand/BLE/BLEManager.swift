@@ -1588,9 +1588,10 @@ public final class BLEManager: NSObject, ObservableObject {
     }
 
     /// True when a frame is part of the historical offload (HISTORICAL_DATA=47, EVENT=48,
-    /// METADATA=49 / puffin METADATA=56, CONSOLE_LOGS=50) rather than the live stream (REALTIME_DATA=40,
-    /// REALTIME_RAW_DATA=43). The live type-43 raw flood streams continuously and unprompted on
-    /// this firmware, so the backfill idle-watchdog must NOT be re-armed by it — only by genuine
+    /// METADATA=49 / puffin METADATA=56, CONSOLE_LOGS=50, and WHOOP 5/MG HISTORICAL_IMU=52) rather
+    /// than the live stream (REALTIME_DATA=40, REALTIME_RAW_DATA=43). The live type-43 raw flood streams
+    /// continuously and unprompted on this firmware, so the backfill idle-watchdog must NOT be re-armed
+    /// by it — only by genuine
     /// offload progress — otherwise the session can neither complete nor time out.
     static func isOffloadFrame(_ frame: [UInt8], family: DeviceFamily) -> Bool {
         // The type byte sits at the inner-record start: frame[4] on WHOOP 4.0, frame[8] on WHOOP 5/MG
@@ -1600,6 +1601,7 @@ public final class BLEManager: NSObject, ObservableObject {
         guard frame.count > typeIndex else { return false }
         switch frame[typeIndex] {
         case 47, 48, 49, 50, 56: return true   // HISTORICAL_DATA / EVENT / METADATA / CONSOLE_LOGS
+        case 52 where family == .whoop5: return true // HISTORICAL_IMU_DATA_STREAM; preserve before trim
         default: return false              // 40 REALTIME_DATA, 43 REALTIME_RAW_DATA (live flood)
         }
     }
