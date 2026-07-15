@@ -2389,7 +2389,7 @@ fun SettingsScreen(vm: AppViewModel, onOpenTestCentre: () -> Unit = {}) {
     }
 }
 
-private const val SUPPORT_EMAIL = "thenoopapp@gmail.com"
+private const val SUPPORT_EMAIL = "noopapp@tuta.io"
 
 // MARK: - App icon swap (v3 "Titanium & Gold")
 

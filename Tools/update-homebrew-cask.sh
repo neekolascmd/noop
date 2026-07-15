@@ -56,11 +56,11 @@ end
 EOF
 
 cd "$TMP/tap"
-git -c user.name=NoopApp -c user.email=thenoopapp@gmail.com add Casks/noop.rb
+git -c user.name=NoopApp -c user.email=noopapp@tuta.io add Casks/noop.rb
 if git rev-parse HEAD >/dev/null 2>&1 && git diff --cached --quiet; then
   echo "Homebrew cask already current for ${VER} — nothing to push."; exit 0
 fi
-git -c user.name=NoopApp -c user.email=thenoopapp@gmail.com commit --quiet -m "noop ${VER}"
+git -c user.name=NoopApp -c user.email=noopapp@tuta.io commit --quiet -m "noop ${VER}"
 
 # Push to the canonical GitHub tap (required) and the forge mirror (best-effort).
 git -c credential.helper='!f() { echo username=NoopApp; echo "password=$GH_TOKEN"; }; f' \
