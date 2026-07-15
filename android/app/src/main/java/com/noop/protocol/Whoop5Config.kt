@@ -1,11 +1,11 @@
 package com.noop.protocol
 
-// WHOOP 5.0 / MG "R22" feature-flag config (deep-stream unlock) — direct port of the macOS/iOS
+// WHOOP 5.0 / MG persistent "R22" feature-flag experiment — direct port of the macOS/iOS
 // `Whoop5Config` (Packages/WhoopProtocol/Sources/WhoopProtocol/Whoop5Config.swift).
 //
-// WHOOP 5/MG straps withhold their deep biometric streams (the high-rate "R22" optical/HR/motion
-// packets, type 0x2F) from a freshly-connected client. The official app switches them on by writing
-// a short burst of persistent feature-flag config values right after the hello handshake — a sequence
+// The official app writes a short burst of persistent feature-flag config values after the hello
+// handshake. Hardware evidence does not show those values opening a separate live stream; they may
+// change which type-0x2F history products firmware banks/returns. The enable sequence was
 // independently documented by two third parties: judes.club's "Cracking the WHOOP 5 Bluetooth
 // Protocol" (whose interactive frame-builder is the byte-level ground truth this is validated against)
 // and Asherlc/dofek's docs/whoop-ble-protocol.md (Android APK decompilation), which corroborate the
@@ -30,9 +30,9 @@ object Whoop5Config {
     data class Flag(val name: String, val value: Int)
 
     /** The exact ordered enable sequence the official app sends, transcribed verbatim from
-     *  judes.club's frame-builder FLAGS array. `enable_r22_packets` opens the type-0x2F biometric
-     *  stream; the rest tune channel selection, wear detection and sleep behaviour. Keep in lockstep
-     *  with the Swift `Whoop5Config.enableR22Sequence`. */
+     *  judes.club's frame-builder FLAGS array. These persistent flags may change which record families
+     *  firmware banks/returns; hardware evidence does not show a separate live stream. NOOP has no
+     *  captured restore sequence. Keep in lockstep with Swift `Whoop5Config.enableR22Sequence`. */
     val enableR22Sequence: List<Flag> = listOf(
         Flag("enable_r22_packets", 0x32),
         Flag("enable_r22_v2_packets", 0x32),

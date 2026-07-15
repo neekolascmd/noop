@@ -33,8 +33,8 @@ struct SettingsView: View {
     /// Opt-in WHOOP 5/MG raw-frame capture to a file (off by default). See [PuffinFrameRecorder].
     @AppStorage(PuffinFrameRecorder.enabledKey) private var puffinCapture = false
 
-    /// Opt-in WHOOP 5/MG "R22" deep-data unlock (off by default) — the one probe that writes a
-    /// persistent feature flag to the strap. See [PuffinExperiment.deepDataKey]. (#174)
+    /// Opt-in WHOOP 5/MG persistent R22 experiment (off by default) — the one probe that writes strap
+    /// feature flags and has no captured restore sequence. See [PuffinExperiment.deepDataKey]. (#174)
     @AppStorage(PuffinExperiment.deepDataKey) private var deepDataEnabled = false
 
     /// Opt-in "Broadcast heart rate" (off by default) — makes the strap advertise its HR as a standard
@@ -1138,8 +1138,8 @@ struct SettingsView: View {
             return String(localized: "Sending the 15 R22 configuration writes…")
         }
         return live.worn
-            ? String(localized: "Wear the strap, tap once, then let it sync and share your strap log.")
-            : String(localized: "Put the strap on first. The deep stream is on-wrist only.")
+            ? String(localized: "Persistent write: NOOP has no restore sequence. Use only for a controlled before/after capture.")
+            : String(localized: "Put the strap on first. The configuration write is wear-gated.")
         #endif
     }
 
@@ -1164,21 +1164,21 @@ struct SettingsView: View {
 
                 Divider().overlay(StrandPalette.hairline)
 
-                // MARK: R22 deep-data unlock — the one probe that writes to the strap.
+                // MARK: Persistent R22 configuration — the one probe that writes to the strap.
                 Toggle(isOn: $deepDataEnabled) {
-                    Text("WHOOP 5/MG R22 configuration")
+                    Text("Persistent WHOOP 5/MG R22 flags")
                         .font(StrandFont.subhead)
                         .foregroundStyle(StrandPalette.textPrimary)
                 }
                 .toggleStyle(.switch)
                 .tint(StrandPalette.accent)
-                Text("Sends the official app's documented 15 R22 feature flags. A real strap has acknowledged the sequence, but current evidence does not show a separate live stream: type-0x2F records still arrive through normal history sync. This is reversible and may change which records your firmware banks or returns. Experimental, iPhone/Android only; Mac can capture and decode history but cannot send the encrypted configuration writes.")
+                Text("Sends the official app's documented 15 R22 feature flags. A real strap has acknowledged the sequence, but current evidence does not show a separate live stream: type-0x2F records still arrive through normal history sync. These writes persist and NOOP has no captured restore sequence; turning this toggle off only blocks future writes. Advanced testing only, iPhone/Android only.")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
 
                 if deepDataEnabled {
-                    NoopButton("Send enable sequence to strap", systemImage: "bolt.badge.automatic", kind: .primary) {
+                    NoopButton("Write persistent enable sequence", systemImage: "bolt.badge.automatic", kind: .primary) {
                         model.ble.enableWhoop5DeepData()
                     }
                     .disabled(deepDataButtonDisabled)

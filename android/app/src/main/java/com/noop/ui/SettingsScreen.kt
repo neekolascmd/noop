@@ -1354,14 +1354,14 @@ fun SettingsScreen(vm: AppViewModel, onOpenTestCentre: () -> Unit = {}) {
                     color = Palette.textTertiary,
                 )
 
-                // --- R22 deep-data unlock — the one probe that writes to the strap. (#174) ---
+                // --- Persistent R22 configuration — the one probe that writes to the strap. (#174) ---
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
                     Text(
-                        "Unlock WHOOP 5/MG deep data (R22)",
+                        "Allow persistent WHOOP 5/MG R22 writes",
                         style = NoopType.subhead,
                         color = Palette.textPrimary,
                         modifier = Modifier.weight(1f),
@@ -1380,28 +1380,28 @@ fun SettingsScreen(vm: AppViewModel, onOpenTestCentre: () -> Unit = {}) {
                             uncheckedBorderColor = Palette.hairline,
                         ),
                         modifier = Modifier.semantics {
-                            contentDescription = "Unlock WHOOP 5/MG deep data"
+                            contentDescription = "Allow persistent WHOOP 5/MG R22 writes"
                         },
                     )
                 }
                 Text(
-                    "Sends the official app's documented 15 R22 feature flags. Hardware returns a response to each write, but current evidence does not show a separate live stream: type-0x2F records still arrive through normal history sync. This writes reversible configuration and may change which records your firmware banks or returns, so it remains experimental.",
+                    "Sends the official app's documented 15 R22 feature flags. Hardware returns a response to each write, but current evidence does not show a separate live stream: type-0x2F records still arrive through normal history sync. These writes persist and NOOP has no captured restore sequence; switching this toggle off only blocks future writes. Advanced testing only.",
                     style = NoopType.caption,
                     color = Palette.textTertiary,
                 )
                 if (deepData) {
                     NoopButton(
-                        text = "Send enable sequence to strap",
+                        text = "Write persistent enable sequence",
                         leadingIcon = Icons.Filled.Bolt,
                         kind = NoopButtonKind.Primary,
                         enabled = live.encryptedBond && live.worn && !live.r22SequenceInFlight,
                         onClick = { vm.ble.enableWhoop5DeepData() },
                     )
                     Text(
-                        if (!live.encryptedBond) "Needs the full encrypted bond: close the official WHOOP app and pair the strap to NOOP first (a live-HR-only link can't carry the unlock)."
-                        else if (!live.worn) "Put the strap on first. The R22 configuration is wear-gated."
+                        if (!live.encryptedBond) "Needs the full encrypted bond: close the official WHOOP app and pair the strap to NOOP first (a live-HR-only link can't carry the writes)."
+                        else if (!live.worn) "Put the strap on first. The R22 configuration write is wear-gated."
                         else if (live.r22SequenceInFlight) "Sending the 15 R22 configuration writes…"
-                        else "Wear the strap, tap once, then let it sync and share your strap log.",
+                        else "Persistent write: NOOP has no restore sequence. Use only for a controlled before/after capture.",
                         style = NoopType.caption,
                         color = Palette.textTertiary,
                     )

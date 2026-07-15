@@ -465,7 +465,7 @@ private fun AdvancedCard(vm: AppViewModel, is5MG: Boolean) {
                 ToggleRowTC("Try WHOOP 5/MG protocol probes", probes) {
                     probes = it; puffin.isEnabled = it
                 }
-                ToggleRowTC("Unlock WHOOP 5/MG deep data (R22)", deepData) {
+                ToggleRowTC("Allow persistent WHOOP 5/MG R22 writes", deepData) {
                     deepData = it; puffin.isDeepDataEnabled = it
                 }
                 ToggleRowTC("Broadcast heart rate (Garmin/ANT)", broadcast) {

@@ -229,9 +229,9 @@ Source: `enums.PacketType` in `whoop_protocol.json`; resolved by `Schema.typeNam
 | 55 | `RELATIVE_BATTERY_PACK_CONSOLE_LOGS` | |
 | 56 | `PUFFIN_METADATA` | WHOOP 5.0; aliased → `METADATA` |
 
-`isOffloadFrame(_:)` (in `BLEManager`) treats **47/48/49/50** as offload traffic; the live
-`REALTIME_DATA`(40)/`REALTIME_RAW_DATA`(43) flood is excluded so it cannot keep the backfill
-idle-watchdog alive.
+`isOffloadFrame(_:)` (in `BLEManager`) treats **47/48/49/50** as WHOOP 4 offload traffic. WHOOP 5/MG
+also routes type **52** historical IMU and type **56** puffin metadata. The live `REALTIME_DATA`(40) /
+`REALTIME_RAW_DATA`(43) flood is excluded so it cannot keep the backfill idle-watchdog alive.
 
 The parser also exposes irregular fields through per-type **post-hooks**
 (`registerPostHooks()` in `PostHooks.swift`): `realtime_data`, `event`, `command_response`,
@@ -505,7 +505,7 @@ waiting on a network.
 ### 7.5 Watchdog & liveness
 
 - **Idle watchdog** (`backfillIdleTimeoutSeconds = 60`): re-armed on every genuine offload frame
-  (47/48/49/50) and only those; if the strap goes silent the session exits and resumes next time
+  (47/48/49/50, plus WHOOP 5/MG 52/56) and only those; if the strap goes silent the session exits and resumes next time
   via the durable cursor. The live type-43 flood is dropped during offload so it cannot starve
   chunk acks.
 - **Stuck detector** (`StuckStrapDetector`): after an offload, if the strap reports records newer

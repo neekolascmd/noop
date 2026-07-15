@@ -371,8 +371,8 @@ final class Backfiller {
             // Observability (PR #241): log which layout this strap emits on a HEALTHY sync too — the
             // unmapped-version path below only fires for layouts NOOP can't decode, so a normal log
             // never revealed v18/v24/v25/v26. Once per distinct layout this session.
-            if let v = parsed.lazy.compactMap({ $0.parsed["hist_version"]?.intValue }).first,
-               loggedLayoutVersions.insert(v).inserted {
+            let versions = Set(parsed.compactMap { $0.parsed["hist_version"]?.intValue })
+            for v in versions.sorted() where loggedLayoutVersions.insert(v).inserted {
                 log?("Backfill: historical records use layout v\(v)")
                 // UNIVERSAL clock-drift: bank the layout so the export's universal clock-drift line is
                 // firmware-aware on every export (not only Connection mode). Unconditional observability.
@@ -382,8 +382,9 @@ final class Backfiller {
                 // unmapped-version path below fires too. Gated zero-cost.
                 emitConnection({
                     let decodable = parsed.contains {
-                        $0.parsed["heart_rate"] != nil || $0.parsed["gravity_x"] != nil
-                            || $0.parsed["ppg_waveform"] != nil
+                        $0.parsed["hist_version"]?.intValue == v
+                            && ($0.parsed["heart_rate"] != nil || $0.parsed["gravity_x"] != nil
+                                || $0.parsed["ppg_waveform"] != nil)
                     }
                     return ConnectionTrace.firmwareLine(version: v, decodable: decodable)
                 }())

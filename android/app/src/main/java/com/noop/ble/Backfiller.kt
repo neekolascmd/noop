@@ -337,25 +337,33 @@ class Backfiller(
             )
             // Observability (PR #241): which historical layout does this strap emit? Only the unmapped/
             // reject path logged a version before, so a healthy sync never revealed v24/v25 (4.0) or
-            // v18/v26 (5/MG). Sample the chunk's first genuine record (null ⇒ console/CRC-fail); log
-            // each distinct layout once per session.
-            frames.firstNotNullOfOrNull { decodeHistorical(it, family)?.get("hist_version") as? Int }
-                ?.let { v ->
-                    if (loggedLayoutVersions.add(v)) {
-                        log("Backfill: historical records use layout v$v")
-                        // Connection test mode: the firmware layout as a compact tagged line. A layout that
-                        // decoded a signature field (heart_rate / gravity_x / ppg_waveform) is decodable.
-                        // Gated zero-cost. Twin of the Swift Backfiller emit.
-                        emitConnection {
-                            val decodable = frames.any {
-                                val d = decodeHistorical(it, family)
-                                d != null && (d.containsKey("heart_rate") || d.containsKey("gravity_x") ||
-                                    d.containsKey("ppg_waveform"))
-                            }
-                            com.noop.analytics.ConnectionTrace.firmwareLine(v, decodable)
-                        }
+            // v18/v26 (5/MG). A chunk can mix v18/v26 (or v20/v21 pairs), so sampling only its first
+            // record hid the rarer version. Group by the family-specific type/version bytes, then decode
+            // only one representative per version for the diagnostic signature.
+            val typeIndex = if (family == DeviceFamily.WHOOP5) 8 else 4
+            val versionIndex = if (family == DeviceFamily.WHOOP5) 9 else 5
+            val layoutSamples = LinkedHashMap<Int, ByteArray>()
+            frames.forEach { frame ->
+                if (frame.size > versionIndex &&
+                    (frame[typeIndex].toInt() and 0xFF) == PacketType.HISTORICAL_DATA.rawValue
+                ) {
+                    layoutSamples.putIfAbsent(frame[versionIndex].toInt() and 0xFF, frame)
+                }
+            }
+            layoutSamples.keys.sorted().forEach { v ->
+                if (loggedLayoutVersions.add(v)) {
+                    log("Backfill: historical records use layout v$v")
+                    // Connection test mode: the firmware layout as a compact tagged line. A layout that
+                    // decoded a signature field (heart_rate / gravity_x / ppg_waveform) is decodable.
+                    // Gated zero-cost. Twin of the Swift Backfiller emit.
+                    emitConnection {
+                        val d = layoutSamples[v]?.let { decodeHistorical(it, family) }
+                        val decodable = d != null && (d.containsKey("heart_rate") ||
+                            d.containsKey("gravity_x") || d.containsKey("ppg_waveform"))
+                        com.noop.analytics.ConnectionTrace.firmwareLine(v, decodable)
                     }
                 }
+            }
             // SpO2 RE dump (PR #945, reimplemented): while the Connection test mode is on, dump a few FULL
             // historical records + their mapped raw SpO2 channels so an offline pass can tell whether the
             // strap banks a COMPUTED SpO2 (a byte tracking the WHOOP app's nightly %) vs only the raw

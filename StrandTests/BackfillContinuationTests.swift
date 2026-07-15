@@ -19,6 +19,24 @@ final class BackfillContinuationTests: XCTestCase {
     /// check is inert for them and the original #364/#451/#25 semantics stay pinned unchanged.
     private let wallNow = 1_800_000_000
 
+    /// Real token-free WHOOP 5 GET_DATA_RANGE response. The puffin command byte is at +4, while the
+    /// timestamp scan deliberately remains rooted at frame[7] so its four-byte words land on 11, 15, … .
+    @MainActor func testWhoop5DataRangeHelperReadsAlignedWindow() {
+        let hex = "aa014c00010032d124982207010180b901005ab7010048b901005ab701001000000000000200da1b00000ee31d00b0e1ff69d7430000a3ab266a3d4a0000a3ab266a3d4a00007cc7266a5c4f00000000623977f5"
+        let frame = stride(from: 0, to: hex.count, by: 2).map { offset -> UInt8 in
+            let start = hex.index(hex.startIndex, offsetBy: offset)
+            let end = hex.index(start, offsetBy: 2)
+            return UInt8(hex[start..<end], radix: 16)!
+        }
+        XCTAssertEqual(BLEManager.dataRangeOldestUnix(from: frame, family: .whoop5), 1_778_377_136)
+        XCTAssertEqual(BLEManager.dataRangeNewestUnix(from: frame, family: .whoop5), 1_780_926_332)
+
+        var corrupted = frame
+        corrupted[corrupted.count - 1] ^= 0x01
+        XCTAssertNil(BLEManager.dataRangeOldestUnix(from: corrupted, family: .whoop5))
+        XCTAssertNil(BLEManager.dataRangeNewestUnix(from: corrupted, family: .whoop5))
+    }
+
     /// The happy path: still connected, the strap is well ahead of our frontier, the trim advanced this
     /// session, and we're under the cap ⇒ continue immediately.
     func testContinuesWhenConnectedBehindAndAdvancing() {

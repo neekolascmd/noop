@@ -62,4 +62,16 @@ class RawHistoryArchiveEvictionTest {
         // Too short → sentinel bucket, never crashes.
         assertEquals(-1, RawHistoryArchive.versionByte(byteArrayOf(0xAA.toByte(), 1), com.noop.protocol.DeviceFamily.WHOOP4))
     }
+
+    @Test fun whoop5Type52UsesOneNeutralRetentionBucket() {
+        // Type-52 byte 9 is payload, not a proven layout version. Different values must not multiply
+        // protected floors and let a high-volume IMU stream defeat the archive cap.
+        val a = ByteArray(12).also { it[8] = 52; it[9] = 1 }
+        val b = ByteArray(12).also { it[8] = 52; it[9] = 0xFF.toByte() }
+        assertEquals(-52, RawHistoryArchive.versionByte(a, com.noop.protocol.DeviceFamily.WHOOP5))
+        assertEquals(-52, RawHistoryArchive.versionByte(b, com.noop.protocol.DeviceFamily.WHOOP5))
+
+        val v21 = a.copyOf().also { it[8] = 47; it[9] = 21 }
+        assertEquals(21, RawHistoryArchive.versionByte(v21, com.noop.protocol.DeviceFamily.WHOOP5))
+    }
 }

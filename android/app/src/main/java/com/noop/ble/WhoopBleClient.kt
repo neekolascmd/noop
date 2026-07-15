@@ -777,43 +777,42 @@ class WhoopBleClient(
             return Pair(bankedSensorRecords, bankedNothing)
         }
 
-        /**
-         * Newest plausible-unix marker in a GET_DATA_RANGE response = the strap's newest stored
-         * record. Mirrors Swift `BLEManager.dataRangeNewestUnix`: scan u32 LE words in the response
-         * body (starts at frame[7], after [type,seq,cmd]), keep those in the unix range, return max.
-         */
-        fun dataRangeNewestUnix(frame: ByteArray): Long? {
-            if (frame.size <= 7) return null
-            var newest: Long? = null
-            var i = 7
-            while (i + 4 <= frame.size) {
+        /** Plausible-unix markers in GET_DATA_RANGE. WHOOP 4's aligned words begin at frame[7].
+         * WHOOP 5's begin at payload +3 = frame[14], and its trailing four-byte CRC32 is excluded. */
+        private fun dataRangeUnixBounds(frame: ByteArray, family: DeviceFamily): Pair<Long, Long>? {
+            val checked = Framing.parseFrame(frame, family)
+            if (!checked.ok || checked.crcOk != true) return null
+            val start = if (family == DeviceFamily.WHOOP5) 14 else 7
+            val end = if (family == DeviceFamily.WHOOP5) frame.size - 4 else frame.size
+            if (end < start + 4) return null
+            var oldest = Long.MAX_VALUE
+            var newest = 0L
+            var i = start
+            while (i + 4 <= end) {
                 val w = (frame[i].toLong() and 0xFFL) or
                     ((frame[i + 1].toLong() and 0xFFL) shl 8) or
                     ((frame[i + 2].toLong() and 0xFFL) shl 16) or
                     ((frame[i + 3].toLong() and 0xFFL) shl 24)
-                if (w in 1_700_000_000L..1_900_000_000L) newest = maxOf(newest ?: 0L, w)
+                if (w in 1_600_000_000L..1_900_000_000L) {
+                    oldest = minOf(oldest, w)
+                    newest = maxOf(newest, w)
+                }
                 i += 4
             }
-            return newest
+            return if (newest > 0L) Pair(oldest, newest) else null
+        }
+
+        /** Newest stored-record timestamp reported by GET_DATA_RANGE; null for short/PENDING. */
+        fun dataRangeNewestUnix(frame: ByteArray, family: DeviceFamily): Long? {
+            return dataRangeUnixBounds(frame, family)?.second
         }
 
         /** OLDEST plausible record timestamp in a GET_DATA_RANGE frame — the start of the strap's stored
          *  history. Same scan as [dataRangeNewestUnix] but keeps the minimum, so one connect can report the
          *  full banked SPAN (oldest…newest) = the backlog DEPTH a deep oldest-first drain must cover before
          *  recent nights land (#364). Mirrors Swift `BLEManager.dataRangeOldestUnix`. */
-        fun dataRangeOldestUnix(frame: ByteArray): Long? {
-            if (frame.size <= 7) return null
-            var oldest: Long? = null
-            var i = 7
-            while (i + 4 <= frame.size) {
-                val w = (frame[i].toLong() and 0xFFL) or
-                    ((frame[i + 1].toLong() and 0xFFL) shl 8) or
-                    ((frame[i + 2].toLong() and 0xFFL) shl 16) or
-                    ((frame[i + 3].toLong() and 0xFFL) shl 24)
-                if (w in 1_700_000_000L..1_900_000_000L) oldest = minOf(oldest ?: Long.MAX_VALUE, w)
-                i += 4
-            }
-            return oldest
+        fun dataRangeOldestUnix(frame: ByteArray, family: DeviceFamily): Long? {
+            return dataRangeUnixBounds(frame, family)?.first
         }
 
         /** #364 auto-continue cap: consecutive immediate re-kicks per connection before falling back to
@@ -1981,9 +1980,10 @@ class WhoopBleClient(
                 cmd != CommandNumber.SET_CLOCK && cmd != CommandNumber.GET_CLOCK &&
                 cmd != CommandNumber.GET_DATA_RANGE &&
                 cmd != CommandNumber.SET_ALARM_TIME && cmd != CommandNumber.DISABLE_ALARM &&
-                // SET_CONFIG (the R22 deep-stream unlock) is allowed ONLY while the deep-data experiment
-                // is opted in — it writes a persistent feature flag to the strap, so it must never fire
-                // on a default install. Reversible; driven only by enableWhoop5DeepData(). (#174)
+                // SET_CONFIG (the persistent R22 experiment) is allowed ONLY while the deep-data experiment
+                // is opted in — it writes persistent feature flags to the strap, so it must never fire
+                // on a default install. NOOP has no restore sequence; driven only by
+                // enableWhoop5DeepData(). (#174)
                 !(cmd == CommandNumber.SET_CONFIG && puffinExperiment.isDeepDataEnabled) &&
                 // SET_DEVICE_CONFIG (the Broadcast-HR flag) is allowed ONLY while that opt-in is on.
                 // Reversible; driven only by setBroadcastHr(). (#181)
@@ -3216,9 +3216,9 @@ class WhoopBleClient(
                     // Capture the strap's newest stored record from a GET_DATA_RANGE reply, feeding
                     // the liveness watchdog. The response command byte is family-dependent: @6 on
                     // WHOOP4, @10 on 5/MG (+4 puffin envelope) — reading 6 unconditionally meant
-                    // strapNewestTs never updated from a 5/MG reply. dataRangeNewestUnix's scan-from-7
-                    // stays: on 5/MG it lands word-aligned with the body at 11, and a straddling word
-                    // can't fall in the unix-range window. (#78 fork)
+                    // strapNewestTs never updated from a 5/MG reply. The range helper also uses the
+                    // family-specific aligned payload boundary (frame[7] on 4.0, frame[14] on 5/MG).
+                    // (#78 fork)
                     val cmdOff = if (connectedFamily == DeviceFamily.WHOOP5) 10 else 6
                     if (frame.size > cmdOff && (frame[cmdOff].toInt() and 0xFF) == CommandNumber.GET_DATA_RANGE.rawValue) {
                         // #451: dump raw GET_DATA_RANGE response bytes unconditionally (even if decode returns
@@ -3226,7 +3226,7 @@ class WhoopBleClient(
                         // dataRangeNewestUnix straight from a normal strap-log export. Mirrors the Swift line.
                         val hex = frame.joinToString("") { "%02x".format(it) }
                         log("Get Data Range raw frame (#451 — for offset analysis): $hex")
-                        dataRangeNewestUnix(frame)?.let {
+                        dataRangeNewestUnix(frame, connectedFamily)?.let {
                             strapNewestTs = it
                             // #928: flag an implausibly FUTURE "newest" (strap clock set ahead) right where
                             // it lands, so a Test Centre export shows WHY auto-continue refused the range.
@@ -3248,7 +3248,7 @@ class WhoopBleClient(
                             log("Strap newest banked record: ${fmt.format(java.util.Date(it * 1000L))} (from data range)")
                             // Also surface the OLDEST banked record → the full backlog SPAN, i.e. the depth a
                             // deep oldest-first drain must cover before recent nights land (#364). Mirrors Swift.
-                            val oldestUnix = dataRangeOldestUnix(frame)
+                            val oldestUnix = dataRangeOldestUnix(frame, connectedFamily)
                             if (oldestUnix != null && oldestUnix < it) {
                                 backfiller.sessionOldestUnix = oldestUnix   // #547: closes the session window
                                 val spanDays = (it - oldestUnix) / 86_400L
@@ -3904,9 +3904,9 @@ class WhoopBleClient(
      * [Whoop5Config] (documented by judes.club + Asherlc/dofek). Port of `BLEManager.enableWhoop5DeepData`.
      *
      * Safety: only runs when the deep-data experiment is opted in AND the strap is a bonded, worn 5/MG.
-     * The R22 stream is on-wrist gated. Each flag is one SET_CONFIG write WITH RESPONSE, spaced ~80 ms.
-     * Reversible — it only changes which data the strap emits. After it runs, wear + sync and share the
-     * strap log so we can confirm the deeper records start flowing.
+     * The configuration write is wear-gated. Each flag is one SET_CONFIG write WITH RESPONSE, spaced ~80 ms.
+     * Persistent — NOOP has no captured restore sequence, and disabling the experiment only prevents
+     * future writes. After it runs, wear + sync and share the strap log for comparison.
      */
     fun enableWhoop5DeepData() {
         if (connectedFamily != DeviceFamily.WHOOP5) {
@@ -3923,10 +3923,19 @@ class WhoopBleClient(
             log("Deep-data: needs the full encrypted bond, not the live-HR-only link. Close the official WHOOP app, put the strap in pairing mode, and bond it to NOOP first — ignored."); return
         }
         if (!s.worn) {
-            log("Deep-data: the R22 stream is on-wrist only — put the strap ON, then try again."); return
+            log("Deep-data: the R22 configuration write is wear-gated — put the strap ON, then try again."); return
         }
         if (s.r22SequenceInFlight) {
             log("Deep-data: an R22 configuration attempt is already in progress — ignored."); return
+        }
+        // If the independent raw-capture toggle is on, make sure the writer spans the configuration
+        // request/response exchange too. The automatic history session may have ended more than ten
+        // seconds ago; without reopening here the exported corpus contained post-R22 history but not
+        // the writes that changed the strap's persistent flags.
+        val rawCaptureEnabled = PuffinExperiment.from(context).isCaptureEnabled
+        if (rawCaptureEnabled) {
+            handler.removeCallbacks(captureCloseRunnable)
+            startWhoop5BackfillCapture()
         }
         val attempt = r22AttemptId.incrementAndGet()
         synchronized(r22CorrelationLock) {
@@ -3935,7 +3944,8 @@ class WhoopBleClient(
         }
         _state.update { it.copy(r22FlagsAccepted = 0, r22SequenceInFlight = true) }
         val flags = Whoop5Config.enableR22Sequence
-        log("Deep-data: sending the ${flags.size}-flag enable_r22 sequence (experimental, reversible)…")
+        log("Deep-data: sending the ${flags.size}-flag enable_r22 sequence " +
+            "(experimental, persistent; NOOP has no restore sequence)…")
         flags.forEachIndexed { i, flag ->
             handler.postDelayed({
                 if (r22AttemptId.get() != attempt) return@postDelayed
@@ -3950,6 +3960,15 @@ class WhoopBleClient(
             if (r22AttemptId.get() != attempt) return@postDelayed
             log("Deep-data: all 15 writes queued; waiting for correlated strap responses.")
         }, 80L * flags.size + 200L)
+        if (rawCaptureEnabled) {
+            // Span the full response timeout plus the historical-tail cooldown. If a backfill is active
+            // (or starts meanwhile), its exit may post an earlier close; the runnable below defers itself
+            // until this deadline, so neither path can truncate the other.
+            val keepOpenMs = 80L * flags.size + 15_000L + DEEP_PACKET_LIVE_COOLDOWN_MS
+            captureKeepOpenUntilMs = maxOf(captureKeepOpenUntilMs, System.currentTimeMillis() + keepOpenMs)
+            handler.removeCallbacks(captureCloseRunnable)
+            handler.postDelayed(captureCloseRunnable, keepOpenMs)
+        }
         handler.postDelayed({
             if (r22AttemptId.get() != attempt) return@postDelayed
             r22AttemptId.incrementAndGet()
@@ -4349,8 +4368,10 @@ class WhoopBleClient(
         historicalKickSent = false
         _state.update { it.copy(backfilling = true, syncChunksThisSession = 0) }
         // Opt-in raw capture (research aid): pref read fresh per session, like the probes gate.
-        if (connectedFamily == DeviceFamily.WHOOP5 && PuffinExperiment.from(context).isCaptureEnabled) {
-            startWhoop5BackfillCapture()
+        if (connectedFamily == DeviceFamily.WHOOP5) {
+            handler.removeCallbacks(captureCloseRunnable)
+            if (PuffinExperiment.from(context).isCaptureEnabled) startWhoop5BackfillCapture()
+            else closeWhoop5BackfillCapture(flushSummary = false)
         }
         if (connectedFamily == DeviceFamily.WHOOP5) {
             // Re-apply the Broadcast-HR device-config flag if the user opted in (#181).
@@ -4580,7 +4601,12 @@ class WhoopBleClient(
         } }
         handler.removeCallbacks(backfillTimeoutRunnable)
         backfillFrameQueue.clear()
-        closeWhoop5BackfillCapture(flushSummary = true)
+        // Keep the writer alive through the same 10-second historical-tail window used by R22
+        // telemetry. Real 5/MG straps can flush type-47/type-52 after HISTORY_COMPLETE; closing here
+        // dropped the exact rare records the research toggle promises to retain. A new backfill cancels
+        // this close and reuses the writer; disconnect still closes immediately below.
+        handler.removeCallbacks(captureCloseRunnable)
+        handler.postDelayed(captureCloseRunnable, DEEP_PACKET_LIVE_COOLDOWN_MS)
         log("Backfill: session ended — reason=$reason")
         // Inactivity reminder (#419): read-only hook on the natural offload completion (no cadence
         // change). Only on a true HISTORY_COMPLETE — a timeout/disconnect didn't bring a fresh window.
@@ -5081,6 +5107,7 @@ class WhoopBleClient(
         lastSessionEndTrim = null
         // A mid-offload link drop must still flush the capture file (summary already logged or not —
         // don't double-log it here).
+        handler.removeCallbacks(captureCloseRunnable)
         closeWhoop5BackfillCapture(flushSummary = false)
         handler.removeCallbacks(backfillTimeoutRunnable)
         stopBackfillTimer()
@@ -5133,8 +5160,22 @@ class WhoopBleClient(
     @Volatile private var captureWriter: java.io.BufferedWriter? = null
     @Volatile private var captureDisabled = false
     @Volatile private var captureLines = 0
+    @Volatile private var captureKeepOpenUntilMs = 0L
     private var captureSessionId = ""
     private val captureSummary = BackfillCaptureSummary()
+    private val captureCloseRunnable = object : Runnable {
+        override fun run() {
+            if (backfilling) {
+                // Never let an R22 deadline truncate a multi-minute history transfer. exitBackfilling()
+                // removes this poll and owns the final ten-second tail close when the sync actually ends.
+                handler.postDelayed(this, DEEP_PACKET_LIVE_COOLDOWN_MS)
+                return
+            }
+            val remaining = captureKeepOpenUntilMs - System.currentTimeMillis()
+            if (remaining > 0L) handler.postDelayed(this, remaining)
+            else closeWhoop5BackfillCapture(flushSummary = true)
+        }
+    }
 
     private fun startWhoop5BackfillCapture() {
         if (captureWriter != null || captureDisabled) return
@@ -5205,6 +5246,7 @@ class WhoopBleClient(
     private fun closeWhoop5BackfillCapture(flushSummary: Boolean) {
         val w = captureWriter ?: return
         captureWriter = null
+        captureKeepOpenUntilMs = 0L
         runCatching { synchronized(w) { w.flush(); w.close() } }
         if (flushSummary) {
             log("Capture: session frame counts — ${captureSummary.countsText()}")

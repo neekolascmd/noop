@@ -70,10 +70,13 @@ struct RawHistoryArchive {
     /// The archive file URL (does not create anything).
     var fileURL: URL { directory.appendingPathComponent(RawHistoryArchive.fileName) }
 
-    /// The hist_version byte distinguishing one historical layout from another: `frame[5]` on WHOOP 4,
-    /// `frame[9]` on WHOOP 5/MG (the puffin envelope is 4 bytes longer). Same indices the reject filter
-    /// uses. Frames too short to carry it fall back to a sentinel so they still form their own bucket.
+    /// The retention-layout key distinguishing one historical layout from another: `frame[5]` on
+    /// WHOOP 4 type-47, `frame[9]` on WHOOP 5/MG type-47 (the puffin envelope is 4 bytes longer).
+    /// WHOOP 5 type-52 has no mapped version byte, so all of its records deliberately share one neutral
+    /// sentinel bucket instead of treating arbitrary payload byte 9 as a version and multiplying floors.
+    /// Frames too short to classify fall back to a separate sentinel bucket.
     static func versionByte(_ frame: [UInt8], family: DeviceFamily) -> Int {
+        if family == .whoop5, frame.count > 8, frame[8] == 52 { return -52 }
         let idx = family == .whoop5 ? 9 : 5
         return frame.count > idx ? Int(frame[idx]) : -1
     }

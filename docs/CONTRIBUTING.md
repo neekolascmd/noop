@@ -46,8 +46,9 @@ A few principles run through the whole codebase. Internalize them before opening
    log into a WHOOP account, bypass a paywall, or ship WHOOP's proprietary code/firmware/assets/logos.
    Keep contributions on the right side of that line, and keep all WHOOP references *nominative*
    (used only to name the hardware).
-3. **Never destructive on the wire.** The strap is real hardware on the user's wrist. The app only
-   ever sends a curated, reversible command set. See
+3. **Never destructive on the wire.** The strap is real hardware on the user's wrist. The app sends a
+   curated command set; persistent writes require a narrowly gated, default-off research path with an
+   explicit warning and documented restore status. See
    [The BLE safety contract](#the-ble-safety-contract-read-this-before-touching-bluetooth).
 4. **Transparent math.** Analytics are approximations of published methods, documented file by file.
    No black boxes, no claims of clinical accuracy, no reproduction of any proprietary model.
@@ -324,13 +325,14 @@ The app's outbound command set lives in `Strand/BLE/Commands.swift` as `WhoopCom
 /// are deliberately EXCLUDED so the in-app command sender can never brick or wipe the device.
 ```
 
-Every command currently in the enum is **safe and reversible** — toggle realtime HR, read clock /
-battery / version / data range, run/stop a haptic pattern, arm/read/cancel the firmware alarm,
-enter/exit high-frequency sync, start/stop raw data. **Do not add reboot, firmware/DFU,
-ship-mode/power-cycle, force-trim, fuel-gauge reset, or any command that can brick, wipe, or
-permanently alter the device.** If you believe a non-trivial command is genuinely needed, open an
-issue first, justify why it's reversible, and document its payload and on-device verification before
-any code.
+The general command set is **safe and reversible** — toggle realtime HR, read clock / battery / version /
+data range, run/stop a haptic pattern, arm/read/cancel the firmware alarm, enter/exit high-frequency
+sync, start/stop raw data. The sole current non-restorable exception is the WHOOP 5/MG R22 `SET_CONFIG`
+research path: it is default-off, manual, restricted to a bonded and worn device, and warns that NOOP has
+no captured restore sequence. Do not broaden that exception. **Never add reboot, firmware/DFU,
+ship-mode/power-cycle, force-trim, fuel-gauge reset, or any command that can brick or wipe the device.**
+Any other persistent configuration proposal must start with an issue, a hardware-backed rationale, an
+explicit user warning, a rollback/restore-status analysis, and a narrowly scoped allowlist gate.
 
 ### 2. CRC-gate everything
 
@@ -429,11 +431,13 @@ to the Explore / Compare / tile UI. The catalog is the contract.
 
 Only after re-reading [The BLE safety contract](#the-ble-safety-contract-read-this-before-touching-bluetooth).
 
-1. **Confirm it is safe and reversible.** If it can brick, wipe, reflash, ship-mode, or permanently
-   alter the strap, it does not go in. No exceptions.
+1. **Confirm it cannot brick, wipe, reflash, power-cycle, or ship-mode the strap.** Prefer read-only or
+   reversible commands. A persistent configuration write is exceptional: open an issue first and require
+   a default-off manual action, a narrow model/state allowlist, an explicit permanence warning, captured
+   request/response evidence, and documented restore status before code review.
 2. **Add the case to `WhoopCommand`** in `Strand/BLE/Commands.swift` with its on-wire raw value, a
-   `label`, and a comment documenting the payload, what it does, why it's safe/reversible, and how it
-   was verified on-device.
+   `label`, and a comment documenting the payload, what it does, whether it is reversible, its restore
+   status, and how it was verified on-device.
 3. **Add a payload builder if needed** (cf. `setAlarmPayload(epochSec:)`), keeping the byte layout
    documented.
 4. **Send it through the existing path** — `BLEManager.send(_:payload:writeType:)` — which frames the

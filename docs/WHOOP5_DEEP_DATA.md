@@ -1,7 +1,8 @@
-# WHOOP 5.0 / MG deep data — the "R22" unlock
+# WHOOP 5.0 / MG deep data — the persistent "R22" experiment
 
-**Status:** experimental, opt-in. The 15 writes have been acknowledged on hardware; they do not create a
-separate live R22 stream. WHOOP 5/MG deep records arrive through the normal history offload.
+**Status:** experimental, opt-in, persistent. The 15 writes have been acknowledged on hardware; they do
+not create a separate live R22 stream. NOOP has no captured restore sequence, so disabling the toggle
+only blocks future writes. WHOOP 5/MG deep records arrive through the normal history offload.
 **Tracking:** [#174](https://github.com/neekolascmd/noop/issues/174).
 
 ## The problem
@@ -65,24 +66,25 @@ both platforms. `enable_r22_packets` names the type-`0x2F` history product; cont
 not show it opening a separate live stream. The other keys appear to tune channel selection, wear
 detection and sleep behaviour, but those effects still require controlled before/after qualification.
 
-## How NOOP uses it (opt-in, reversible)
+## How NOOP uses it (opt-in, persistent)
 
 - A **default-off** Settings → Experimental toggle, separate from the read-only probes because this one
   *writes* to the strap.
 - A manual **"Send R22 configuration"** button (not auto-run on connect), enabled only when a
-  5/MG is **bonded and worn** (the R22 stream is on-wrist gated).
+  5/MG is **bonded and worn** (the configuration write is wear-gated).
 - The 15 flags are written with-response, ~80 ms apart. NOOP disables repeat taps while the attempt is
   active and counts only unique, CRC-valid responses correlated to sequences it actually sent.
-- It's **reversible** — it only changes which data the strap chooses to emit — and is the same thing the
-  official app does on every connect.
+- The values are **persistent**. NOOP currently has no captured restore sequence; turning the experiment
+  off prevents another write but does not restore earlier strap values. Treat this as an advanced device
+  mutation, even though the same enable values were observed from the official app.
 - **iOS / Android only on real hardware:** macOS CoreBluetooth can't complete the authenticated SMP bond
   the command characteristic requires, so the write path is unavailable on Mac.
 
 ## Honest limits
 
 - **No cloud scores.** Recovery/strain/sleep *scores* are computed in WHOOP's cloud and no public
-  project has reproduced them. What the unlock buys is the **raw inputs** (high-rate HR, motion, fuller
-  history) — which is exactly what NOOP needs, since NOOP computes its own scores on-device.
+  project has reproduced them. The experiment may change which raw record families firmware banks or
+  returns; that effect is not yet proven on each firmware.
 - **The sequence is not required for every firmware.** Normal `get_data_range` / `send_historical_data`
   already returns type-47 history on verified WHOOP 5 hardware. Keep the configuration opt-in until a
   controlled before/after capture proves which record families it changes on each firmware.
@@ -94,8 +96,8 @@ detection and sleep behaviour, but those effects still require controlled before
 
 1. Turn on **Test Centre → Record puffin frames to a file** before connecting.
 2. With the strap worn and fully bonded, let one normal history sync finish before changing R22 flags.
-3. On iPhone/Android, optionally send **WHOOP 5/MG R22 configuration**, then repeat the same labelled
-   movement/rest/off-wrist sequence and sync again.
+3. Only if you accept a persistent change that NOOP cannot currently restore, send **WHOOP 5/MG R22
+   configuration** on iPhone/Android, then repeat the same labelled movement/rest/off-wrist sequence.
 4. Export the matched raw capture and strap log. Raw captures contain personal biometric history; share
    them privately or minimize them before posting publicly.
 5. Use `whoop-decode capture.jsonl` (Apple/Android JSONL or a fixture array) to summarize packet type, layout version,

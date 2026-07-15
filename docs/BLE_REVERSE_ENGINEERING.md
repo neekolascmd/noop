@@ -306,8 +306,9 @@ send(.sendR10R11Realtime, payload: [0x00])   // stop the type-43 realtime flood 
 ```
 
 Because the flood can resume, the backfill idle-watchdog deliberately ignores type-43/40 frames and
-only re-arms on genuine offload frames (`BLEManager.isOffloadFrame` → types 47/48/49/50). With the raw
-stream off, NOOP's primary metric source becomes the **historical offload** (next section).
+only re-arms on genuine offload frames (`BLEManager.isOffloadFrame` → types 47/48/49/50, plus WHOOP
+5/MG type-52 historical IMU and type-56 puffin metadata). With the raw stream off, NOOP's primary metric
+source becomes the **historical offload** (next section).
 
 ### On-demand raw capture
 
