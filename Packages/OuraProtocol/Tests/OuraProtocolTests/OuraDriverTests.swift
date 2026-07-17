@@ -455,9 +455,26 @@ final class OuraDriverTests: XCTestCase {
         XCTAssertEqual(d.unixSeconds(forRingTimestamp: 5_010), beaconSeconds + 1)
     }
 
+    func testRing4RetainedRtcBeaconJustOverTwoDaysQualifiesActiveFetch() {
+        let requested = 1_700_000_000
+        let beaconSeconds = requested - 52 * 60 * 60
+        let beaconPayload: [UInt8] = [
+            UInt8(beaconSeconds & 0xFF), UInt8((beaconSeconds >> 8) & 0xFF),
+            UInt8((beaconSeconds >> 16) & 0xFF), UInt8((beaconSeconds >> 24) & 0xFF),
+        ]
+        let d = OuraDriver(ringGen: .gen4, authKey: key, timeSyncToken: 0x5A)
+        _ = d.nextStep(after: .startHistoryFetch(cursor: 77, unixSeconds: requested))
+        _ = d.ingest(record: OuraRecord(type: OuraEventTag.rtcBeacon.rawValue,
+                                        ringTimestamp: 5_000, payload: beaconPayload))
+
+        XCTAssertTrue(d.hasFreshAnchorForActiveFetch)
+        XCTAssertEqual(d.currentPrimaryTimeAnchor?.utcMilliseconds,
+                       Int64(beaconSeconds) * 1_000)
+    }
+
     func testRing4StaleRtcBeaconCannotAuthorizeActiveFetch() {
         let requested = 1_700_000_000
-        let beaconSeconds = requested - 3 * 24 * 60 * 60
+        let beaconSeconds = requested - 4 * 24 * 60 * 60
         let beaconPayload: [UInt8] = [
             UInt8(beaconSeconds & 0xFF), UInt8((beaconSeconds >> 8) & 0xFF),
             UInt8((beaconSeconds >> 16) & 0xFF), UInt8((beaconSeconds >> 24) & 0xFF),

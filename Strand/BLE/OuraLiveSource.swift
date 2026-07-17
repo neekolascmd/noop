@@ -303,7 +303,11 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     private var provisionalHistoryPageCount = 0
     private var provisionalHistoryOverflowed = false
     private let provisionalHistoryPageLimit = 32
-    private let provisionalHistoryEventLimit = 4_096
+    /// A retained Ring 4 page can expand into tens of thousands of verified IBI/temp events (the
+    /// hardware-qualified page measured ~74k). Keep a hard RAM bound, but make it large enough for one
+    /// real page; persistence below maps/writes it in small chunks before the cursor is committed.
+    private let provisionalHistoryEventLimit = 100_000
+    private let historyPersistenceChunkSize = 2_048
     /// Continue a bounded read-only anchor search after provisional RAM fills. Nothing is ACKed; once a
     /// real 0x42 appears, every skipped page is refetched from the durable cursor before persistence.
     private var anchorBootstrapSkippedHistory = false
@@ -564,7 +568,11 @@ public final class OuraLiveSource: NSObject, ObservableObject {
             resetProvisionalHistorySearch()
             log("Oura: history fetch caught up (cursor \(historyCursor) [\(describeCursor(historyCursor))])")
         } else {
-            log("Oura: history fetch ended without a valid UTC anchor; saved cursor unchanged")
+            if driver.hasFreshAnchorForActiveFetch {
+                log("Oura: history fetch exceeded the bounded decoded-event window; saved cursor unchanged")
+            } else {
+                log("Oura: history fetch ended without a valid UTC anchor; saved cursor unchanged")
+            }
             let retryCursor = provisionalHistoryHighWater ?? committedCursor
             if retryHistoryAfterMissingAnchorOnce(from: retryCursor) { return }
             pendingAnchorEvents.removeAll()
@@ -664,6 +672,15 @@ public final class OuraLiveSource: NSObject, ObservableObject {
 
     // MARK: - Scanning
 
+    /// A paired ring is matched by its exact CoreBluetooth identifier, so its reconnect scan may safely
+    /// run without a service filter. Ring 4's normal advertisement is visible to macOS but does not always
+    /// include the proprietary service UUID; a service-filtered scan can therefore miss a nearby saved
+    /// ring forever. Discovery still uses the service filter for the add-device flow, where there is no
+    /// previously-qualified identity to constrain an unfiltered scan.
+    private var scanServices: [CBUUID]? {
+        pendingConnectID == nil ? [Self.service] : nil
+    }
+
     /// Scan for Oura rings advertising the Oura GATT service, keeping only ones the ring-gen recogniser
     /// accepts as an Oura ring.
     public func scan() {
@@ -671,12 +688,16 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         seenPeripherals.removeAll()
         scanning = true
         needsPairing = nil
-        log("Oura: scanning for an Oura ring (service \(OuraGatt.serviceUUID))")
+        if pendingConnectID == nil {
+            log("Oura: scanning for an Oura ring (service \(OuraGatt.serviceUUID))")
+        } else {
+            log("Oura: scanning for the paired Oura ring by saved identity")
+        }
         guard central.state == .poweredOn else {
             log("Oura: Bluetooth not powered on (state=\(central.state.rawValue)) - scan deferred until ready")
             return
         }
-        central.scanForPeripherals(withServices: [Self.service],
+        central.scanForPeripherals(withServices: scanServices,
                                    options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
     }
 
@@ -984,51 +1005,58 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         guard self.driver.map({ $0 === driver }) == true,
               driver.canResolveHistoryTimestamps else { return pendingAnchorEvents.isEmpty }
         let parkedBatch = pendingAnchorEvents
-        var streamBatch = Streams()
-        var sleepWindows: [(start: Int, end: Int)] = []
         var withheld = 0
 
-        for pending in parkedBatch {
-            if case .bedtimePeriod(let period) = pending.event {
-                guard let start = driver.unixSeconds(forRingTimestamp: period.startRingTimestamp),
-                      let end = driver.unixSeconds(forRingTimestamp: period.endRingTimestamp) else {
-                    withheld += 1
-                    continue
-                }
-                let duration = end - start
-                guard duration >= 15 * 60, duration <= 16 * 60 * 60 else {
-                    withheld += 1
-                    continue
-                }
-                sleepWindows.append((start, end))
-                continue
-            }
-            guard let ts = driver.unixSeconds(forRingTimestamp: pending.ringTimestamp) else {
-                withheld += 1
-                continue
-            }
-            let mapped = OuraStreamMapping.streams(from: [pending.event], at: ts)
-            streamBatch.hr.append(contentsOf: mapped.hr)
-            streamBatch.rr.append(contentsOf: mapped.rr)
-            streamBatch.spo2.append(contentsOf: mapped.spo2)
-            streamBatch.skinTemp.append(contentsOf: mapped.skinTemp)
-            streamBatch.resp.append(contentsOf: mapped.resp)
-            streamBatch.gravity.append(contentsOf: mapped.gravity)
-            streamBatch.steps.append(contentsOf: mapped.steps)
-            streamBatch.sleepState.append(contentsOf: mapped.sleepState)
-            streamBatch.ppgHr.append(contentsOf: mapped.ppgHr)
-            streamBatch.events.append(contentsOf: mapped.events)
-            streamBatch.battery.append(contentsOf: mapped.battery)
-        }
+        // Natural-key inserts are idempotent, so a failure after an earlier chunk is harmless: the
+        // durable cursor remains unchanged and the next fetch rewrites the same rows. Chunking bounds the
+        // transient Streams allocation even when one Ring 4 page expands to tens of thousands of events.
+        for chunkStart in stride(from: 0, to: parkedBatch.count, by: historyPersistenceChunkSize) {
+            let chunkEnd = min(chunkStart + historyPersistenceChunkSize, parkedBatch.count)
+            var streamBatch = Streams()
+            var sleepWindows: [(start: Int, end: Int)] = []
 
-        if feedsLive {
-            if !streamBatch.isEmpty {
-                guard await persist(streamBatch) else { return false }
-                guard self.driver.map({ $0 === driver }) == true else { return false }
+            for pending in parkedBatch[chunkStart..<chunkEnd] {
+                if case .bedtimePeriod(let period) = pending.event {
+                    guard let start = driver.unixSeconds(forRingTimestamp: period.startRingTimestamp),
+                          let end = driver.unixSeconds(forRingTimestamp: period.endRingTimestamp) else {
+                        withheld += 1
+                        continue
+                    }
+                    let duration = end - start
+                    guard duration >= 15 * 60, duration <= 16 * 60 * 60 else {
+                        withheld += 1
+                        continue
+                    }
+                    sleepWindows.append((start, end))
+                    continue
+                }
+                guard let ts = driver.unixSeconds(forRingTimestamp: pending.ringTimestamp) else {
+                    withheld += 1
+                    continue
+                }
+                let mapped = OuraStreamMapping.streams(from: [pending.event], at: ts)
+                streamBatch.hr.append(contentsOf: mapped.hr)
+                streamBatch.rr.append(contentsOf: mapped.rr)
+                streamBatch.spo2.append(contentsOf: mapped.spo2)
+                streamBatch.skinTemp.append(contentsOf: mapped.skinTemp)
+                streamBatch.resp.append(contentsOf: mapped.resp)
+                streamBatch.gravity.append(contentsOf: mapped.gravity)
+                streamBatch.steps.append(contentsOf: mapped.steps)
+                streamBatch.sleepState.append(contentsOf: mapped.sleepState)
+                streamBatch.ppgHr.append(contentsOf: mapped.ppgHr)
+                streamBatch.events.append(contentsOf: mapped.events)
+                streamBatch.battery.append(contentsOf: mapped.battery)
             }
-            for window in sleepWindows {
-                guard await persistSleepSession(window.start, window.end) else { return false }
-                guard self.driver.map({ $0 === driver }) == true else { return false }
+
+            if feedsLive {
+                if !streamBatch.isEmpty {
+                    guard await persist(streamBatch) else { return false }
+                    guard self.driver.map({ $0 === driver }) == true else { return false }
+                }
+                for window in sleepWindows {
+                    guard await persistSleepSession(window.start, window.end) else { return false }
+                    guard self.driver.map({ $0 === driver }) == true else { return false }
+                }
             }
         }
         if withheld > 0 {
@@ -1263,6 +1291,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
 
 extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
     public func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        log("Oura: Bluetooth central state \(central.state.rawValue)")
         switch central.state {
         case .poweredOn:
             // Replay any intent that arrived before the radio was ready.
@@ -1270,7 +1299,7 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
                 pendingConnectID = nil
                 central.connect(p, options: nil)
             } else if scanning {
-                central.scanForPeripherals(withServices: [Self.service],
+                central.scanForPeripherals(withServices: scanServices,
                                            options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
             }
         default:
@@ -1289,6 +1318,14 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         // so a coincidental service match without an Oura-shaped name is dropped (best-effort).
         let detectedGen = OuraRingGen.recognise(advertisedName: name)
         let id = peripheral.identifier
+        // An unfiltered reconnect scan is authorized only by the exact saved CoreBluetooth identity.
+        // Ignore every other nearby BLE device before it reaches the picker or the exportable log.
+        if let pendingConnectID, id != pendingConnectID {
+            if detectedGen != nil {
+                log("Oura: found a nearby Oura ring that does not match the saved identity")
+            }
+            return
+        }
         let firstSight = seenPeripherals[id] == nil
         seenPeripherals[id] = peripheral
         // Reset-mode names can contain a ring serial. The UI may show the local advertisement so the

@@ -444,9 +444,11 @@ public final class OuraDriver {
     /// Int64 (a naive multiply on a near-Int64.max raw value traps).
     private static let minPlausibleEpochSeconds: Int64 = 1_577_836_800
     private static let maxPlausibleEpochSeconds: Int64 = 2_051_222_400
-    /// Ring 4 firmware seen in hardware qualification emits RTC beacons from the preceding night while
-    /// omitting 0x42. Accept at most two days of look-back, with only small forward clock skew.
-    private static let rtcFallbackMaximumAgeSeconds: Int64 = 48 * 60 * 60
+    /// Ring 4 firmware seen in hardware qualification can retain a valid RTC beacon for slightly more
+    /// than two days while omitting 0x42 (a real retained-history capture measured ~52 hours). Accept at
+    /// most three days of look-back, with only small forward clock skew; the active-fetch phase, pending
+    /// SyncTime counter, durable-cursor floor, and plausible-epoch gates remain mandatory.
+    private static let rtcFallbackMaximumAgeSeconds: Int64 = 72 * 60 * 60
     private static let rtcFallbackFutureToleranceSeconds: Int64 = 15 * 60
 
     private static func plausibleAnchorMs(fromEpochSeconds seconds: Int64) -> Int64? {
