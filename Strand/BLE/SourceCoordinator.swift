@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import Security
 import WhoopStore
 import OuraProtocol
 
@@ -74,6 +75,8 @@ final class SourceCoordinator: ObservableObject {
     /// one of the non-WHOOP sources is ever live at a time. It owns its OWN `CBCentralManager` and never
     /// references `BLEManager`/`WhoopBleClient`, so the WHOOP path cannot regress.
     @Published private(set) var ouraSource: OuraLiveSource?
+    /// Invalidates an in-flight off-main Keychain lookup when the active source changes before it returns.
+    private var ouraStartRequestID: UUID?
     /// The deviceId for which the user has granted explicit adopt consent (the wizard's irreversible gate +
     /// "Take over this ring?" confirm). The NEXT `startOuraSource` for THIS id builds its live source with
     /// `adoptIntent == true`, so the dangerous `0x24` key install can run for exactly that adopt session and
@@ -363,11 +366,29 @@ final class SourceCoordinator: ObservableObject {
         // read-only session that re-authenticates with the now-stored key and never re-installs.
         let adoptIntent = (pendingAdoptDeviceId == id)
         pendingAdoptDeviceId = nil
+        let requestID = UUID()
+        ouraStartRequestID = requestID
+        OuraKeyStore.readWithTimeout(deviceId: id) { [weak self] key, keyStatus in
+            guard let self, self.ouraStartRequestID == requestID else { return }
+            self.ouraStartRequestID = nil
+            self.finishStartingOuraSource(id: id, ringGen: ringGen, key: key,
+                                          keyStatus: keyStatus, adoptIntent: adoptIntent)
+        }
+    }
+
+    /// Build the BLE source only after the bounded Keychain lookup completes. Keeping the synchronous
+    /// Security call off the main actor prevents a changed local code signature from freezing the app.
+    private func finishStartingOuraSource(id: String,
+                                          ringGen: OuraRingGen,
+                                          key: Data?,
+                                          keyStatus: OSStatus,
+                                          adoptIntent: Bool) {
         let source = OuraLiveSource(
             live: live,
             deviceId: id,
             ringGen: ringGen,
-            authKey: { OuraKeyStore.read(deviceId: id) },
+            authKey: { key },
+            authKeyStatus: { keyStatus },
             persist: { [storeHandle] streams in
                 guard let store = await storeHandle() else { return false }
                 do {
@@ -417,6 +438,7 @@ final class SourceCoordinator: ObservableObject {
     /// Stop whichever non-WHOOP source (standard strap, FTMS machine, Huami device, or Oura ring) is live,
     /// and drop the reference. Idempotent. Exactly one is ever live, but we stop all defensively.
     private func tearDownNonWhoopSource() {
+        ouraStartRequestID = nil
         standardSource?.stop(); standardSource = nil
         ftmsSource?.stop(); ftmsSource = nil
         huamiSource?.stop(); huamiSource = nil

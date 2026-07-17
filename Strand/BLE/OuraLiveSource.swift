@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import CoreBluetooth
+import LocalAuthentication
 import Security
 import WhoopProtocol
 import WhoopStore
@@ -40,8 +41,8 @@ import OuraProtocol
 ///      periodically thereafter. Skin temp and SpO2 are SLEEP-ONLY on this hardware (neither ever arrives
 ///      as a live push, only as banked history), so the fetch is the only way last night's readings ever
 ///      reach the app. Fetched records are stamped with their real ring-time-anchored UTC (s5.5, from the
-///      ring's own 0x42 time-sync event), NOT the wall-clock arrival time, so "last night" data is never
-///      mis-timestamped as "now".
+///      ring's own correlated 0x42 time-sync event or qualified recent 0x85 RTC beacon), NOT wall-clock
+///      arrival time, so "last night" data is never mis-timestamped as "now".
 ///   6. Decoded events map onto `Streams` via `OuraStreamMapping` and persist in batches; live HR also
 ///      feeds `LiveState`. Temp/SpO2/HRV/sleep-phase persist ONLY (no live surface - they are last-night
 ///      values, not a live readout). Battery is requested once streaming starts (`GetBattery`, 0x0C ->
@@ -135,6 +136,13 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     /// Supplies the 16-byte application install key (from the Keychain) for this ring, or nil. A nil key
     /// drives the honest `needsPairing` path: the driver answers `.needsKeyInstall` and we never fake data.
     private let authKey: () -> Data?
+    /// Optional status companion for `authKey`. Production supplies the latest Keychain OSStatus so an
+    /// inaccessible saved key is not mistaken for a factory-reset ring; discovery/test sources omit it.
+    private let authKeyStatus: () -> OSStatus?
+    /// Retain a successfully-read install key for this source's lifetime. CoreBluetooth reconnects can
+    /// race a temporarily unavailable Keychain; losing an already-proven key in that window used to make
+    /// a healthy adopted ring look factory-reset and strand it at the pairing screen.
+    private var cachedAuthKey: Data?
     /// When false (the wizard's discovery-only scanner) this source never writes `LiveState` or persists.
     private let feedsLive: Bool
     /// EXPLICIT, USER-GRANTED adopt consent for THIS connection. Default FALSE. The dangerous installKey
@@ -152,6 +160,9 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     private var driver: OuraDriver?
     /// Reassembles notification fragments into complete TLV inner records across feeds.
     private let reassembler = OuraReassembler()
+    /// Passive, opt-in qualification capture of the history TLV bytes already delivered by the ring.
+    /// It never changes the BLE command stream and never captures live secure-session traffic.
+    private lazy var historyCaptureRecorder = OuraHistoryCaptureRecorder()
 
     /// Logs the FIRST live HR sample of a connection only (never every push); reset on stop/disconnect.
     private var loggedFirstHR = false
@@ -454,6 +465,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
 
     private func ingestDriverNotification(_ bytes: [UInt8], driver: OuraDriver,
                                           origin: IngestOrigin) {
+        if origin == .history { historyCaptureRecorder.capture(bytes) }
         let events = driver.ingest(notification: bytes, reassembler: reassembler)
         consumeDriverTimeStateInvalidation(driver)
         ingest(events, origin: origin)
@@ -489,6 +501,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     /// re-dumps its whole backlog anyway - so we detect the regression and reset to an honest, explicit 0
     /// rather than feed the ring a now-meaningless reference.
     private func handleHistorySummary(_ summary: (cursor: UInt32, moreData: Bool)) async {
+        historyCaptureRecorder.flush()
         guard let driver else { return }
         let committedCursor = driver.activeHistoryHighWater
         let parkedBatchIsWithinLimit = !provisionalHistoryOverflowed
@@ -596,6 +609,8 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     ///   - deviceId: the datastore device id these samples are attributed to.
     ///   - ringGen: the ring generation (selects MTU clamp + command set).
     ///   - authKey: supplies the 16-byte install key from the Keychain, or nil to drive `needsPairing`.
+    ///   - authKeyStatus: supplies the status of the latest key read when available. This lets a denied or
+    ///     locked Keychain read surface recovery guidance without claiming the ring needs a factory reset.
     ///   - persist: wired by the app to `store.insert(_, deviceId:)`. Called on the main actor.
     ///   - log: connect-lifecycle diagnostics sink, wired at the composition root to the same strap log
     ///     `BLEManager` writes to (issue #421). Every line is prefixed "Oura: ". Defaults to a no-op.
@@ -610,16 +625,20 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 deviceId: String,
                 ringGen: OuraRingGen,
                 authKey: @escaping () -> Data?,
+                authKeyStatus: @escaping () -> OSStatus? = { nil },
                 persist: @escaping (Streams) async -> Bool = { _ in true },
                 persistSleepSession: @escaping (Int, Int) async -> Bool = { _, _ in true },
                 log: @escaping (String) -> Void = { _ in },
                 onBattery: @escaping (Int) -> Void = { _ in },
                 feedsLive: Bool = true,
                 adoptIntent: Bool = false) {
+        let initialAuthKey = authKey()
         self.live = live
         self.deviceId = deviceId
         self.ringGen = ringGen
         self.authKey = authKey
+        self.authKeyStatus = authKeyStatus
+        self.cachedAuthKey = initialAuthKey?.count == OuraKeyStore.keyLength ? initialAuthKey : nil
         self.persist = persist
         self.persistSleepSession = persistSleepSession
         self.log = log
@@ -629,6 +648,18 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         super.init()
         // Dedicated queue-less central -> callbacks arrive on the main queue, matching @MainActor.
         self.central = CBCentralManager(delegate: self, queue: nil)
+    }
+
+    /// Prefer the last valid in-process key, then retry Keychain. A missing/short value is never cached.
+    private func resolvedAuthKey() -> Data? {
+        if let cachedAuthKey { return cachedAuthKey }
+        guard let key = authKey(), key.count == OuraKeyStore.keyLength else {
+            let status = authKeyStatus() ?? OuraKeyStore.lastReadStatus
+            log("Oura: stored install key unavailable (Keychain status \(status))")
+            return nil
+        }
+        cachedAuthKey = key
+        return key
     }
 
     // MARK: - Scanning
@@ -729,6 +760,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         batteryPct = nil
         spo2AutomaticEnabled = nil
         needsPairing = nil
+        historyCaptureRecorder.flush()
         flush()                       // persist anything still buffered
         if feedsLive { live.clearDeviceTelemetryForTransition() }
     }
@@ -900,6 +932,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
             announceNeedsPairing(reason: .installFailed("the installed key could not be stored"))
             return
         }
+        cachedAuthKey = key
         log("Oura: key installed and stored - reconnecting with the new key")
         pendingInstallKey = nil
         adoptPhase = .idle
@@ -1114,7 +1147,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                     loggedAnchor = true
                     log("Oura: UTC time anchor acquired - history-fetched samples now get their real time")
                 }
-                // The driver accepts this secondary anchor only when no primary 0x42 anchor exists.
+                // A qualified active-fetch beacon can be durable; otherwise this remains session-only.
 
             case .tierB(let summary):
                 // Investigation-only presence marker. Do not place raw payload bytes or decoded biometric
@@ -1165,6 +1198,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
 
     private enum NeedsPairingReason {
         case factoryResetOrNoKey
+        case keychainUnavailable(OSStatus)
         case authFailed(OuraAuthStatus)
         case installFailed(String)
     }
@@ -1194,6 +1228,16 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         switch reason {
         case .factoryResetOrNoKey:
             detail = "NOOP needs the ring's install key to read it live, and that pairing handshake isn't set up yet."
+        case .keychainUnavailable(let status):
+            let msg = "NOOP couldn't read this ring's saved key from Keychain (status \(status)). Unlock your Mac, allow NOOP access if macOS asks, then reconnect. Do not factory reset the ring."
+            needsPairing = msg
+            log("Oura: \(msg)")
+            stopReengageTimer()
+            stopHistoryFetchTimer()
+            cancelTimeSyncReleaseFallback()
+            cancelHistorySummarySettle()
+            if feedsLive { live.clearDeviceTelemetryForTransition() }
+            return
         case .authFailed(let status):
             detail = "The ring rejected the pairing handshake (status \(status.rawValue))."
         case .installFailed(let why):
@@ -1288,13 +1332,21 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         // ring actually sends (raw bytes per kind, decoded MET for 0x50) so the layouts can be validated
         // against real captures. It can never leak a value into scoring: OuraStreamMapping drops
         // .tierB/.activityInfo unconditionally - the Tier-discipline gate that matters lives there, not here.
-        // Cursor + primary 0x42 anchor are one coherent durable state. The driver may use the saved
+        // Cursor + validated durable time anchor are one coherent state. The driver may use the saved
         // mapping for timestamp conversion after reconnect, but it independently re-authorizes cursor
         // commits only after monotonic ring-clock continuity is proven.
         let syncState = OuraHistorySyncStore.read(deviceId: deviceId)
         historyCursor = syncState.cursor
+        let resolvedKey = resolvedAuthKey()
+        if resolvedKey == nil,
+           let status = authKeyStatus(),
+           status != errSecSuccess,
+           status != errSecItemNotFound {
+            announceNeedsPairing(reason: .keychainUnavailable(status))
+            return
+        }
         driver = OuraDriver(ringGen: ringGen,
-                            authKey: authKey().map { [UInt8]($0) },
+                            authKey: resolvedKey.map { [UInt8]($0) },
                             allowTierB: true,
                             allowKeyInstall: adoptIntent,
                             persistedTimeAnchor: syncState.anchor)
@@ -1371,6 +1423,7 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         if adoptPhase == .installingKey { adoptPhase = .failed }
         batteryPct = nil
         spo2AutomaticEnabled = nil
+        historyCaptureRecorder.flush()
         flush()
         if feedsLive { live.clearDeviceTelemetryForTransition() }
         if self.peripheral?.identifier == peripheral.identifier { self.peripheral = nil }
@@ -1611,21 +1664,46 @@ extension OuraLiveSource: @preconcurrency CBPeripheralDelegate {
 
 // MARK: - Oura install-key Keychain accessor
 
+private let ouraInstallKeyService = "com.noop.oura.installkey"
+private let ouraKeychainReadQueue = DispatchQueue(label: "com.noop.oura.keychain-read",
+                                                   qos: .userInitiated)
+
+/// A Keychain IPC can ignore cancellation while macOS waits on an item's access policy. This one-shot
+/// lock lets either the result or the main-actor timeout win without double-calling the source builder.
+private final class OuraKeyReadGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var claimed = false
+
+    func claim() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !claimed else { return false }
+        claimed = true
+        return true
+    }
+}
+
 /// Keychain Services wrapper for the per-ring 16-byte Oura application install key. Mirrors the
 /// `AIKeyStore` generic-password pattern (`Strand/AI/AICoach.swift`) so the key never lands in
 /// UserDefaults, a plist, or on disk in the clear. The key is scoped per `deviceId` (the `account`), so
 /// each registered ring has its own item. The install key is written here from exactly two places: the
 /// adopt key-install handshake (on an OK `0x25` ack, `OuraLiveSource.handleKeyInstallAck`) and the wizard's
 /// Advanced "I already have my ring's key" path. This accessor only stores/reads/clears it.
+@MainActor
 public enum OuraKeyStore {
-    private static let service = "com.noop.oura.installkey"
     /// The fixed key length per OURA_PROTOCOL.md s3 (16-byte application auth key).
     public static let keyLength = 16
+    /// Process-lifetime fallback for a key Keychain has already returned successfully. This is not
+    /// durable storage; it only prevents a transient reconnect-time Keychain failure from discarding an
+    /// already-proven secret. The only durable copy remains in Keychain.
+    private static var memoryCache: [String: Data] = [:]
+    /// Privacy-safe diagnostic only: OSStatus from the latest Keychain read (never the key/account).
+    public private(set) static var lastReadStatus: OSStatus = errSecSuccess
 
     private static func baseQuery(deviceId: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
+            kSecAttrService as String: ouraInstallKeyService,
             kSecAttrAccount as String: deviceId,
         ]
     }
@@ -1635,34 +1713,95 @@ public enum OuraKeyStore {
     @discardableResult
     public static func save(_ key: Data, deviceId: String) -> Bool {
         guard key.count == keyLength else { return false }
-        SecItemDelete(baseQuery(deviceId: deviceId) as CFDictionary)
-        var attrs = baseQuery(deviceId: deviceId)
-        attrs[kSecValueData as String] = key
-        attrs[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-        return SecItemAdd(attrs as CFDictionary, nil) == errSecSuccess
+        var query = baseQuery(deviceId: deviceId)
+        // Keychain authorization UI can synchronously block the main actor. Normal app access succeeds
+        // without UI; a changed/unauthorized local build fails promptly and gets honest recovery copy.
+        let context = LAContext()
+        context.interactionNotAllowed = true
+        query[kSecUseAuthenticationContext as String] = context
+        let updateStatus = SecItemUpdate(query as CFDictionary,
+                                         [kSecValueData as String: key] as CFDictionary)
+        let status: OSStatus
+        if updateStatus == errSecItemNotFound {
+            var attrs = query
+            // This is a new generic-password item, so there is no existing ACL to authorize. Keep the
+            // query-only authentication control out of the add attributes.
+            attrs.removeValue(forKey: kSecUseAuthenticationContext as String)
+            attrs[kSecValueData as String] = key
+            attrs[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+            status = SecItemAdd(attrs as CFDictionary, nil)
+        } else {
+            status = updateStatus
+        }
+        guard status == errSecSuccess else { return false }
+        memoryCache[deviceId] = key
+        return true
     }
 
-    /// Read the stored 16-byte install key for `deviceId`, or nil if none is set (or the stored item is
-    /// the wrong length, which is treated as absent so the honest needs-pairing path runs).
-    public static func read(deviceId: String) -> Data? {
-        var query = baseQuery(deviceId: deviceId)
-        query[kSecReturnData as String] = kCFBooleanTrue
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        guard status == errSecSuccess, let data = item as? Data, data.count == keyLength else { return nil }
-        return data
+    /// Read the stored key without ever blocking the main actor. Security.framework can wait indefinitely
+    /// when a development build's signature no longer satisfies an existing item's access policy, even
+    /// with interaction disabled. The serial worker contains that IPC; after `timeout` the app proceeds
+    /// with an honest Keychain-unavailable state. Only one callback can win.
+    public static func readWithTimeout(deviceId: String,
+                                       timeout: TimeInterval = 2,
+                                       completion: @MainActor @escaping (Data?, OSStatus) -> Void) {
+        if let cached = memoryCache[deviceId], cached.count == keyLength {
+            lastReadStatus = errSecSuccess
+            completion(cached, errSecSuccess)
+            return
+        }
+
+        let gate = OuraKeyReadGate()
+        ouraKeychainReadQueue.async {
+            var query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: ouraInstallKeyService,
+                kSecAttrAccount as String: deviceId,
+                kSecReturnData as String: kCFBooleanTrue as Any,
+                kSecMatchLimit as String: kSecMatchLimitOne,
+            ]
+            let context = LAContext()
+            context.interactionNotAllowed = true
+            query[kSecUseAuthenticationContext as String] = context
+            var item: CFTypeRef?
+            var status = SecItemCopyMatching(query as CFDictionary, &item)
+            var data = item as? Data
+            if status == errSecSuccess, data?.count != keyLength {
+                status = errSecDecode
+                data = nil
+            }
+            let shouldComplete = gate.claim()
+            let resultStatus = status
+            let resultData = data
+            Task { @MainActor in
+                // If Security finally answers after the UI timeout, retain a valid result so the next
+                // reconnect succeeds without another IPC wait; the timed-out source is not mutated.
+                if resultStatus == errSecSuccess, let resultData {
+                    memoryCache[deviceId] = resultData
+                }
+                guard shouldComplete else { return }
+                lastReadStatus = resultStatus
+                completion(resultData, resultStatus)
+            }
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0.1, timeout)) {
+            guard gate.claim() else { return }
+            lastReadStatus = errSecInteractionNotAllowed
+            completion(nil, errSecInteractionNotAllowed)
+        }
     }
 
     /// Remove the stored install key for `deviceId`.
     public static func clear(deviceId: String) {
+        memoryCache.removeValue(forKey: deviceId)
         SecItemDelete(baseQuery(deviceId: deviceId) as CFDictionary)
     }
 }
 
 // MARK: - Oura history sync-state persistence
 
-/// Versioned, atomic cursor + primary-anchor state. Keeping the pair in one encoded UserDefaults value
+/// Versioned, atomic cursor + durable-anchor state. Keeping the pair in one encoded UserDefaults value
 /// prevents a crash between two scalar writes from producing a cursor that no longer matches its UTC
 /// mapping. The old scalar cursor key is read only for one-way migration; no anchor is ever invented.
 struct OuraHistorySyncState: Codable, Equatable {
@@ -1723,4 +1862,110 @@ enum OuraHistorySyncStore {
         guard let data = try? JSONEncoder().encode(state) else { return }
         UserDefaults.standard.set(data, forKey: key(deviceId: deviceId))
     }
+}
+
+// MARK: - Passive Oura history qualification capture
+
+/// Opt-in local capture for mapping Oura history records that the production decoder does not yet
+/// understand. Only TLV bytes already delivered during a GetEvents fetch reach this recorder; live secure
+/// frames, device identifiers, the install key, and outgoing commands never do. The JSON shape is the
+/// input accepted by the package's `oura-decode` CLI.
+@MainActor
+final class OuraHistoryCaptureRecorder {
+    static let enabledKey = "noopOuraHistoryCapture"
+
+    private struct Record: Encodable {
+        let hex: String
+        let kind: String
+        let tsMs: Int
+
+        enum CodingKeys: String, CodingKey {
+            case hex, kind
+            case tsMs = "ts_ms"
+        }
+    }
+
+    private static let maximumRecords = 100_000
+    /// Hex encoding roughly doubles the raw byte count; cap raw input so one JSON capture remains small.
+    private static let maximumCapturedBytes = 8 * 1024 * 1024
+    /// Bound total retained qualification data just like the existing WHOOP raw recorder.
+    private static let directorySoftCapBytes = 50 * 1024 * 1024
+    private var records: [Record] = []
+    private var capturedBytes = 0
+    private var fileURL: URL?
+    private var dirty = false
+
+    private var enabled: Bool { UserDefaults.standard.bool(forKey: Self.enabledKey) }
+
+    func capture(_ bytes: [UInt8]) {
+        guard enabled, !bytes.isEmpty, records.count < Self.maximumRecords,
+              capturedBytes + bytes.count <= Self.maximumCapturedBytes else { return }
+        records.append(Record(
+            hex: bytes.map { String(format: "%02x", $0) }.joined(),
+            kind: "history_tlv",
+            tsMs: Int(Date().timeIntervalSince1970 * 1_000)
+        ))
+        capturedBytes += bytes.count
+        dirty = true
+    }
+
+    func flush() {
+        // Preserve bytes already captured even if the opt-in was switched off before disconnect.
+        guard dirty, !records.isEmpty else { return }
+        do {
+            let encoder = JSONEncoder()
+            let data = try encoder.encode(records)
+            let url = try sessionFileURL()
+            try data.write(to: url, options: .atomic)
+            dirty = false
+            Self.evictOldCaptures(keeping: url)
+        } catch {
+            // Qualification-only and best-effort: the normal decode/persistence path remains unchanged.
+        }
+    }
+
+    private func sessionFileURL() throws -> URL {
+        if let fileURL { return fileURL }
+        let directory = try Self.captureDirectory()
+        let stamp = Self.fileStampFormatter.string(from: Date())
+        let url = directory.appendingPathComponent("oura-history-\(stamp).json")
+        fileURL = url
+        return url
+    }
+
+    private static func captureDirectory() throws -> URL {
+        let fm = FileManager.default
+        let directory = try fm.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                   appropriateFor: nil, create: true)
+            .appendingPathComponent("OpenWhoop", isDirectory: true)
+            .appendingPathComponent("oura-captures", isDirectory: true)
+        try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    /// Delete oldest completed captures until the directory is back below its soft cap. Never delete
+    /// the file this recorder is actively rewriting.
+    private static func evictOldCaptures(keeping keep: URL) {
+        let fm = FileManager.default
+        guard let directory = try? captureDirectory(),
+              let entries = try? fm.contentsOfDirectory(
+                at: directory, includingPropertiesForKeys: [.fileSizeKey],
+                options: [.skipsHiddenFiles]) else { return }
+        let files = entries
+            .filter { $0.pathExtension == "json" }
+            .map { (url: $0, size: (try? $0.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0) }
+            .sorted { $0.url.lastPathComponent < $1.url.lastPathComponent }
+        var total = files.reduce(0) { $0 + $1.size }
+        for file in files {
+            guard total > directorySoftCapBytes else { break }
+            if file.url == keep { continue }
+            if (try? fm.removeItem(at: file.url)) != nil { total -= file.size }
+        }
+    }
+
+    private static let fileStampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return formatter
+    }()
 }

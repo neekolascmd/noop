@@ -36,8 +36,8 @@ public enum OuraTransition: Equatable, Sendable {
     /// 0x42 anchor record is included in the history stream instead of racing later control writes.
     case timeSyncAcknowledged(cursor: UInt32)
     /// Some Ring 4 firmware returns a well-formed 0x13 whose echo does not correlate. After a short,
-    /// transport-owned timeout, release the fetch once; the matching 0x42 token+counter remains the
-    /// mandatory commit authority, so this fallback cannot persist stale or misdated history.
+    /// transport-owned timeout, release the fetch once; a correlated 0x42 or qualified recent 0x85
+    /// remains the mandatory commit authority, so this cannot persist stale or misdated history.
     case timeSyncReleaseTimedOut(cursor: UInt32)
     /// Read the next provisional Ring 4 history page from a record high-water without ACKing, flushing,
     /// or resetting the active SyncTime correlation. The transport bounds this anchor search.
@@ -92,8 +92,9 @@ public final class OuraDriver {
     private var anchorRingTime: UInt32?
     /// Generation/token-specific ring-clock scale selected by the primary 0x42 anchor.
     private var anchorFactorMs: Int64 = 100
-    /// The primary 0x42-derived mapping that is safe to persist alongside the durable cursor. A 0x85 RTC
-    /// beacon may help within one connection, but is deliberately never exported as durable state.
+    /// The durable mapping safe to persist alongside the cursor. A correlated 0x42 is preferred; tested
+    /// Ring 4 firmware may omit 0x42 entirely, so a recent 0x85 observed during the active sync fetch can
+    /// establish the same mapping at the beacon's documented 100 ms/tick scale.
     private var primaryTimeAnchor: OuraTimeAnchor?
     /// A durable primary anchor is useful for timestamp translation immediately after reconnect, but it
     /// does not authorize a history ACK until the active stream proves its ring clock continued beyond
@@ -108,7 +109,7 @@ public final class OuraDriver {
     private var pendingSyncCounter: UInt32?
     /// The random request token must match the fetched 0x42 as well as the coarse counter.
     private var pendingSyncToken: UInt8?
-    /// A cursor commit needs an anchor created for THIS fetch, not merely an older session anchor.
+    /// A cursor commit needs an anchor qualified for THIS fetch, not merely an older session anchor.
     private var activeFetchHasFreshAnchor = false
     /// Makes a duplicate/late 0x13 acknowledgement unable to enqueue a second flush/fetch pair.
     private var timeSyncReleaseIssued = false
@@ -350,7 +351,7 @@ public final class OuraDriver {
 
     /// Accept a well-formed Ring 4 `0x13` while a SyncTime request is active. Tested firmware returns
     /// nonstandard status/echo fields and the official transport treats this as one-way liveness. This
-    /// never anchors or commits by itself; a plausible `0x42` remains mandatory.
+    /// never anchors or commits by itself; an independently-qualified 0x42/0x85 remains mandatory.
     @discardableResult
     public func handleSyncTimeAcknowledgement(body: [UInt8]) -> Bool {
         guard ringGen == .gen4,
@@ -370,8 +371,8 @@ public final class OuraDriver {
     /// fetched cursor provisional until its samples can be dated and durably flushed.
     public var hasUtcAnchor: Bool { anchorUtcMs != nil && anchorRingTime != nil }
 
-    /// The validated primary 0x42 anchor suitable for atomic persistence with the history cursor. A
-    /// session-only 0x85 beacon is intentionally excluded.
+    /// The validated durable anchor suitable for atomic persistence with the history cursor. This is a
+    /// correlated 0x42 when available, otherwise a recent active-fetch 0x85 fallback on Ring 4.
     public var currentPrimaryTimeAnchor: OuraTimeAnchor? {
         guard ringGen == .gen4,
               let primaryTimeAnchor,
@@ -379,8 +380,8 @@ public final class OuraDriver {
         return primaryTimeAnchor
     }
 
-    /// Stronger commit gate for the active fetch. Ring 4 must have received a matching token+counter
-    /// 0x42 during this fetch; legacy generations retain the session-anchor rule until qualified.
+    /// Stronger commit gate for the active fetch. Ring 4 must receive either a matching token+counter
+    /// 0x42 or a recent active-fetch 0x85; legacy generations retain the session-anchor rule.
     public var hasFreshAnchorForActiveFetch: Bool {
         ringGen == .gen4 ? (phase == .fetchingHistory && activeFetchHasFreshAnchor && hasUtcAnchor) : hasUtcAnchor
     }
@@ -443,10 +444,27 @@ public final class OuraDriver {
     /// Int64 (a naive multiply on a near-Int64.max raw value traps).
     private static let minPlausibleEpochSeconds: Int64 = 1_577_836_800
     private static let maxPlausibleEpochSeconds: Int64 = 2_051_222_400
+    /// Ring 4 firmware seen in hardware qualification emits RTC beacons from the preceding night while
+    /// omitting 0x42. Accept at most two days of look-back, with only small forward clock skew.
+    private static let rtcFallbackMaximumAgeSeconds: Int64 = 48 * 60 * 60
+    private static let rtcFallbackFutureToleranceSeconds: Int64 = 15 * 60
 
     private static func plausibleAnchorMs(fromEpochSeconds seconds: Int64) -> Int64? {
         guard seconds >= minPlausibleEpochSeconds, seconds <= maxPlausibleEpochSeconds else { return nil }
         return seconds * 1000   // safe: bounded input, cannot overflow
+    }
+
+    /// Qualify the coarser RTC beacon only when it belongs to the current Ring 4 fetch. The active
+    /// SyncTime counter supplies a privacy-free wall-clock bound; the cursor floor prevents an older
+    /// backlog beacon from authorizing a resumed cursor.
+    private func rtcBeaconQualifiesForActiveFetch(_ beacon: OuraRtcBeacon) -> Bool {
+        guard ringGen == .gen4, phase == .fetchingHistory,
+              let pendingSyncCounter,
+              beacon.ringTimestamp >= activeFetchStartCursor else { return false }
+        let requestWindowStart = Int64(pendingSyncCounter) * 256
+        let beaconSeconds = Int64(beacon.unixSeconds)
+        return beaconSeconds >= requestWindowStart - Self.rtcFallbackMaximumAgeSeconds
+            && beaconSeconds <= requestWindowStart + 255 + Self.rtcFallbackFutureToleranceSeconds
     }
 
     /// Validate an anchor loaded from durable storage before it is allowed to translate any history.
@@ -578,10 +596,27 @@ public final class OuraDriver {
             }
             return [.timeSync(ts)]
         case .rtcBeacon:
-            // Secondary UTC anchor (s5.5, 1s granularity): only fills in while no 0x42 anchor exists yet
-            // this session, so a coarser beacon never overrides the primary time-sync anchor.
             guard let r = OuraDecoders.decodeRtcBeacon(record) else { return [] }
-            if anchorUtcMs == nil, let ms = Self.plausibleAnchorMs(fromEpochSeconds: Int64(r.unixSeconds)) {
+            if rtcBeaconQualifiesForActiveFetch(r),
+               let ms = Self.plausibleAnchorMs(fromEpochSeconds: Int64(r.unixSeconds)) {
+                // Hardware-qualified fallback: some Ring 4 firmware returns a valid active SyncTime ack
+                // and current RTC beacons but never banks 0x42. A recent beacon is a complete ring->UTC
+                // mapping at 1-second UTC / 100-ms tick precision, so it can safely unblock this fetch.
+                // A later correlated 0x42 still wins unconditionally in the timeSync case above.
+                anchorUtcMs = ms
+                anchorRingTime = r.ringTimestamp
+                anchorFactorMs = 100
+                primaryTimeAnchor = OuraTimeAnchor(
+                    ringTimestamp: r.ringTimestamp,
+                    utcMilliseconds: ms,
+                    factorMillisecondsPerTick: 100
+                )
+                persistedAnchorNeedsContinuity = false
+                activeFetchHasFreshAnchor = true
+            } else if anchorUtcMs == nil,
+                      let ms = Self.plausibleAnchorMs(fromEpochSeconds: Int64(r.unixSeconds)) {
+                // Outside that narrow Ring 4 gate (and on legacy rings), preserve the established
+                // session-only secondary-anchor behavior; it never authorizes or persists a cursor.
                 anchorUtcMs = ms
                 anchorRingTime = r.ringTimestamp
                 anchorFactorMs = 100

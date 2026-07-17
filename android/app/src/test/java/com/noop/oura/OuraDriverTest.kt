@@ -567,6 +567,39 @@ class OuraDriverTest {
     }
 
     @Test
+    fun testRing4RecentRtcBeaconQualifiesActiveFetchWhenFirmwareOmitsTimeSyncRecord() {
+        val requested = 1_700_000_000L
+        val beaconSeconds = requested - 8L * 60L * 60L
+        val payload = intArrayOf(
+            (beaconSeconds and 0xFF).toInt(), ((beaconSeconds shr 8) and 0xFF).toInt(),
+            ((beaconSeconds shr 16) and 0xFF).toInt(), ((beaconSeconds shr 24) and 0xFF).toInt(),
+        )
+        val d = OuraDriver(ringGen = OuraRingGen.GEN4, authKey = key, timeSyncToken = 0x5A)
+        d.nextStep(OuraTransition.StartHistoryFetch(cursor = 77L, unixSeconds = requested))
+        d.ingest(OuraRecord(OuraEventTag.RTC_BEACON.raw, 5_000L, payload))
+
+        assertTrue(d.hasFreshAnchorForActiveFetch)
+        assertEquals(OuraTimeAnchor(5_000L, beaconSeconds * 1_000L, 100L), d.currentPrimaryAnchor)
+        assertEquals(beaconSeconds + 1L, d.unixSeconds(forRingTimestamp = 5_010L))
+    }
+
+    @Test
+    fun testRing4StaleRtcBeaconCannotAuthorizeActiveFetch() {
+        val requested = 1_700_000_000L
+        val beaconSeconds = requested - 3L * 24L * 60L * 60L
+        val payload = intArrayOf(
+            (beaconSeconds and 0xFF).toInt(), ((beaconSeconds shr 8) and 0xFF).toInt(),
+            ((beaconSeconds shr 16) and 0xFF).toInt(), ((beaconSeconds shr 24) and 0xFF).toInt(),
+        )
+        val d = OuraDriver(ringGen = OuraRingGen.GEN4, authKey = key, timeSyncToken = 0x5A)
+        d.nextStep(OuraTransition.StartHistoryFetch(cursor = 77L, unixSeconds = requested))
+        d.ingest(OuraRecord(OuraEventTag.RTC_BEACON.raw, 5_000L, payload))
+
+        assertTrue(!d.hasFreshAnchorForActiveFetch)
+        assertNull(d.currentPrimaryAnchor)
+    }
+
+    @Test
     fun testRtcBeaconOnlyAnchorsWhenNoTimeSyncSeenYet() {
         val d = OuraDriver(ringGen = OuraRingGen.GEN3, authKey = key)
         val beaconRt = 5_000L

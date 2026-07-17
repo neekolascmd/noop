@@ -1747,7 +1747,7 @@ class OuraLiveSource(
                     loggedAnchor = true
                     log("Oura: UTC time anchor acquired - history-fetched samples now get their real time")
                 }
-                // The driver accepts this secondary anchor only when no primary 0x42 anchor exists.
+                // A qualified active-fetch beacon can be durable; otherwise this remains session-only.
                 if (d.phase != OuraDriverPhase.FetchingHistory) drainPendingAnchorEvents()
             }
             is OuraEvent.TierB -> {
