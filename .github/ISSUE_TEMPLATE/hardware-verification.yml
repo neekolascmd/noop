@@ -54,7 +54,7 @@ body:
     attributes:
       label: NOOP release or commit SHA
       description: Do not write "latest"; give a release number or full commit.
-      placeholder: "8.2.1 or e69833096c9b17ecf3bd1707bd13205225650ec2"
+      placeholder: "8.3.0 or b6aa5a641d074121b5f64c36e9c6b343d110191b"
     validations:
       required: true
 
