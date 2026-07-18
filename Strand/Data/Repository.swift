@@ -1484,11 +1484,17 @@ final class Repository: ObservableObject {
                     .map { Self.timelinePoint($0.ts, $0.rmssd) }
             }.value
         case .spo2:
-            // The honest raw red/IR ratio proxy (#166: no calibrated %), shown as a unitless trend.
+            // Qualified Oura percentages are stored in tenths with no second optical channel. WHOOP raw
+            // red/IR rows retain the existing ratio-only diagnostic path.
             let s = (try? await store.spo2Samples(deviceId: source, from: from, to: to, limit: 200_000)) ?? []
             // The up-to-200k-row conversion runs OFF the main actor; only the Sendable `s` rows cross in.
             return await Task.detached(priority: .utility) {
-                s.compactMap { $0.ir > 0 ? Self.timelinePoint($0.ts, Double($0.red) / Double($0.ir)) : nil }
+                s.compactMap {
+                    if $0.unit == "tenths_percent", $0.ir == 0, (700...1000).contains($0.red) {
+                        return Self.timelinePoint($0.ts, Double($0.red) / 10.0)
+                    }
+                    return $0.ir > 0 ? Self.timelinePoint($0.ts, Double($0.red) / Double($0.ir)) : nil
+                }
             }.value
         case .skinTemp:
             let s = (try? await store.skinTempSamples(deviceId: source, from: from, to: to, limit: 200_000)) ?? []

@@ -145,6 +145,8 @@ func describe(_ e: OuraEvent) -> String {
     case .temp(let v): return "TEMP \(v.celsius)C rt=\(v.ringTimestamp)"
     case .battery(let v): return "BATTERY \(v.percent)% mv=\(v.voltageMv.map(String.init) ?? "-")"
     case .sleepPhase(let v): return "SLEEP_PHASE [\(v.index)]=\(v.stage) rt=\(v.ringTimestamp)"
+    case .sleepPeriod(let v): return "SLEEP_PERIOD state=\(v.sleepState) motion=\(v.motionCount) rt=\(v.ringTimestamp)"
+    case .bedtimePeriod(let v): return "BEDTIME_PERIOD start=\(v.startRingTimestamp) end=\(v.endRingTimestamp)"
     case .motion(let v): return "MOTION [\(v.index)]=\(v.state) rt=\(v.ringTimestamp)"
     case .state(let v): return "STATE code=\(v.stateCode) text=\(v.text ?? "-") rt=\(v.ringTimestamp)"
     case .timeSync(let v): return "TIME_SYNC epochMs=\(v.epochMs) tz=\(v.tzOffsetSeconds)s"

@@ -1,6 +1,7 @@
 # NOOP - Oura Ring BLE Protocol Specification (Clean-Room)
 
-**Status:** Internal decoder foundation, v0.1 (2026-06-29)
+**Status:** Implemented qualification candidate (2026-07-12). Promotion is generation- and
+platform-specific; see the [hardware graduation gate](HARDWARE_SUPPORT.md#oura-graduation-gate).
 **Scope:** Oura Ring Gen 3 (Horizon), Gen 4, Gen 5. Foundation for NOOP's own Swift (`StrandiOSShared` / `Strand`) and Kotlin decoders.
 **Authorship:** This is NOOP's own original specification. Every protocol *fact* (UUID, opcode, byte layout, tag value) is cited to a reverse-engineering reference read for facts only. No source code was copied from any RE repo. NOOP decodes raw signals plus the ring's own HRV/sleep tags and runs NOOP's own scoring; NOOP never touches Oura's encrypted PyTorch scores.
 
@@ -27,7 +28,10 @@
   - ATT handle observed `0x0012`, notifications via Handle-Value-Notification (ATT op `0x1B`) [open_ring][ringverse]
 - **GATT channel id:** `0x0004` [ringverse]
 
-> Implementation note for NOOP: subscribe to `...0003` notifications, then write commands to `...0002` with `.withoutResponse`. Do **not** assume write-with-response.
+> Implementation note for NOOP: subscribe to `...0003` on Gen 3 and read-only to
+> `...0003/0004/0005/0006` on Gen 4/5, then write commands only to `...0002` with
+> `.withoutResponse`. Do **not** assume write-with-response and never write application commands to
+> the extra inbound paths.
 
 ### 1.2 Per-generation GATT differences
 
@@ -36,17 +40,21 @@
 | Service `…0001` | yes | yes | yes (same layout) [open_oura-r5] |
 | Write `…0002` | yes | yes | yes |
 | Notify `…0003` | yes | yes | yes |
-| Extra char `…0004` | - | - | **present**: read,write,notify,indicate [open_oura-r5] |
-| Extra char `…0005` | - | - | **present**: write,notify [open_oura-r5] |
-| Extra char `…0006` | - | - | **present**: write,notify [open_oura-r5] |
+| Extra char `…0004` | - | **present**: read, write, write-no-response, notify, indicate (Ring 4 hardware, 2026-07-12) | **present**: read,write,notify,indicate [open_oura-r5] |
+| Extra char `…0005` | - | **present**: write-no-response, notify (Ring 4 hardware, 2026-07-12) | **present**: write,notify [open_oura-r5] |
+| Extra char `…0006` | - | **present**: write-no-response, notify (Ring 4 hardware, 2026-07-12) | **present**: write,notify [open_oura-r5] |
 | MTU | 203 [open_oura-r3] | 247 [open_ring] | 247 [open_oura-r5] |
 
 - Ring 5 keeps "the **same** GATT layout, framing, and app-auth flow as the Ring 3/4 … no new opcodes, event tags, or fundamental framing changes." [open_oura-r5]
-- The functional roles of Ring-5 chars `…0004/0005/0006` are **unconfirmed** in the RE corpus - leave them unused in v1; do not write to them.
+- Ring 4 firmware `2.12.3` requires both the tested Android and macOS transports to subscribe read-only to `…0003/0004/0005/0006` before the adopted session is driven. Their individual semantic roles remain **unconfirmed**; never write application commands to the extras (all commands still use `…0002`).
 
 ### 1.3 MTU negotiation
 - Notifications stream up to the negotiated MTU (max payload = MTU − 3 ATT bytes). Default BlueZ MTU is 23 unless negotiated. [open_ring]
 - **NOOP rule:** immediately after subscribing to `…0003`, request ATT MTU = **247** (Gen 4/5) or **203** (Gen 3). On iOS/CoreBluetooth the MTU is auto-negotiated; read `maximumWriteValueLength` and `CBPeripheral.maximumWriteValueLength(for: .withoutResponse)` and clamp writes. On Android, call `requestMtu(247)` before the first command.
+- **Android write scheduling:** serialize Write Without Response commands with at least **350 ms** between starts on Ring 4. The tested Saga link negotiated interval 15 ms with slave latency 20 (a 315 ms worst-case receive window); immediate writes dropped later commands, while the 350 ms queue completed auth, live enable, and history (`2026-07-12`).
+- **Apple write scheduling:** CoreBluetooth also serializes Ring 4 Write Without Response commands with
+  the same 350 ms minimum spacing and waits for `canSendWriteWithoutResponse`; this completed key
+  installation, fresh-session auth, live-mode enable, battery, and history on macOS 27.0 (`2026-07-12`).
 
 ---
 
@@ -116,12 +124,20 @@ ring  → phone: 25 01 00                       (status 0x00 = OK)
 ```
 NOOP stores its 16-byte key locally (Keychain on iOS, EncryptedSharedPreferences/Keystore on Android). This key is required for every subsequent session's challenge.
 
+On tested Ring 4 firmware `2.12.3`, persist the acknowledged key, disconnect, and authenticate on a **new** GATT session. A same-session nonce request after the `0x25` acknowledgment did not answer.
+
 ### 3.3 Get auth nonce (sub-op `0x01` → response `0x2C`)
 ```
 phone → ring:  2f 01 2b                        (GetAuthNonce)
 ring  → phone: 2f 10 2c <nonce: 15 bytes>      (18 B total)
 ```
 [open_ring][ringverse][open_oura-r3]
+
+**Ring 4 ordering:** never send `SetNotification` (`0x1C`) before authentication or as part of the
+live-HR enable triplet. The byte-exact official history setup uses one post-auth, post-SyncTime state
+pulse (`1c 01 bf`) immediately before the six event-category masks. On firmware `2.12.3`, tightly
+spaced or misplaced `0x1C` writes stalled later control writes; NOOP therefore sends this exact pulse
+only once per BLE session through the same serialized 350 ms command queue.
 
 ### 3.4 Compute proof (AES-128-ECB challenge)
 [open_ring][ringverse]
@@ -149,6 +165,11 @@ ring  → phone: 2f 02 2e <status>
 ### 3.6 Pre-auth readable / gated commands
 Before app-auth, the ring answers a small set unauthenticated: firmware (`0x08`), product serial/hardware (`0x18`). Auth-required commands return `2f 02 2f 01` until authenticated: battery (`0x0c`), history events (`0x10`), feature status (`0x2f…0x20`), realtime/feature-latest. [open_oura-r3][open_oura-r5]
 
+**NOOP qualification rule:** request firmware and the ProductInfo **hardware page** on every connection,
+but never request the serial page. Decode/log the four version triplets and hardware-family token; discard
+the firmware response's trailing Bluetooth-address bytes. This makes a test bundle reproducible without
+persisting a ring serial or address.
+
 ---
 
 ## 4. Opcode Table
@@ -172,7 +193,7 @@ Compiled from [ringverse] (BLE.md) and [open_ring] (PROTOCOL.md); examples are e
 | `0x11` | GetEvents resp / summary | ←ring | `11 08 …` | §5.2 [ringverse][open_ring] |
 | `0x12` | SyncTime | →ring | `12 09 <…> ` | §5.4 [ringverse][open_ring] |
 | `0x13` | SyncTime resp | ←ring | `13 05 …` | [ringverse][open_ring] |
-| `0x16` | SetBleMode | →ring | `16 01 <mode>` | `00`=normal, `01`/`02`=fast-HR [ringverse][open_ring] |
+| `0x16` | SetBleMode / event-stream subscribe | →ring | `16 01 <mode>` | `00`=normal/disabled; `02` enables the Ring 4 event stream in open_ring's executable setup sequence [ringverse][open_ring] |
 | `0x17` | SetBleMode resp | ←ring | `17 01 <mode>` | [ringverse] |
 | `0x18` | GetProductInfo | →ring | `18 03 <offset> 00 10` | serial `08 00 10`; hw `18 00 10` [ringverse][open_oura-r3] |
 | `0x19` | ProductInfo resp | ←ring | | [ringverse] |
@@ -243,25 +264,52 @@ Gen 5 example `0912 020100 020103 010001 090329 665544332211`. [open_oura-r5]
 ```
 [open_ring]
 - `status` - `0x00` = empty/no more; `0xFF` = data follows (event records arrive as inner TLV stream, §2.3). [open_ring]
-- `last_ring_timestamp` - new cursor value to use next fetch.
+- `last_ring_timestamp` - batch metadata only. The durable ACK/save cursor is the maximum
+  `ringTimestamp` across structurally-valid inner records in the batch. [open_ring]
 
 ### 5.3 Canonical fetch loop (NOOP)
-1. SyncTime (§5.4). 2. Send `0x10` with stored cursor, `max=255`. 3. Receive inner TLV records (§6). 4. ~100 ms later send ack-fetch (`max=0`, cursor = `last_ring_timestamp`) to advance. 5. Repeat until `status=0x00`. [open_ring]
-6. Optionally `28 01 00` to flush flash-buffered events first. [open_ring]
+1. Before authentication on Ring 4, preserve the official read-only order: firmware/hardware identity, session probes `2f 02 01 00` and `2f 02 01 01`, then the nonce request. After authentication, send event-stream enable (`16 01 02`), then SyncTime (§5.4). On the first pass of each BLE connection, follow it with the byte-exact post-sync state pulse (`1c 01 bf`), the six official `0x18` event-category masks (`14/18/28/34/04/08`), a battery read, and the official setup sweep: parameter reads `02/04`, the still-semantically-provisional session-state selector `2f 02 03 01`, then parameter reads `0b/0d/03/0b/10`. The selectors are session-scoped and are not used for reset, pairing, or biometric-data mutation. Keep all writes on the serialized 350 ms queue.
+2. Treat any well-formed Ring 4 `0x13` as a one-way liveness acknowledgement while a request is active; tested firmware can return nonstandard status/echo fields. A one-second idempotent fallback still releases the fetch when no usable reply arrives. Neither path authorizes persistence: a correlated `0x42`, a qualified recent `0x85` RTC beacon, or a previously validated durable anchor whose ring clock proves monotonic continuity beyond both saved boundaries must establish the ring-time/UTC pair.
+3. Only then send `28 01 00` to flush flash-buffered events followed by `0x10` with the stored cursor and `max=255`.
+4. Receive the `0x11` summary and inner TLV records (§6). Some Ring 4 firmware banks the fresh correlated `0x42`; tested firmware 2.12.3 instead acknowledged SyncTime and returned recent `0x85` RTC beacons without any `0x42`. During the active fetch, an RTC beacon no older than 72 hours, no more than 15 minutes ahead of the request window, and at or beyond the durable cursor may establish a persistable 100 ms/tick mapping. The 72-hour bound is hardware-qualified from a retained page whose valid beacons were about 52 hours old; the prior 48-hour gate rejected that page despite every other qualification passing. A later correlated `0x42` still replaces it. The summary can precede its record notifications, so hold it until the TLV stream has been idle for 500 ms. If a page contains records but no anchor, keep its decoded events parked and issue only another `max=255` read from the actual record high-water: no `max=0` ACK, cursor save, flush, or persistence. Each in-memory window stops at 32 pages or 100,000 parked decoded events; a real retained Ring 4 page expanded to roughly 74,000 verified events, so the previous 4,096-event cap could never commit it. Anchored persistence writes those events in 2,048-event idempotent chunks before the cursor advances, bounding the transient database batch. At the read-only bound, discard provisional RAM only and continue from the record high-water for at most eight bootstrap windows; the ring data remains unacknowledged. During that explicitly bounded bootstrap, a plausible historical `0x42` may establish the clock as open_ring does. No-progress or terminal responses still stop the scan.
+5. If the anchor arrived after any window was skipped, discard the current provisional RAM and refetch from the unchanged durable cursor under that anchor. Resolve the complete refetch, await every SQLite stream/sleep insert, then atomically save its cumulative record high-water together with the durable anchor. A write failure leaves both local state and ring ACK unchanged, so natural-key inserts safely retry. If the bounded bootstrap finds no anchor, the cursor remains unchanged; one post-fetch SyncTime retry is allowed only when the in-memory bound was not exceeded.
+6. Only after that commit send ack-fetch (`max=0`, cursor = the maximum structurally-valid inner-record `ringTimestamp`).
+7. A fetch missing both a correlated `0x42` and a qualified recent `0x85` leaves ring history unacknowledged and the local cursor unchanged, so a later refetch cannot skip data. [open_ring]
 
 ### 5.4 SyncTime (`0x12`)
+Ring 4:
 ```
-12 09 <token:1> <counter:3 LE> 00 00 00 00 f6
+12 09 <random_token:1> <counter:3 LE> 00 00 00 00 f6
 ```
-where `counter = floor(unix_seconds / 256)`, trailer `0xf6` fixed. [open_ring]
+where `counter = floor(unix_seconds / 256)`, the token is freshly random per request, and trailer `0xf6` is fixed. [open_ring]
 Response: `13 05 <ack> <counter_echo:3 LE> 00`. [open_ring]
+- The `0x13` body is an acknowledgement/echo only. It contains **no ring timestamp** and cannot anchor
+  history by itself; the timestamped `0x42` event (§6.11) establishes the UTC anchor. [open_ring]
+- NOOP accepts any well-formed `0x13` while a SyncTime request is active and releases flush/fetch only
+  once; tested firmware can return nonstandard status/echo fields, matching the official transport's
+  one-way treatment. A one-second idempotent fallback handles a missing/malformed reply. Both paths are
+  transport liveness only. Normally a Ring 4 `0x42` must match the active random token and coarse counter.
+  Only after the read-only scan crosses its bounded in-memory limit may a plausible backlog `0x42`
+  bootstrap the clock; skipped pages are then refetched from the unchanged durable cursor before any ACK.
+- Gen 3 captures use a different request body (`unix_seconds:u64 LE` plus timezone half-hours) and a
+  generation-specific `0x13` response. Keep the two layouts separate. [open_oura-r3]
+- Gen 5 SyncTime remains unverified on hardware.
 
 ### 5.5 Ring-time → UTC anchoring
 - The ring clock is in **ticks**: default **100 ms/tick** (10 Hz); burst mode **1 ms/tick** (`factor_flag=1`). [open_ring]
 - Anchor from event `0x42` (time-sync ind, §6.11): set `anchor.utc_ms` from the event's epoch and `anchor.ring_time` from current `ringTimestamp`.
 - Conversion: `utc_ms = anchor.utc_ms + factor × (target_rt − anchor.ring_time)`, `factor ∈ {100,1}`. [open_ring]
 - On `0x41` (ring start) with `rt` regression → invalidate anchor (zero it). [open_ring]
-- `0x85` RTC beacon gives 1-second-granularity `unix_s` as a secondary source. [open_ring]
+- Persist the validated reconnect anchor atomically with the history cursor and a save timestamp. This is
+  normally a correlated primary `0x42`; on qualified Ring 4 firmware it may be the narrowly-gated recent
+  `0x85` fallback described below.
+  On reconnect it may translate timestamps immediately, but it is **mapping state only** until a
+  structurally-valid record reaches both the durable cursor and anchor ring time with a plausible mapped
+  epoch. Only then may the active fetch commit. A cursor/ring-start regression clears the anchor. Legacy
+  cursor-only state migrates without inventing an anchor.
+- `0x85` RTC beacon gives 1-second-granularity `unix_s` as a secondary source. Outside an active Ring 4
+  fetch it remains session-only. During an active fetch, the §5.4 age/future/cursor gates may qualify it
+  as a durable 100 ms/tick reconnect anchor when firmware omits `0x42`. [open_ring]
 
 ### 5.6 Live-HR realtime enable (Gen 3 verified; same path Gen 4/5)
 Three writes to `…0002`, each gated on its ACK; daytime-HR feature id = `0x02`: [relue][open_oura-r3]
@@ -317,12 +365,16 @@ bits 14–15 : qual_b
 (7 samples per 14-byte record.) [open_ring]
 
 ### 6.5 SpO2 per-sample - `0x6F` `spo2_event` (5–18 B, 1 s spacing)
-- Byte 6: bits `[7:4]` = SpO2 base (<<7); bits `[3:0]` = status flag. [ringverse]
-- One `uint8` SpO2 value per second from byte 7 onward; optional `0xFF` terminator. [ringverse]
+- Byte 6 is a status/header field; it is **not** added to the following values. [ringverse]
+- One direct `uint8` SpO2 percentage per second from byte 7 onward; optional `0xFF` terminator. Values
+  are oldest-to-newest and the record timestamp belongs to the newest value, so sample `i` is placed at
+  `record_time - (count - 1 - i)` seconds. [ringverse]
 
 ### 6.6 SpO2 smoothed/stable - `0x70` `spo2_smoothed`/`spo2_stable` ; `0x7B` `spo2_stable_event` (6 B)
 - `0x7B`: single **uint16 big-endian** at bytes 6–7. **(big-endian - exception to LE rule)** [ringverse]
 - `0x70` present in tag dictionary as smoothed SpO2; layout **(UNVERIFIED)** - gate on fixtures. [ringverse]
+- Neither `0x70` nor `0x7B` is in the pinned Ring 4 event enum; treat them as legacy/unqualified for
+  Ring 4. Ring 4 percentage support rests on `0x6F`, while `0x77` remains raw optical DC.
 
 ### 6.7 SpO2 DC - `0x77` `spo2_dc_event` (variable)
 - Byte 6: bit`[7]`=HDR low bit; bit`[6]`=`hasBase`; bits`[5:4]`=scale shift. [ringverse]
@@ -342,18 +394,31 @@ bits 14–15 : qual_b
 - Layout: `percent, charging_progress, recommended_flag, 3 unknown bytes`. [open_oura-r3]
 - Voltage as **uint16 LE at body offset [4..6]** per [open_ring]. **CONFLICT:** [open_oura-r3] reads percent at body[0]; [open_ring] reads voltage at [4]. **NOOP rule:** read percent at body[0]; derive a voltage-based estimate from [4..6] only as a fallback, fixture-validated per generation.
 
-### 6.11 Time-sync ind - `0x42` (15 B)
-- Bytes 6–13: an int64 LE epoch value; byte 14: int8 timezone offset in 30-min units (×1800 = seconds). [ringverse]
-- **UNIT = unix SECONDS, not milliseconds.** [ringverse] documents this field as epoch milliseconds, but that citation is unverified and wrong: on real Gen 3 hardware the wire value is unix seconds. Treating it as milliseconds anchors every history-fetched sample to roughly Jan 1970 (about 1000x too early). **NOOP rule:** the decoder (`OuraDecoders.decodeTimeSync`) stays a faithful byte-level parse of the documented layout - `OuraTimeSync.epochMs` still names what the doc claims - but the driver multiplies the decoded value by 1000 before using it as the ms-scale UTC anchor (`OuraDriver`, the `.timeSync` ingest case). Treat this as a single-generation data point until a second ring/generation confirms it.
+### 6.11 Time-sync ind - `0x42` (generation-specific)
+- **Ring 4 (verified):** nine-byte payload
+  `<token:1><time_counter:u24 LE><constant:5>`. UTC seconds are `time_counter × 256`; the record header's
+  `ringTimestamp` is the matching ring-clock anchor. The clock factor is 1 ms/tick when `token == 0xfd`,
+  otherwise 100 ms/tick. [open_ring]
+- **Gen 3 (observed):** nine-byte payload `<unix_seconds:i64 LE><timezone_half_hours:i8>`. The unit is unix
+  **seconds**, not milliseconds; treating it as milliseconds anchors history around 1970. [open_oura-r3]
+- **Gen 5:** unverified; NOOP retains the legacy decoder as a fixture-gated fallback and must not claim
+  hardware qualification until a capture confirms the layout.
+- `OuraTimeSync.epochMs` retains its original source-compatible property name, but the decoded value is
+  unix seconds on the verified Gen 3 and Ring 4 paths. The driver performs the bounded seconds-to-ms
+  conversion when establishing the anchor.
 - **CRASH-SAFETY RULE: bounds-check any multi-byte wire arithmetic before use.** A full cursor-0 history dump (a ring never synced before) can surface a `0x42` record deep in the backlog whose raw epoch value is wildly implausible (near `Int64.max`) - a misaligned/corrupt record rather than a real time-sync (§2.4: "each notification contains whole frames/records" is the verified-corpus norm, not a guarantee). A naive seconds→ms `× 1000` on such a value overflows `Int64` and traps. **Any arithmetic on a raw multi-byte wire field must be plausibility-checked before use, never trusted as automatically well-formed.** NOOP's driver gates the time-sync / RTC-beacon anchor to a 2020–2035 unix-seconds window before converting (`OuraDriver.plausibleAnchorMs`), rejecting anything outside it as an undecodable record rather than crashing or anchoring to garbage.
 - This is the primary UTC anchor (§5.5). [open_ring][ringverse]
 
 ### 6.12 Sleep architecture
 - **`0x4E` / `0x5A` `sleep_phase_details`** (≥19 B): byte6 = header; phase codes are **2-bit**, 4 per byte (bits `[7:6][5:4][3:2][1:0]`); codes **0=awake, 1=light, 2=deep, 3=REM**. [ringverse]
-- **`0x6A` `sleep_period_info`** (14 B): bytes6–9 four int8 metrics; bytes10–11 `uint8/8.0`; byte12 motion-seconds uint8; byte13 sleep-state int8; bytes14–15 `uint16 LE / 65536`. [ringverse]
+- **`0x6A` `sleep_period_info_2`** (10-byte body): average HR `uint8 × 0.5`, HR trend `int8 / 16`,
+  two index bytes `/16`, breathing `uint8 / 8`, breathing variation `uint8 / 8`, motion count `0...120`,
+  unnamed state `0...2`, and CV `uint16 LE / 65536`. The state codes are preserved raw and are **not**
+  mapped to WHOOP sleep state or sleep stages until a fixture proves their semantics. [open_ring]
 - **`0x72` `sleep_acm_period`** (16 B): values0–2 = `whole(8)+frac(8)/255`; values3–5 = `whole(4)+frac(12)/4095`. [ringverse]
 - **`0x49` `sleep_summary_1`**: start/end as uint16 LE minutes-before-event. [ringverse]
-- **`0x76` `bedtime_period`**: start/end as uint32 LE ringTimestamps → map to UTC (§5.5). [ringverse]
+- **`0x76` `bedtime_period`** (8-byte body): start/end as uint32 LE ringTimestamps → map to UTC
+  (§5.5). NOOP persists plausible 15-minute...16-hour windows as stage-less sleep sessions. [open_ring]
 - Tags `0x48,0x4A–0x4D,0x4F,0x57,0x58` are additional sleep summary/feature variants in the dictionary; layouts **(UNVERIFIED)** - decode only after fixtures. [ringverse]
 
 ### 6.13 Motion / activity
@@ -386,7 +451,7 @@ bits 14–15 : qual_b
 | `0x01` | Research Data (RData) | often server-blocked; returns idle status 3 [open_oura-r3] |
 | `0x02` | Daytime HR | Gen3+; **live-HR path (§5.6)** |
 | `0x03` | Exercise HR (AWHR) | Gen3+; cap version ≥ 2 |
-| `0x04` | SpO2 | Gen3+; server-gated. **Confirmed OFF on a real Gen 3 ring:** a `2f 02 20 04` feature-status read returns `04 00 00 00 00` (mode `0x00` = off, status `0x00` = off per §7.2) - SpO2 is switched off for that ring/account, not a NOOP decode issue. SpO2 also never arrives as a live push (unlike HR's feature `0x02`); it only ever arrives via history fetch (§5), same as skin temp. NOOP sends the diagnostic read only; it does NOT try to enable/subscribe SpO2 (a live enable produces nothing during the day regardless). |
+| `0x04` | SpO2 | Gen3+; server-gated. `2f 02 20 04` is a read-only feature-status request; NOOP parses the `0x21` reply and reports whether automatic mode (`0x01`) is on. SpO2 never arrives as a live push; it arrives through history (§5), same as skin temp. Changing the sensor mode is an explicit device-setting mutation and is never silently bundled into connect/history setup. The Devices-screen confirmation is the only production entry point for `2f 03 22 04 01` (enable automatic), followed by a status re-read. |
 | `0x05` | Bundling | - |
 | `0x06` | Encrypted API | (Oura's encrypted channel - NOOP does NOT use) |
 | `0x07` | Tap-to-tag | - |
@@ -407,7 +472,7 @@ bits 14–15 : qual_b
 | Capability | Gen 3 (Horizon) | Gen 4 | Gen 5 |
 |---|---|---|---|
 | Service/char `…0001/2/3` | yes | yes | yes [open_oura-r5] |
-| Extra chars `…0004/5/6` | no | no | **yes** (roles unconfirmed) [open_oura-r5] |
+| Extra chars `…0004/5/6` | no | **yes** (hardware-verified 2026-07-12; roles unconfirmed) | **yes** (roles unconfirmed) [open_oura-r5] |
 | MTU | 203 [open_oura-r3] | 247 [open_ring] | 247 [open_oura-r5] |
 | Framing (TLV §2) | same | same (verified vs ~953k records) [open_ring] | same [open_oura-r5] |
 | Auth handshake (§3) | same | same | same; control cmds need per-conn auth, fw/serial read unauth [open_oura-r5] |
@@ -416,13 +481,13 @@ bits 14–15 : qual_b
 | Live-HR feature `0x02` (§5.6) | **verified** [relue] | expected same | expected same |
 | Feature-mode (`>Gen2`) | yes | yes | yes [open_oura-feat] |
 | Firmware string fields | API/FW/BL/BT/MAC | same | same/extended [open_oura-r5] |
-| Test firmware in corpus | FW 3.4.3 | (Ring-4 verified corpus) | FW 2.1.3 [open_oura-feat] |
+| Test firmware in corpus | FW 3.4.3 | FW 2.12.3 / hardware `ORE_06` (NOOP Android hardware, 2026-07-12) | FW 2.1.3 [open_oura-feat] |
 
 ### 7.3 NOOP decoder build guidance
-1. **Single TLV parser** (§2.3) for all generations - the framing is generation-invariant. Branch only on: MTU clamp (203 vs 247) and Gen-5 extra-char presence (ignore in v1).
-2. **Generation detection:** read product info (`0x18 03 18 00 10`) → hardware id (e.g. `BLB_03`), and firmware (`0x08`). Map to Gen 3/4/5 to set MTU and pick verified-vs-unverified layout confidence.
-3. **Trust tiers in the decoder:** Tier A (verified, ship now) = TLV framing, auth, GetEvents cursor, live-HR `0x02`, `0x60`/`0x80` IBI, `0x46`/`0x69`/`0x75` temp, `0x6F`/`0x7B` SpO2, `0x42` time-sync, `0x0D` battery, `0x45`/`0x53` state, `0x6B` motion. Tier B (UNVERIFIED, fixture-gate before use) = `0x49/0x4B/0x4C/0x4F/0x57/0x58` sleep summaries, `0x50/0x51/0x52` activity-MET, `0x7E/0x7F` steps, `0x70` smoothed SpO2, the protobuf `0x55/0x59` interpretation (do **not** ship).
-4. **HRV/sleep:** consume the ring's `0x5D` (HRV) and `0x4E/0x5A` (2-bit phase codes) tags AND independently reconstruct from raw IBI/PPG for NOOP's own scoring. Never read Oura feature `0x06` (encrypted API).
+1. **Single TLV parser** (§2.3) for all generations - the framing is generation-invariant. Branch only on: MTU clamp (203 vs 247) and Gen-4/5 extra-char presence (discover but ignore in v1).
+2. **Generation detection:** read product info (`0x18 03 18 00 10`) → hardware id (`ORE_06` on the tested Ring 4), and firmware (`0x08`). Map to Gen 3/4/5 to set MTU and pick verified-vs-unverified layout confidence.
+3. **Trust tiers in the decoder:** Tier A (verified, ship now) = TLV framing, auth, GetEvents cursor, live-HR `0x02`, `0x60`/`0x80` IBI, `0x46`/`0x69`/`0x75` temp, Ring 4 `0x6F` percentage SpO2 plus raw `0x77` DC, `0x6A` raw sleep-period measurements, `0x76` bedtime bounds, `0x42` time-sync, `0x0D` battery, `0x45`/`0x53` state, `0x6B` motion. Tier B (UNVERIFIED, fixture-gate before use) = sleep summaries/stage cadence, `0x50/0x51/0x52` activity-MET, `0x7E/0x7F` steps, legacy `0x70`/`0x7B` on Ring 4, the protobuf `0x55/0x59` interpretation (do **not** ship).
+4. **HRV/sleep:** consume `0x5D` HRV, preserve `0x6A` without naming its states, and use `0x76` for stage-less sleep bounds. `0x4E` phase bits remain experimental until a real Ring 4 fixture proves cadence/direction; `0x5A` is not a canonical pinned Ring 4 tag. Never read Oura feature `0x06` (encrypted API).
 
 ---
 

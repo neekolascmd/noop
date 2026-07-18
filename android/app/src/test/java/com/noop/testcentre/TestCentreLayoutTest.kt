@@ -29,6 +29,26 @@ class TestCentreLayoutTest {
     }
 
     @Test
+    fun supportedDomainFilter_keepsRegistryOrder() {
+        val rows = TestCentreLayout.visibleModes(
+            is5MG = false,
+            supportedDomains = setOf(TestDomain.SLEEP, TestDomain.WORKOUTS, TestDomain.BATTERY, TestDomain.HRV),
+        )
+        assertEquals(
+            listOf(TestDomain.SLEEP, TestDomain.WORKOUTS, TestDomain.BATTERY, TestDomain.HRV),
+            rows.map { it.domain },
+        )
+    }
+
+    @Test
+    fun supportedDomainFilter_canReturnNoDeviceModes() {
+        assertEquals(
+            emptyList<TestMode>(),
+            TestCentreLayout.visibleModes(is5MG = false, supportedDomains = emptySet()),
+        )
+    }
+
+    @Test
     fun requires5MG_hiddenForNon5MG() {
         val sleep = TestModeRegistry.mode(TestDomain.SLEEP)!!
         val gated = sleep.copy(domain = TestDomain.SOURCES, requires5MG = true)

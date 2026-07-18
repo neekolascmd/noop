@@ -461,6 +461,10 @@ final class IntelligenceEngine: ObservableObject {
                 let grav = (try? await store.gravitySamples(deviceId: owner, from: from, to: to, limit: 200_000)) ?? []
                 let steps = (try? await store.stepSamples(deviceId: owner, from: from, to: to, limit: 200_000)) ?? []
                 let skin = (try? await store.skinTempSamples(deviceId: owner, from: from, to: to, limit: 200_000)) ?? []
+                let spo2 = (try? await store.spo2Samples(deviceId: owner, from: from, to: to, limit: 200_000)) ?? []
+                let knownSleepWindows = ((try? await store.sleepSessions(deviceId: owner + "-noop",
+                                                                         from: from, to: to, limit: 100)) ?? [])
+                    .map { (start: $0.effectiveStartTs, end: $0.endTs) }
                 // #938: the strap family that WROTE this owner's skin-temp rows, so analyzeDay converts the raw
                 // register on the right scale (5/MG banks centidegrees, a WHOOP 4.0 v24 banks a raw ADC). The
                 // registry knows each device's model; unknown/non-WHOOP owners fall back to `.whoop5` (the prior
@@ -554,6 +558,8 @@ final class IntelligenceEngine: ObservableObject {
                 let res = AnalyticsEngine.analyzeDay(day: day, hr: hr, rr: rr, resp: resp, gravity: grav,
                                                      steps: steps, dayHr: dayHr, daySteps: daySteps,
                                                      dayGravity: dayGrav,
+                                                     spo2: spo2,
+                                                     knownSleepWindows: knownSleepWindows,
                                                      skinTemp: skin,
                                                      skinTempFamily: skinFamily,   // #938
                                                      profile: up, baselines: baselines1, maxHROverride: maxHR,

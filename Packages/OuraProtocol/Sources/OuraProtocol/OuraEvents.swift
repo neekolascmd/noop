@@ -1,5 +1,36 @@
 import Foundation
 
+/// The four non-sensitive version triplets returned by GetFirmwareVersion (`0x09`). The trailing
+/// six bytes in that response are the ring's Bluetooth address and are deliberately not represented
+/// here, so diagnostics cannot accidentally persist a device identifier.
+public struct OuraFirmwareIdentity: Equatable, Sendable {
+    public struct Version: Equatable, Sendable, CustomStringConvertible {
+        public let major: UInt8
+        public let minor: UInt8
+        public let patch: UInt8
+
+        public init(major: UInt8, minor: UInt8, patch: UInt8) {
+            self.major = major
+            self.minor = minor
+            self.patch = patch
+        }
+
+        public var description: String { "\(major).\(minor).\(patch)" }
+    }
+
+    public let api: Version
+    public let firmware: Version
+    public let bootloader: Version
+    public let bluetooth: Version
+
+    public init(api: Version, firmware: Version, bootloader: Version, bluetooth: Version) {
+        self.api = api
+        self.firmware = firmware
+        self.bootloader = bootloader
+        self.bluetooth = bluetooth
+    }
+}
+
 // OuraEvents: the decoded value structs the driver emits (OURA_PROTOCOL.md s6). Each carries the
 // record's ringTimestamp (the ring-clock value; the app anchors it to UTC via the 0x42 time-sync /
 // 0x85 RTC events) plus the decoded signal. Pure value types, no CoreBluetooth.
@@ -43,13 +74,20 @@ public struct OuraHRV: Equatable, Sendable, Codable {
     }
 }
 
-/// One decoded SpO2 sample. `value` is the raw SpO2 reading; `unit` documents its scale.
+/// One decoded SpO2 sample. `value` is the decoded reading; `unit` documents its scale.
+/// `sampleOffsetSeconds` places samples within a multi-value 0x6F record relative to the record's
+/// (newest-sample) timestamp, preventing the datastore's `(deviceId, ts)` key from collapsing them.
 public struct OuraSpO2: Equatable, Sendable, Codable {
     public let ringTimestamp: UInt32
     public let value: Int
     public let unit: String
-    public init(ringTimestamp: UInt32, value: Int, unit: String = "raw") {
-        self.ringTimestamp = ringTimestamp; self.value = value; self.unit = unit
+    public let sampleOffsetSeconds: Int
+    public init(ringTimestamp: UInt32, value: Int, unit: String = "raw",
+                sampleOffsetSeconds: Int = 0) {
+        self.ringTimestamp = ringTimestamp
+        self.value = value
+        self.unit = unit
+        self.sampleOffsetSeconds = sampleOffsetSeconds
     }
 }
 
@@ -73,6 +111,16 @@ public struct OuraBattery: Equatable, Sendable, Codable {
     }
 }
 
+/// Read-only `0x21` feature-status reply. Feature 0x04 is automatic SpO2; mode 1 means automatic.
+public struct OuraFeatureStatus: Equatable, Sendable, Codable {
+    public let feature: UInt8
+    public let mode: UInt8
+    public let status: UInt8
+    public let state: UInt8
+    public let subscription: UInt8
+    public var isSpO2Automatic: Bool? { feature == 0x04 ? mode == 0x01 : nil }
+}
+
 /// Sleep phase code (OURA_PROTOCOL.md s6.12): 2-bit codes 0=awake, 1=light, 2=deep, 3=REM.
 public enum OuraSleepStage: Int, Sendable, Equatable, Codable {
     case awake = 0
@@ -88,6 +136,39 @@ public struct OuraSleepPhase: Equatable, Sendable, Codable {
     public let stage: OuraSleepStage
     public init(ringTimestamp: UInt32, index: Int, stage: OuraSleepStage) {
         self.ringTimestamp = ringTimestamp; self.index = index; self.stage = stage
+    }
+}
+
+/// One verified `0x6A` sleep-period record. These are open on-device measurements, not Oura's
+/// encrypted sleep/readiness score. See OURA_PROTOCOL.md s6.12.
+public struct OuraSleepPeriod: Equatable, Sendable, Codable {
+    public let ringTimestamp: UInt32
+    public let averageHeartRate: Double
+    public let respirationRate: Double
+    public let motionCount: Int
+    public let sleepState: Int
+
+    public init(ringTimestamp: UInt32, averageHeartRate: Double, respirationRate: Double,
+                motionCount: Int, sleepState: Int) {
+        self.ringTimestamp = ringTimestamp
+        self.averageHeartRate = averageHeartRate
+        self.respirationRate = respirationRate
+        self.motionCount = motionCount
+        self.sleepState = sleepState
+    }
+}
+
+/// Verified Ring 4 `0x76` bedtime boundary record. Both bounds are ring-clock values and must be
+/// resolved through the active UTC anchor before persistence.
+public struct OuraBedtimePeriod: Equatable, Sendable, Codable {
+    public let ringTimestamp: UInt32
+    public let startRingTimestamp: UInt32
+    public let endRingTimestamp: UInt32
+
+    public init(ringTimestamp: UInt32, startRingTimestamp: UInt32, endRingTimestamp: UInt32) {
+        self.ringTimestamp = ringTimestamp
+        self.startRingTimestamp = startRingTimestamp
+        self.endRingTimestamp = endRingTimestamp
     }
 }
 
@@ -119,13 +200,40 @@ public struct OuraState: Equatable, Sendable, Codable {
     }
 }
 
-/// A UTC anchor / time-sync event (OURA_PROTOCOL.md s6.11): epoch ms + timezone offset seconds.
+/// A UTC anchor / time-sync event (OURA_PROTOCOL.md s6.11). `epochMs` retains its original API name,
+/// but the decoded wire value is unix seconds on the verified generations. Ring 4 also carries the
+/// ring-clock scale selected by its token (normally 100 ms/tick; token 0xFD means 1 ms/tick).
 public struct OuraTimeSync: Equatable, Sendable, Codable {
     public let ringTimestamp: UInt32
     public let epochMs: Int64
     public let tzOffsetSeconds: Int
-    public init(ringTimestamp: UInt32, epochMs: Int64, tzOffsetSeconds: Int) {
-        self.ringTimestamp = ringTimestamp; self.epochMs = epochMs; self.tzOffsetSeconds = tzOffsetSeconds
+    public let factorMsPerTick: Int
+    /// Ring 4 request/indication correlation token. nil on legacy layouts that do not expose it.
+    public let token: UInt8?
+    public init(ringTimestamp: UInt32, epochMs: Int64, tzOffsetSeconds: Int,
+                factorMsPerTick: Int = 100, token: UInt8? = nil) {
+        self.ringTimestamp = ringTimestamp
+        self.epochMs = epochMs
+        self.tzOffsetSeconds = tzOffsetSeconds
+        self.factorMsPerTick = factorMsPerTick
+        self.token = token
+    }
+}
+
+/// A validated ring-clock -> UTC mapping that may be persisted alongside the history cursor. The
+/// official Ring 4 client retains this pair across app restarts and invalidates it only when a ring-start
+/// record proves the clock regressed. Keeping the factor explicit preserves the token-selected 1 ms/tick
+/// burst clock without guessing it on reconnect.
+public struct OuraTimeAnchor: Equatable, Sendable, Codable {
+    public let ringTimestamp: UInt32
+    public let utcMilliseconds: Int64
+    public let factorMillisecondsPerTick: Int64
+
+    public init(ringTimestamp: UInt32, utcMilliseconds: Int64,
+                factorMillisecondsPerTick: Int64) {
+        self.ringTimestamp = ringTimestamp
+        self.utcMilliseconds = utcMilliseconds
+        self.factorMillisecondsPerTick = factorMillisecondsPerTick
     }
 }
 
@@ -183,6 +291,8 @@ public enum OuraEvent: Equatable, Sendable {
     case temp(OuraTemp)
     case battery(OuraBattery)
     case sleepPhase(OuraSleepPhase)
+    case sleepPeriod(OuraSleepPeriod)
+    case bedtimePeriod(OuraBedtimePeriod)
     case motion(OuraMotion)
     case state(OuraState)
     case timeSync(OuraTimeSync)

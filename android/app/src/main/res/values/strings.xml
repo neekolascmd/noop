@@ -37,7 +37,7 @@
     <string name="nav_notifications">Notifications</string>
     <string name="nav_support">Support</string>
     <string name="nav_settings">Settings</string>
-    <string name="nav_test_centre">Test Centre</string>
+    <string name="nav_test_centre">Diagnostics &amp; Support</string>
     <string name="nav_more">More</string>
 
     <!-- More-page section headers (DISPLAY only; the stored expand/collapse key stays the English

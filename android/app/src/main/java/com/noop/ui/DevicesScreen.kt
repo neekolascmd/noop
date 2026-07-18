@@ -95,6 +95,7 @@ fun DevicesScreen(
 ) {
     val scope = rememberCoroutineScope()
     val live by viewModel.live.collectAsStateWithLifecycle()
+    val ouraSpO2AutomaticEnabled by viewModel.ouraSpO2AutomaticEnabled.collectAsStateWithLifecycle()
 
     // Liquid sky backdrop gate — the SAME "Day-cycle background" preference the liquid Today honours (#698,
     // default ON). Off falls back to the flat dark canvas, so the setting governs every liquid screen alike.
@@ -114,6 +115,7 @@ fun DevicesScreen(
     var renameTarget by remember { mutableStateOf<PairedDeviceRow?>(null) }
     var removeTarget by remember { mutableStateOf<PairedDeviceRow?>(null) }
     var deleteDataTarget by remember { mutableStateOf<PairedDeviceRow?>(null) }
+    var confirmSpO2Enable by remember { mutableStateOf(false) }
     // After removing the ACTIVE device with other devices still paired, prompt to pick a new active one.
     var pickNewActive by remember { mutableStateOf(false) }
 
@@ -164,6 +166,13 @@ fun DevicesScreen(
                 onRename = { renameTarget = device },
                 onRemove = { removeTarget = device },
             )
+            if (device.sourceKind == SourceKind.oura.name && device.status == DeviceStatus.active.name) {
+                OuraSpO2Setting(
+                    connected = live.connected,
+                    enabled = ouraSpO2AutomaticEnabled,
+                    onEnable = { confirmSpO2Enable = true },
+                )
+            }
         }
 
         // Prominent "+ Add a device" button.
@@ -197,6 +206,29 @@ fun DevicesScreen(
             // The Oura gate's file-import links close the wizard and route to Data Sources, so the
             // non-destructive lane is always one tap away (it is never the only door).
             onUseFileImport = { showAddWizard = false; reload(); onUseFileImport() },
+        )
+    }
+
+    if (confirmSpO2Enable) {
+        AlertDialog(
+            onDismissRequest = { confirmSpO2Enable = false },
+            title = { Text("Enable automatic blood oxygen measurements?") },
+            text = {
+                Text(
+                    "This changes the ring's measurement setting and may use more battery. It does not " +
+                        "reset the ring or erase data. NOOP will read only the percentage records the ring " +
+                        "stores overnight.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.enableOuraAutomaticSpO2()
+                    confirmSpO2Enable = false
+                }) { Text("Enable") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmSpO2Enable = false }) { Text("Cancel") }
+            },
         )
     }
 
@@ -277,6 +309,42 @@ fun DevicesScreen(
             },
             onLeaveNone = { pickNewActive = false },
         )
+    }
+}
+
+/** Explicit opt-in surface: status reads are automatic; the setting write requires the dialog above. */
+@Composable
+private fun OuraSpO2Setting(
+    connected: Boolean,
+    enabled: Boolean?,
+    onEnable: () -> Unit,
+) {
+    NoopCard(padding = 14.dp) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Icon(Icons.Default.FavoriteBorder, contentDescription = null, tint = Palette.textSecondary)
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Automatic blood oxygen", style = NoopType.subhead, color = Palette.textPrimary)
+                Text(
+                    when (enabled) {
+                        true -> "The ring can bank overnight SpO₂ percentage records."
+                        false -> "Off on this ring. Enable it before the next overnight test."
+                        null -> if (connected) "Reading the ring's current setting."
+                            else "Connect the ring to read this setting."
+                    },
+                    style = NoopType.footnote,
+                    color = Palette.textTertiary,
+                )
+            }
+            when {
+                enabled == true -> StatePill("On", tone = StrandTone.Positive)
+                connected && enabled == false -> TextButton(onClick = onEnable) { Text("Enable") }
+                else -> StatePill(if (connected) "Checking…" else "Connect ring", tone = StrandTone.Neutral)
+            }
+        }
     }
 }
 
@@ -797,7 +865,7 @@ private fun deviceProfile(device: PairedDeviceRow): DeviceCapabilityProfile {
     // EXPERIMENTAL locally-adopted Oura ring (gen 3/4/5). The gen is carried on `model` ("Oura Ring
     // 3/4/5") and recovered with OuraRingGen.from(model). NOOP reads the ring's OWN raw signals + open
     // HRV/sleep-phase tags and computes its own Charge/Effort/Rest; it NEVER reads Oura's encrypted
-    // Readiness/Sleep scores, and claims NO absolute SpO₂ %. Estimates carry "*"; a signal it can't read
+    // Readiness/Sleep scores. Percentage SpO₂ is accepted only from qualified records. Estimates carry
     // stays "-". Per-gen copy + the canonical Beta caveat (spec
     // docs/superpowers/specs/2026-06-29-oura-onboarding-ux.md s3/s4). Mirrors the macOS Oura branch.
     if (device.sourceKind == SourceKind.oura.name) {
@@ -805,9 +873,9 @@ private fun deviceProfile(device: PairedDeviceRow): DeviceCapabilityProfile {
         // gen3/4 are verified-shape; gen5 ("newer") carries the least-proven caveat.
         val newer = gen == com.noop.oura.OuraRingGen.GEN5
         val captures = if (newer)
-            "Heart rate* · HRV* · Sleep* · Resting HR* · Skin temp* · Battery*"
+            "Heart rate* · HRV* · Sleep* · Resting HR* · Skin temp* · SpO₂* · Battery*"
         else
-            "Heart rate · HRV* · Sleep · Resting HR · Skin temp* · Battery"
+            "Heart rate · HRV* · Sleep window · Resting HR · Skin temp* · SpO₂* · Battery"
         val powers = if (newer)
             "Powers Effort now; Charge and Rest once enough nights and decode are confirmed"
         else
@@ -816,9 +884,9 @@ private fun deviceProfile(device: PairedDeviceRow): DeviceCapabilityProfile {
             displayModel = "${gen.displayName} (Beta)",
             captures = captures,
             powers = powers,
-            footnote = "Beta. * is an on-device estimate. Skin temp is a trend versus your own baseline, " +
-                "and HRV needs you to be still. No Oura Readiness or SpO₂ " +
-                "percentage comes off the ring (import an Oura file for those).",
+            footnote = "Beta. * is an on-device estimate or needs overnight qualification. SpO₂ appears " +
+                "only when automatic measurement is enabled and the ring reports percentage records. " +
+                "NOOP never reads Oura Readiness or Sleep scores.",
         )
     }
     // Generic heart-rate strap: live HR + R-R only; drives the live console + Effort, nothing nightly.

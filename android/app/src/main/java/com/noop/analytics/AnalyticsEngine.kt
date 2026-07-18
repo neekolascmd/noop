@@ -5,6 +5,7 @@ import com.noop.data.EventRow
 import com.noop.data.GravitySample
 import com.noop.data.HrSample
 import com.noop.data.SkinTempSample
+import com.noop.data.Spo2Sample
 import com.noop.data.RespSample
 import com.noop.data.RrInterval
 import com.noop.data.StepSample
@@ -159,6 +160,8 @@ object AnalyticsEngine {
         dayHr: List<HrSample>? = null,
         daySteps: List<StepSample>? = null,
         dayGravity: List<GravitySample>? = null,
+        spo2: List<Spo2Sample> = emptyList(),
+        knownSleepWindows: List<Pair<Long, Long>> = emptyList(),
         // Wear-gated nightly skin-temp mean is harvested here (baseline-independent); IntelligenceEngine
         // seeds a personal baseline from these means across nights and re-derives skinTempDevC in pass 2
         // (same two-pass shape as avgHrv→recovery). (PR #85)
@@ -465,6 +468,18 @@ object AnalyticsEngine {
             )
         }
 
+        val oxygenWindows = if (matched.isEmpty()) {
+            knownSleepWindows
+        } else {
+            matched.map { it.start to it.end }
+        }
+        val oxygen = spo2.mapNotNull { sample ->
+            if (sample.unit != "tenths_percent" || sample.ir != 0 || sample.red !in 700..1000) null
+            else if (oxygenWindows.none { sample.ts >= it.first && sample.ts <= it.second }) null
+            else sample.red / 10.0
+        }
+        val spo2Pct = oxygen.takeIf { it.isNotEmpty() }?.average()
+
         // ── Assemble DailyMetric ──────────────────────────────────────────────
         // deviceId is stamped by the caller (IntelligenceEngine persists under
         // "<deviceId>-noop"); use the imported source id as a placeholder here so
@@ -483,7 +498,7 @@ object AnalyticsEngine {
             recovery = recovery,
             strain = strain,
             exerciseCount = workouts.size,
-            spo2Pct = null,
+            spo2Pct = spo2Pct,
             skinTempDevC = skinTempDevC,
             respRateBpm = respRateDaily,
             steps = stepsTotal,

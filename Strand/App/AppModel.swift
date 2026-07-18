@@ -65,6 +65,32 @@ final class AppModel: ObservableObject {
     /// `@Published` so the Devices screen re-renders the moment the registry is wired in (it observes
     /// `model.deviceRegistry`); nested `registry.$devices` changes are observed by the screen directly.
     @Published private(set) var deviceRegistry: DeviceRegistry?
+
+    /// Registry-backed presentation for shared chrome. This prevents an active Oura ring, Apple Watch,
+    /// FTMS machine, or generic HR device from inheriting WHOOP/strap wording.
+    var activePairedDevice: PairedDevice? {
+        guard let registry = deviceRegistry else { return nil }
+        return registry.devices.first(where: { $0.id == registry.activeDeviceId })
+    }
+    var activeDeviceDisplayName: String { activePairedDevice?.displayName ?? String(localized: "WHOOP") }
+    var activeDeviceIsWhoop: Bool {
+        guard let device = activePairedDevice else { return true }
+        return device.id == "my-whoop" || device.brand.caseInsensitiveCompare("WHOOP") == .orderedSame
+    }
+    var activeDeviceNoun: String {
+        guard let device = activePairedDevice else { return String(localized: "band") }
+        switch device.sourceKind {
+        case .oura:           return String(localized: "ring")
+        case .liveAppleWatch: return String(localized: "watch")
+        case .ftms:           return String(localized: "machine")
+        case .huami:          return String(localized: "band")
+        default:              return activeDeviceIsWhoop ? String(localized: "band") : String(localized: "device")
+        }
+    }
+    /// Apple Watch does not publish a battery through HealthKit. All direct BLE sources may expose one;
+    /// the UI still waits for a real reading instead of inventing a value when the service is absent.
+    var activeDeviceSupportsLiveBattery: Bool { activePairedDevice?.sourceKind != .liveAppleWatch }
+    var activeDeviceSupportsHRV: Bool { activePairedDevice?.capabilities.contains(.hrv) ?? true }
     /// Runs exactly one device's live BLE at a time. DORMANT whenever WHOOP is active (the default and
     /// every no-strap case): it only acts when a non-WHOOP generic strap becomes the active device,
     /// pausing WHOOP and running the isolated `StandardHRSource`. nil until wired (post store-open).
@@ -429,6 +455,13 @@ final class AppModel: ObservableObject {
         coordinator.start()
         self.deviceRegistry = registry
         self.sourceCoordinator = coordinator
+        bindOuraAdoptMirror()
+        // Shared chrome observes AppModel, not DeviceRegistry directly. Forward registry mutations so an
+        // active-device switch or rename updates every device-aware label immediately rather than waiting
+        // for an unrelated heart-rate/battery publication to trigger a redraw.
+        registry.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &hrCancellables)
         // #814 READ SPINE (HIGH-1): drive the read side off the registry's `activeDeviceId` for the WHOLE
         // session, exactly as SourceCoordinator drives the WRITE side off the SAME publisher. A Devices-
         // screen switch/remove/re-add calls `registry.setActive` DIRECTLY (NOT through `registerDevice`), so
@@ -858,6 +891,9 @@ final class AppModel: ObservableObject {
     /// The active Oura ring's honest needs-pairing message (mirrored off the live source), surfaced verbatim
     /// on the wizard's Failed step. nil when the ring is fine or no Oura source is live.
     @Published private(set) var ouraNeedsPairing: String?
+    /// Read-only feature-0x04 state for the active ring. nil until the ring replies or when no Oura
+    /// source is connected; false is surfaced so the user can explicitly opt in from Devices.
+    @Published private(set) var ouraSpO2AutomaticEnabled: Bool?
     /// Combine subscriptions mirroring the live Oura source's `adoptPhase` / `needsPairing` into the two
     /// published properties above. Re-bound whenever the active Oura source changes.
     private var ouraAdoptCancellables = Set<AnyCancellable>()
@@ -874,6 +910,11 @@ final class AppModel: ObservableObject {
         ouraNeedsPairing = nil
         registerDevice(device, makeActive: true)
         bindOuraAdoptMirror()
+    }
+
+    /// Called only after the Devices-screen confirmation explains the ring-setting change.
+    func enableOuraAutomaticSpO2() {
+        sourceCoordinator?.requestOuraAutomaticSpO2Enable()
     }
 
     /// (Re)bind the adopt-outcome mirror to whichever `OuraLiveSource` the coordinator has live now and on
@@ -897,6 +938,14 @@ final class AppModel: ObservableObject {
             }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] in self?.ouraNeedsPairing = $0 }
+            .store(in: &ouraAdoptCancellables)
+        coordinator.$ouraSource
+            .flatMap { source -> AnyPublisher<Bool?, Never> in
+                source?.$spo2AutomaticEnabled.eraseToAnyPublisher()
+                    ?? Just(nil).eraseToAnyPublisher()
+            }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in self?.ouraSpO2AutomaticEnabled = $0 }
             .store(in: &ouraAdoptCancellables)
     }
 

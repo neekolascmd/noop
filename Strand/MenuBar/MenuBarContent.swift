@@ -63,7 +63,7 @@ public struct MenuBarLabel: View {
                 .font(StrandFont.rounded(12, weight: .semibold))
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(displayHR.map { "Heart rate \($0) beats per minute" } ?? "Strap not connected")
+        .accessibilityLabel(displayHR.map { "Heart rate \($0) beats per minute" } ?? "\(model.activeDeviceDisplayName) not connected")
     }
 }
 
@@ -94,7 +94,14 @@ public struct MenuBarContent: View {
     /// True when the pill should read the green "STREAMING" state. A live Oura ring has no WHOOP-style
     /// encrypted bond, so it signals via `streamingLiveHR`; the WHOOP path still keys off `bonded` (its
     /// encrypted-bond + buzz semantics). Either one being true means HR is actively streaming.
-    private var isStreaming: Bool { live.streamingLiveHR || live.bonded }
+    private var isStreaming: Bool {
+        model.activeDeviceIsWhoop ? live.bonded : (live.streamingLiveHR || live.connected)
+    }
+
+    private var currentBattery: Double? {
+        guard live.connected, model.activeDeviceSupportsLiveBattery else { return nil }
+        return live.batteryPct
+    }
 
     private var connectionTone: StrandTone {
         isStreaming ? .positive : live.connected ? .accent : .critical
@@ -106,7 +113,7 @@ public struct MenuBarContent: View {
     }
 
     private var batteryTone: StrandTone {
-        guard let pct = live.batteryPct else { return .neutral }
+        guard let pct = currentBattery else { return .neutral }
         switch pct {
         case ..<15: return .critical
         case ..<35: return .warning
@@ -155,7 +162,7 @@ public struct MenuBarContent: View {
                     .foregroundStyle(StrandPalette.textTertiary)
             }
             Spacer(minLength: 8)
-            StatePill("\(connectionTitle)", tone: connectionTone, pulsing: live.bonded)
+            StatePill("\(connectionTitle)", tone: connectionTone, pulsing: isStreaming)
         }
     }
 
@@ -212,8 +219,8 @@ public struct MenuBarContent: View {
         HStack(spacing: 0) {
             statCell(
                 "BATTERY",
-                live.batteryPct.map { "\(Int($0.rounded()))%" } ?? "—",
-                tint: live.batteryPct == nil ? StrandPalette.textPrimary : toneColor(batteryTone)
+                currentBattery.map { "\(Int($0.rounded()))%" } ?? "—",
+                tint: currentBattery == nil ? StrandPalette.textPrimary : toneColor(batteryTone)
             )
             cellDivider
             statCell(
@@ -266,14 +273,14 @@ public struct MenuBarContent: View {
     /// 24pt height stops the panel resizing under those swaps. A rare multi-line error may still grow it.
     private var syncLine: some View {
         ZStack(alignment: .leading) {
-            if live.backfilling {
-                StatePill("Syncing strap history…", tone: .accent, pulsing: true)
-            } else if let error = live.lastSyncError {
+            if model.activeDeviceIsWhoop && live.backfilling {
+                StatePill("Syncing WHOOP history…", tone: .accent, pulsing: true)
+            } else if model.activeDeviceIsWhoop, let error = live.lastSyncError {
                 Text(error)
                     .font(StrandFont.footnote)
                     .foregroundStyle(StrandPalette.statusWarning)
                     .fixedSize(horizontal: false, vertical: true)
-            } else if let at = live.lastSyncedAt {
+            } else if model.activeDeviceIsWhoop, let at = live.lastSyncedAt {
                 Text("History synced \(relativeAgo(at))")
                     .font(StrandFont.footnote)
                     .foregroundStyle(StrandPalette.textTertiary)
@@ -286,7 +293,15 @@ public struct MenuBarContent: View {
 
     private var actions: some View {
         VStack(spacing: 8) {
-            if live.bonded {
+            if !model.activeDeviceIsWhoop {
+                Text(live.connected
+                     ? "\(model.activeDeviceDisplayName) streams automatically."
+                     : "Manage \(model.activeDeviceDisplayName) from Devices in the main window.")
+                    .font(StrandFont.footnote)
+                    .foregroundStyle(StrandPalette.textSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if live.bonded {
                 menuButton(
                     live.liveFeedActive ? "Stop live feed" : "Start live feed",
                     systemImage: live.liveFeedActive ? "pause.fill" : "play.fill",
@@ -296,7 +311,7 @@ public struct MenuBarContent: View {
                 }
             } else {
                 menuButton(
-                    live.connected ? "Re-scan strap" : "Scan & connect",
+                    live.connected ? "Re-scan WHOOP" : "Scan & connect",
                     systemImage: "antenna.radiowaves.left.and.right",
                     tone: .accent
                 ) {
@@ -304,13 +319,15 @@ public struct MenuBarContent: View {
                 }
             }
 
-            HStack(spacing: 8) {
-                menuButton("Refresh battery", systemImage: "battery.100", tone: .neutral, compact: true) {
-                    model.getBattery()
-                }
-                if live.connected {
-                    menuButton("Disconnect", systemImage: "xmark.circle", tone: .critical, compact: true) {
-                        model.disconnect()
+            if model.activeDeviceIsWhoop {
+                HStack(spacing: 8) {
+                    menuButton("Refresh battery", systemImage: "battery.100", tone: .neutral, compact: true) {
+                        model.getBattery()
+                    }
+                    if live.connected {
+                        menuButton("Disconnect", systemImage: "xmark.circle", tone: .critical, compact: true) {
+                            model.disconnect()
+                        }
                     }
                 }
             }

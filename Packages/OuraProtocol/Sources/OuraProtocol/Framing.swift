@@ -37,10 +37,21 @@ public enum OuraFraming {
     /// The secure-session / extended opcode. Per OURA_PROTOCOL.md s2.2 / s4.1.
     public static let secureSessionOp: UInt8 = 0x2F
 
+    /// Safe, pre-auth GetFirmwareVersion response (`0x09`, OURA_PROTOCOL.md s4.3).
+    public static let firmwareResponseOp: UInt8 = 0x09
+
+    /// ProductInfo response (`0x19`). NOOP requests only the hardware page, never the serial page.
+    public static let productInfoResponseOp: UInt8 = 0x19
+
     /// The GetEvents response / summary outer opcode (OURA_PROTOCOL.md s5.2). Below the event-tag range
     /// (tags are >= 0x41), so a caller that fails to special-case it and lets it fall through to the TLV
     /// decoder gets a safe no-op ("unknown tag") with correct byte accounting, never a misdecode.
     public static let getEventsResponseOp: UInt8 = 0x11
+
+    /// Ring 4 SyncTime response (`0x13`). This is only an acknowledgement plus the echoed 24-bit
+    /// counter from the `0x12` request; it is not a UTC anchor because it contains no record timestamp.
+    /// The subsequent inner `0x42` event supplies the actual ring-time/UTC pair (OURA_PROTOCOL.md s5.4).
+    public static let syncTimeResponseOp: UInt8 = 0x13
 
     /// The GetBattery response outer opcode (OURA_PROTOCOL.md s4.1/s6.10). Below the event-tag range
     /// (tags are >= 0x41), so it round-trips safely through the TLV decoder as an "unknown tag" no-op if a
@@ -49,13 +60,21 @@ public enum OuraFraming {
 
     /// Parse a 0x11 GetEvents response body: `status:1 sub_status:1 last_ring_timestamp:4LE pad:2`
     /// (OURA_PROTOCOL.md s5.2). `status` 0x00 = empty/no more; any other value = data follows. The
-    /// `last_ring_timestamp` is the new cursor to resume the fetch from. Returns nil on a short body
-    /// (never guesses a cursor).
+    /// `last_ring_timestamp` is batch metadata, not the durable ACK cursor. The caller must derive that
+    /// from the maximum ringTimestamp across actual inner records. Returns nil on a short body.
     public static func parseGetEventsResponse(_ body: [UInt8]) -> (cursor: UInt32, moreData: Bool)? {
         guard body.count >= 6 else { return nil }
         let status = body[0]
         let cursor = UInt32(body[2]) | (UInt32(body[3]) << 8) | (UInt32(body[4]) << 16) | (UInt32(body[5]) << 24)
         return (cursor, status != 0x00)
+    }
+
+    /// Parse a Ring 4 SyncTime response body: `ack_code:u8 counter_echo:u24LE reserved:u8`.
+    /// Returns nil on a short body. No field in this response is a ring timestamp.
+    public static func parseSyncTimeResponse(_ body: [UInt8]) -> (ackCode: UInt8, counterEcho: UInt32)? {
+        guard body.count >= 5 else { return nil }
+        let counterEcho = UInt32(body[1]) | (UInt32(body[2]) << 8) | (UInt32(body[3]) << 16)
+        return (body[0], counterEcho)
     }
 
     /// Parse one outer frame from the front of `bytes`. Returns nil on a short buffer (header or body
@@ -128,6 +147,9 @@ public extension OuraFraming {
     static func parseRecord(_ bytes: [UInt8]) -> OuraRecord? {
         guard bytes.count >= 2 else { return nil }
         let type = bytes[0]
+        // Command/response opcodes occupy the range below 0x41. They must never be interpreted as
+        // inner records or allowed to mutate the driver's last-ring-time state.
+        guard type >= 0x41 else { return nil }
         let len = Int(bytes[1])
         guard len >= minRecordLen else { return nil }
         let total = 2 + len
@@ -168,6 +190,12 @@ public final class OuraReassembler {
         buf.append(contentsOf: fragment)
         var out: [OuraRecord] = []
         while buf.count >= 2 {
+            // Outer command/response bytes are not TLVs. Drop one byte and resynchronise instead of
+            // wedging behind a plausible length or emitting a fake event record.
+            if buf[0] < 0x41 {
+                buf.removeFirst(1)
+                continue
+            }
             let len = Int(buf[1])
             // A record must cover its 4 timestamp bytes. A len < 4 here is a misaligned byte: drop one
             // and resync rather than emit garbage (honest-data invariant).

@@ -213,7 +213,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             ringGen = com.noop.oura.OuraRingGen.GEN3,
             liveSink = { _, _ -> },
             authKey = { null },
-            persist = { _, _ -> },
+            persist = { _, _ -> true },
             // Route the scanner's diagnostics into the SAME exported strap log the active path uses
             // (issue #421 parity), so a tester's Oura wizard scan is captured. The source self-prefixes
             // "Oura: "; [externalLog] redacts addresses. Statuses / service UUIDs / counts only, never a
@@ -237,6 +237,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      *  [com.noop.ble.SourceCoordinator]. The wizard treats a non-null value during Adopting as an honest
      *  failure too. Mirrors Swift `AppModel.ouraNeedsPairing`. */
     val ouraNeedsPairing: StateFlow<String?> = noopApp.sourceCoordinator.ouraNeedsPairing
+
+    /** Read-only automatic-SpO2 state for the active ring. */
+    val ouraSpO2AutomaticEnabled: StateFlow<Boolean?> =
+        noopApp.sourceCoordinator.ouraSpO2AutomaticEnabled
+
+    /** Called only after the Devices-screen confirmation. */
+    fun enableOuraAutomaticSpO2() = noopApp.sourceCoordinator.requestOuraAutomaticSpO2Enable()
 
     /**
      * Point the WHOOP scan at a specific family, then present nearby straps WITHOUT auto-connecting (the

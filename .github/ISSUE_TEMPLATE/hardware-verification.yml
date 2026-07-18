@@ -101,12 +101,30 @@ body:
         - Pairing:
         - Live HR:
         - Live R-R intervals:
+        - Out-of-range reconnect:
+        - App relaunch reconnect:
         - History sync:
+        - Overnight / 24-hour history continuity:
+        - Historical timestamp plausibility:
         - Sleep duration and stages:
         - Workout detection/import:
         - Haptics:
         - Scheduled alarm set/read/fire/cancel:
         - Firmware-sensitive or unexpected behavior:
+    validations:
+      required: true
+
+  - type: textarea
+    id: device_identity
+    attributes:
+      label: Device identity diagnostics
+      description: >-
+        For Oura, paste the redacted "Oura: identity" lines from the strap log. They contain firmware
+        and hardware family but omit the ProductInfo serial and Bluetooth address. For another lane,
+        include the equivalent firmware/model diagnostic or write "not exposed".
+      placeholder: |
+        Oura: identity selected=Oura Ring 3 firmware=3.4.3 api=... bootloader=... bluetooth=...
+        Oura: identity hardware=BLB_03
     validations:
       required: true
 

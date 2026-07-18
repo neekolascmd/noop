@@ -40,6 +40,16 @@ public enum OuraCommands {
         OuraCommand(label: "get_hardware", bytes: [0x18, 0x03, 0x18, 0x00, 0x10])
     }
 
+    /// Two read-only Ring 4 session probes sent by the official app immediately before requesting the
+    /// authentication nonce. Their response semantics are still unknown, so keep them isolated and
+    /// never reuse these builders as parameter writes.
+    public static func ring4PreAuthSessionReads() -> [OuraCommand] {
+        [
+            OuraCommand(label: "ring4_pre_auth_session_00", bytes: [0x2F, 0x02, 0x01, 0x00]),
+            OuraCommand(label: "ring4_pre_auth_session_01", bytes: [0x2F, 0x02, 0x01, 0x01]),
+        ]
+    }
+
     // MARK: - Notifications / state
 
     /// SetNotification (enable all): `1c 01 3f`. `00`=none, `3f`/`bf`=all. Per OURA_PROTOCOL.md s4.1.
@@ -52,11 +62,64 @@ public enum OuraCommands {
         OuraCommand(label: "notify_none", bytes: [0x1C, 0x01, 0x00])
     }
 
+    /// Enable the Ring 4 event stream before a time-sync/history pass: `16 01 02`.
+    /// The ring acknowledges with `17 01 02`. This is separate from the secure DHR subscription below.
+    /// Per open_ring's executable setup sequence and OURA_PROTOCOL.md s4.1/s5.4.
+    public static func enableEventStream() -> OuraCommand {
+        OuraCommand(label: "event_stream_enable", bytes: [0x16, 0x01, 0x02])
+    }
+
+    /// Ring 4's official post-SyncTime state pulse: `1c 01 bf`. This is sent once per BLE session,
+    /// after authentication and SyncTime but before the category masks. It is deliberately distinct
+    /// from the older generic `notify_all` helper (`1c 01 3f`): current Ring 4 captures use `0xbf` at
+    /// this exact point in the setup state machine.
+    public static func ring4PostSyncStatePulse() -> OuraCommand {
+        OuraCommand(label: "ring4_post_sync_state", bytes: [0x1C, 0x01, 0xBF])
+    }
+
+    /// Ring 4's official post-auth category masks. `0x16` enables the record stream globally; these
+    /// `0x18` writes select the event families delivered by the following history fetch. The separate,
+    /// byte-exact `ring4PostSyncStatePulse()` precedes them once per BLE session.
+    public static func ring4EventCategorySubscriptions() -> [OuraCommand] {
+        [
+            OuraCommand(label: "event_category_14", bytes: [0x18, 0x03, 0x14, 0x00, 0x10]),
+            OuraCommand(label: "event_category_18", bytes: [0x18, 0x03, 0x18, 0x00, 0x10]),
+            OuraCommand(label: "event_category_28", bytes: [0x18, 0x03, 0x28, 0x00, 0x09]),
+            OuraCommand(label: "event_category_34", bytes: [0x18, 0x03, 0x34, 0x00, 0x04]),
+            OuraCommand(label: "event_category_04", bytes: [0x18, 0x03, 0x04, 0x00, 0x10]),
+            OuraCommand(label: "event_category_08", bytes: [0x18, 0x03, 0x08, 0x00, 0x10]),
+        ]
+    }
+
+    /// Read-only Ring 4 parameter sweep used by the official history setup after category selection.
+    /// These reads register interest in the current configuration without changing any sensor setting.
+    /// The duplicate 0x0b read is intentional and preserves the observed order.
+    public static func ring4HistoryParameterReads() -> [OuraCommand] {
+        [
+            OuraCommand(label: "ring4_param_read_02", bytes: [0x2F, 0x02, 0x20, 0x02]),
+            OuraCommand(label: "ring4_param_read_04", bytes: [0x2F, 0x02, 0x20, 0x04]),
+            OuraCommand(label: "ring4_param_read_0b", bytes: [0x2F, 0x02, 0x20, 0x0B]),
+            OuraCommand(label: "ring4_param_read_0d", bytes: [0x2F, 0x02, 0x20, 0x0D]),
+            OuraCommand(label: "ring4_param_read_03", bytes: [0x2F, 0x02, 0x20, 0x03]),
+            OuraCommand(label: "ring4_param_read_0b_again", bytes: [0x2F, 0x02, 0x20, 0x0B]),
+            OuraCommand(label: "ring4_param_read_10", bytes: [0x2F, 0x02, 0x20, 0x10]),
+        ]
+    }
+
+    /// Ring 4 session-state selector observed between the 0x04 and 0x0b reads in the official
+    /// application's history setup: `2f 02 03 01`. Its payload is byte-exact but its semantic name is
+    /// still provisional, so keep it isolated from the documented parameter-write helpers. It is sent
+    /// once per BLE connection and never used for pairing, reset, or biometric-data mutation.
+    public static func ring4HistorySessionMode() -> OuraCommand {
+        OuraCommand(label: "ring4_history_session_mode", bytes: [0x2F, 0x02, 0x03, 0x01])
+    }
+
     // MARK: - Time sync
 
     /// SyncTime: `12 09 <token:1> <counter:3 LE> 00 00 00 00 f6` where counter = floor(unix_s / 256)
-    /// and the trailer 0xf6 is fixed. Per OURA_PROTOCOL.md s5.4. `token` defaults to 0.
-    public static func syncTime(unixSeconds: Int, token: UInt8 = 0x00) -> OuraCommand {
+    /// and the trailer 0xf6 is fixed. The official Ring 4 client uses a fresh random token for every
+    /// request; callers may pass one explicitly for deterministic replay/tests. Per OURA_PROTOCOL.md s5.4.
+    public static func syncTime(unixSeconds: Int, token: UInt8 = .random(in: .min ... .max)) -> OuraCommand {
         let counter = unixSeconds / 256
         let c0 = UInt8(counter & 0xFF)
         let c1 = UInt8((counter >> 8) & 0xFF)
@@ -118,6 +181,19 @@ public enum OuraCommands {
     /// Per OURA_PROTOCOL.md s5.6.
     public static func liveHREnableSequence() -> [OuraCommand] {
         [liveHRReadStatus(), liveHREnable(), liveHRSubscribe()]
+    }
+
+    // MARK: - Automatic overnight SpO2 (explicit user opt-in only)
+
+    /// Read automatic-SpO2 status without changing it: `2f 02 20 04`.
+    public static func spO2ReadStatus() -> OuraCommand {
+        OuraCommand(label: "spo2_read", bytes: [0x2F, 0x02, 0x20, featureSpO2])
+    }
+
+    /// Enable automatic overnight SpO2 measurement: `2f 03 22 04 01`.
+    /// This changes a ring sensor setting and must only follow an explicit user action.
+    public static func spO2EnableAutomatic() -> OuraCommand {
+        OuraCommand(label: "spo2_enable_automatic", bytes: [0x2F, 0x03, 0x22, featureSpO2, 0x01])
     }
 }
 

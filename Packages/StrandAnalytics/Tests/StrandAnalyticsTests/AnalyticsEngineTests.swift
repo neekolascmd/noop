@@ -540,4 +540,18 @@ final class AnalyticsEngineTests: XCTestCase {
             day: day, hr: n.hr, rr: n.rr, gravity: n.gravity, profile: UserProfile(age: 30))
         XCTAssertNotNil(result.daily.totalSleepMin)
     }
+
+    func testQualifiedOuraSpO2UsesKnownBedtimeWindowAndRejectsRawRows() {
+        let start = 1_623_700_000
+        let result = AnalyticsEngine.analyzeDay(
+            day: "2021-06-15",
+            spo2: [
+                SpO2Sample(ts: start + 60, red: 970, ir: 0, unit: "tenths_percent"),
+                SpO2Sample(ts: start + 120, red: 950, ir: 0, unit: "tenths_percent"),
+                SpO2Sample(ts: start + 180, red: 12_000, ir: 8_000, unit: "raw_adc"),
+            ],
+            knownSleepWindows: [(start: start, end: start + 3600)],
+            profile: UserProfile(age: 30))
+        XCTAssertEqual(result.daily.spo2Pct, 96.0)
+    }
 }

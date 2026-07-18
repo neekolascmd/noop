@@ -15,11 +15,10 @@ final class HugeImportFirstPaintStressTests: XCTestCase {
     /// Seed ~3000 days of daily rows + ~1700 workouts spread across them, plus a dense HR day for "today".
     /// Returns the store. Kept lean (no raw streams except the one visible day) so the seed itself is fast.
     @MainActor
-    private func seedHugeHistory() async throws -> WhoopStore {
+    private func seedHugeHistory(now: Int) async throws -> WhoopStore {
         let store = try await WhoopStore.inMemory()
         try await store.upsertDevice(id: dev, mac: nil, name: "WHOOP")
 
-        let now = Int(Date().timeIntervalSince1970)
         let cal = Calendar.current
 
         // ~3000 daily rows, one per day going back ~8 years.
@@ -59,7 +58,7 @@ final class HugeImportFirstPaintStressTests: XCTestCase {
     /// workouts, a small fraction of the 1700 total, so first paint never sorts the whole history.
     @MainActor
     func testFirstPaintWorkoutWindowIsBounded() async throws {
-        let store = try await seedHugeHistory()
+        let store = try await seedHugeHistory(now: Int(Date().timeIntervalSince1970))
         let repo = Repository(deviceId: dev)
         repo.setStoreForTesting(store)
 
@@ -81,11 +80,11 @@ final class HugeImportFirstPaintStressTests: XCTestCase {
     /// window, not the import depth.
     @MainActor
     func testTodayHrFirstPaintReadIsBoundedByWindow() async throws {
-        let store = try await seedHugeHistory()
+        let now = Int(Date().timeIntervalSince1970)
+        let store = try await seedHugeHistory(now: now)
         let repo = Repository(deviceId: dev)
         repo.setStoreForTesting(store)
 
-        let now = Int(Date().timeIntervalSince1970)
         let dayStart = Int(Calendar.current.startOfDay(for: Repository.logicalDay(Date())).timeIntervalSince1970)
         // The Today HR trend reads 5-minute buckets over the logical day → at most ~288 bucket points,
         // never the thousands of raw rows and never anything that scales with the 3000-day history.
@@ -98,13 +97,15 @@ final class HugeImportFirstPaintStressTests: XCTestCase {
     /// the history. With 3000 days seeded it still resolves the most-recent HR day cheaply.
     @MainActor
     func testLatestDataLookupResolvesWithoutLoadingHistory() async throws {
-        let store = try await seedHugeHistory()
+        let now = Int(Date().timeIntervalSince1970)
+        let store = try await seedHugeHistory(now: now)
         let repo = Repository(deviceId: dev)
         repo.setStoreForTesting(store)
         let latest = await repo.latestDataDayStart()
         XCTAssertNotNil(latest, "the latest-data lookup must resolve over a deep history")
-        // It points at today's dense HR day (the only raw stream), not an arbitrary old daily row.
-        let expected = Repository.logicalDayStart(Date(timeIntervalSince1970: TimeInterval(Int(Date().timeIntervalSince1970) - 3_600)))
+        // The dense stream ends one second before it is seeded. Use that newest sample rather than the
+        // first sample: the hour-long window can straddle NOOP's 04:00 logical-day rollover.
+        let expected = Repository.logicalDayStart(Date(timeIntervalSince1970: TimeInterval(now - 1)))
         XCTAssertEqual(latest, expected)
     }
 }

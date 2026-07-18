@@ -1,5 +1,7 @@
 package com.noop.oura
 
+import java.security.SecureRandom
+
 // Commands: byte-exact opcode builders (OURA_PROTOCOL.md s4 / s5). Kotlin twin of Commands.swift.
 // Pure functions returning the wire bytes to write to ...0002. The live-HR enable path (s5.6) is the
 // feature-0x02 (0x2F) path, NOT the 0x06 path. Dangerous opcodes (reboot, factory reset, key install,
@@ -22,6 +24,7 @@ data class OuraCommand(val label: String, val bytes: IntArray) {
 }
 
 object OuraCommands {
+    private val protocolRandom = SecureRandom()
     // The live daytime-HR feature id. Per OURA_PROTOCOL.md s5.6 / s7.1.
     const val featureDaytimeHR = 0x02
 
@@ -48,6 +51,12 @@ object OuraCommands {
     fun getProductHardware(): OuraCommand =
         OuraCommand("get_hardware", intArrayOf(0x18, 0x03, 0x18, 0x00, 0x10))
 
+    /** Read-only official Ring 4 session probes sent immediately before the auth nonce request. */
+    fun ring4PreAuthSessionReads(): List<OuraCommand> = listOf(
+        OuraCommand("ring4_pre_auth_session_00", intArrayOf(0x2F, 0x02, 0x01, 0x00)),
+        OuraCommand("ring4_pre_auth_session_01", intArrayOf(0x2F, 0x02, 0x01, 0x01)),
+    )
+
     // MARK: - Notifications / state
 
     /** SetNotification (enable all): `1c 01 3f`. `00`=none, `3f`/`bf`=all. Per OURA_PROTOCOL.md s4.1. */
@@ -58,13 +67,50 @@ object OuraCommands {
     fun disableNotifications(): OuraCommand =
         OuraCommand("notify_none", intArrayOf(0x1C, 0x01, 0x00))
 
+    /** Enable the Ring 4 event stream before SyncTime/history. Twin of Swift's enableEventStream. */
+    fun enableEventStream(): OuraCommand =
+        OuraCommand("event_stream_enable", intArrayOf(0x16, 0x01, 0x02))
+
+    /** Byte-exact Ring 4 post-SyncTime state pulse, sent once per BLE session before category masks. */
+    fun ring4PostSyncStatePulse(): OuraCommand =
+        OuraCommand("ring4_post_sync_state", intArrayOf(0x1C, 0x01, 0xBF))
+
+    /** Ring 4's six official post-auth event-category masks. */
+    fun ring4EventCategorySubscriptions(): List<OuraCommand> = listOf(
+        OuraCommand("event_category_14", intArrayOf(0x18, 0x03, 0x14, 0x00, 0x10)),
+        OuraCommand("event_category_18", intArrayOf(0x18, 0x03, 0x18, 0x00, 0x10)),
+        OuraCommand("event_category_28", intArrayOf(0x18, 0x03, 0x28, 0x00, 0x09)),
+        OuraCommand("event_category_34", intArrayOf(0x18, 0x03, 0x34, 0x00, 0x04)),
+        OuraCommand("event_category_04", intArrayOf(0x18, 0x03, 0x04, 0x00, 0x10)),
+        OuraCommand("event_category_08", intArrayOf(0x18, 0x03, 0x08, 0x00, 0x10)),
+    )
+
+    /** Read-only official-history parameter sweep; the duplicate 0x0b read is intentional. */
+    fun ring4HistoryParameterReads(): List<OuraCommand> = listOf(
+        OuraCommand("ring4_param_read_02", intArrayOf(0x2F, 0x02, 0x20, 0x02)),
+        OuraCommand("ring4_param_read_04", intArrayOf(0x2F, 0x02, 0x20, 0x04)),
+        OuraCommand("ring4_param_read_0b", intArrayOf(0x2F, 0x02, 0x20, 0x0B)),
+        OuraCommand("ring4_param_read_0d", intArrayOf(0x2F, 0x02, 0x20, 0x0D)),
+        OuraCommand("ring4_param_read_03", intArrayOf(0x2F, 0x02, 0x20, 0x03)),
+        OuraCommand("ring4_param_read_0b_again", intArrayOf(0x2F, 0x02, 0x20, 0x0B)),
+        OuraCommand("ring4_param_read_10", intArrayOf(0x2F, 0x02, 0x20, 0x10)),
+    )
+
+    /**
+     * Byte-exact Ring 4 session-state selector from the official history setup. Its semantics remain
+     * provisional, so it stays separate from parameter-write helpers and runs once per BLE connection.
+     */
+    fun ring4HistorySessionMode(): OuraCommand =
+        OuraCommand("ring4_history_session_mode", intArrayOf(0x2F, 0x02, 0x03, 0x01))
+
     // MARK: - Time sync
 
     /**
      * SyncTime: `12 09 <token:1> <counter:3 LE> 00 00 00 00 f6` where counter = floor(unix_s / 256)
-     * and the trailer 0xf6 is fixed. Per OURA_PROTOCOL.md s5.4. `token` defaults to 0.
+     * and the trailer 0xf6 is fixed. The official Ring 4 client uses a fresh random token for each
+     * request; callers may supply one explicitly for deterministic replay/tests.
      */
-    fun syncTime(unixSeconds: Long, token: Int = 0x00): OuraCommand {
+    fun syncTime(unixSeconds: Long, token: Int = protocolRandom.nextInt(256)): OuraCommand {
         val counter = unixSeconds / 256
         val c0 = (counter and 0xFFL).toInt()
         val c1 = ((counter shr 8) and 0xFFL).toInt()
@@ -137,6 +183,16 @@ object OuraCommands {
      */
     fun liveHREnableSequence(): List<OuraCommand> =
         listOf(liveHRReadStatus(), liveHREnable(), liveHRSubscribe())
+
+    // MARK: - Automatic overnight SpO2 (explicit user opt-in only)
+
+    /** Read automatic-SpO2 status without changing it: `2f 02 20 04`. */
+    fun spO2ReadStatus(): OuraCommand =
+        OuraCommand("spo2_read", intArrayOf(0x2F, 0x02, 0x20, featureSpO2))
+
+    /** Enable automatic overnight SpO2. Must only follow an explicit user action. */
+    fun spO2EnableAutomatic(): OuraCommand =
+        OuraCommand("spo2_enable_automatic", intArrayOf(0x2F, 0x03, 0x22, featureSpO2, 0x01))
 }
 
 // MARK: - Dangerous commands (quarantined)
