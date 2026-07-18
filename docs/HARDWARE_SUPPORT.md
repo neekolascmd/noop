@@ -69,12 +69,14 @@ software behavior; they are not physical-device verification.
 | Xiaomi Smart Band live BLE | Encrypted protobuf-v2 BLE sync | **Planned** — protocol researched, decoder not built | Requires a physical band, GATT dump, firmware, and iterative foreground sync testing |
 | Oura | Local BLE | **Partial / experimental** — Ring 4 on Android has a recorded factory-reset adoption, stored-key authentication, 30-minute live HR/R-R run, app-process relaunch, battery, and history/skin-temperature fetch. The same ring now also has a recorded macOS adoption/relaunch/live run and overnight passes. A retained-history pass qualified the ring's roughly 52-hour-old RTC beacon under a bounded 72-hour fallback, persisted a roughly 74,000-event page in idempotent chunks, and durably advanced the cursor while withholding an implausibly timed sample. Automatic SpO2 was on, but the banks contained no qualified percentage record, so the missing value stayed honest. The production path accepts only qualified percentage SpO2 records and keeps cursor/UTC-anchor state coherent across reconnects. | Ring 4 remains available. Android and macOS still need a reference sensor, real out-of-range reconnect, and a full 24-hour run; the second available ring needs an independent tuple. No physical iPhone/iOS result is recorded, and sleep stages plus SpO2 percentage remain experimental. |
 | Oura / Fitbit / Garmin | Offline wellness-export import | **Implemented** with shared Swift/Kotlin golden fixtures; this verifies parsers, not current vendor hardware or export apps | Capture fresh, privacy-redacted exports and record vendor app/export versions |
-| Polar H10 / Verity Sense / OH1 deep streams | PMD ECG / PPG / ACC / PPI | **Planned** — protocol documented, production decoder not built; H10 issue `#421` remains hardware-gated | No maintainer device inventory recorded |
+| Polar H10 / Verity Sense / OH1 deep streams | PMD ECG / PPG / ACC / PPI | **Implemented / unverified** — strict Swift/Kotlin control and data decoders have fixture parity; Apple and Android have a default-off PPI + one-Hz ACC live lane. ECG/PPG decoding exists but continuous waveform retention is intentionally not enabled | No maintainer device inventory recorded. Qualify standard HR/battery plus opt-in PMD PPI/ACC on each model/firmware; issue `#421` remains hardware-gated |
 | Garmin and Amazfit / Zepp deep BLE | Vendor BLE history and sensors | **Planned** | Needs owned hardware and clean-room captures; no current device inventory recorded |
 | Fitbit / Google | Google Health import | **Planned** | Needs a registered API path and real-account verification; no hardware claim |
 
 See [Device support roadmap](DEVICE_SUPPORT_ROADMAP.md) for protocol research and future lanes. See
 [Analytics golden fixtures](ANALYTICS_FIXTURES.md) for cross-platform software parity.
+The Polar-specific test procedure and honest remaining gaps are in
+[Polar PMD implementation and qualification](POLAR_PMD.md).
 
 ## Oura graduation gate
 

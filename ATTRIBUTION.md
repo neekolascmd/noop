@@ -27,6 +27,15 @@ NOOP builds on prior community reverse-engineering and interoperability work:
   about the live Mi-protobuf BLE stack in the roadmap's research notes. GPLv3; NOOP copies
   **none** of its code and has not built the live lane.
 
+## Polar Measurement Data protocol
+NOOP's Polar PMD implementation is original, dependency-free work informed by the public wire
+behavior and tests in Polar Electro Oy's official
+[`polarofficial/polar-ble-sdk`](https://github.com/polarofficial/polar-ble-sdk), reviewed at commit
+`ccff6812c40fff1753c72385387d1877ca9b27b4`. The official repository is distributed under
+`Polar_SDK_License.txt` and carries Polar Electro Oy copyright notices. NOOP does not bundle,
+link, or copy that SDK; it independently implements the observed GATT UUIDs, control messages,
+settings, frames, timestamps, and delta encoding for interoperability with a user's own device.
+
 ## Oura ring (gen 3/4/5) protocol
 NOOP's Oura code is **original clean-room** work. The local BLE source
 (`Strand/BLE/OuraLiveSource.swift` + `android/.../ble/OuraLiveSource.kt`) and the JVM/Swift-pure
