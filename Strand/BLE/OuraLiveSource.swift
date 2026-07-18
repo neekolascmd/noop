@@ -7,6 +7,43 @@ import WhoopProtocol
 import WhoopStore
 import OuraProtocol
 
+/// Pure response gate for the serial-free identity reads issued when no install key is available.
+/// Keeping this separate from CoreBluetooth makes the no-key disconnect ordering deterministic and
+/// unit-testable: both requested replies complete the gate, while unrelated/duplicate opcodes do not.
+struct OuraNoKeyIdentityGate {
+    enum Progress: Equatable {
+        case ignored
+        case waiting
+        case complete
+    }
+
+    private(set) var pendingResponseOps: Set<UInt8> = []
+
+    var isWaiting: Bool { !pendingResponseOps.isEmpty }
+
+    @discardableResult
+    mutating func begin(commands: [OuraCommand]) -> Bool {
+        var expected: Set<UInt8> = []
+        if commands.contains(where: { $0.label == "get_firmware" }) {
+            expected.insert(OuraFraming.firmwareResponseOp)
+        }
+        if commands.contains(where: { $0.label == "get_hardware" }) {
+            expected.insert(OuraFraming.productInfoResponseOp)
+        }
+        pendingResponseOps = expected
+        return isWaiting
+    }
+
+    mutating func receive(op: UInt8) -> Progress {
+        guard pendingResponseOps.remove(op) != nil else { return .ignored }
+        return pendingResponseOps.isEmpty ? .complete : .waiting
+    }
+
+    mutating func reset() {
+        pendingResponseOps.removeAll()
+    }
+}
+
 /// EXPERIMENTAL, ISOLATED live-BLE source for the Oura ring (gen 3/4/5), driven by the clean-room
 /// `OuraProtocol.OuraDriver`.
 ///
@@ -227,6 +264,12 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     private var commandWorkItem: DispatchWorkItem?
     private var lastCommandWriteAt: TimeInterval = 0
     private static let minimumCommandSpacing: TimeInterval = 0.350
+    /// With no install key, `.ready` still returns the two privacy-safe identity reads. Keep the
+    /// connection alive until both replies arrive instead of cancelling it while those paced writes are
+    /// still queued. The timeout preserves the honest bounded no-key teardown if firmware does not reply.
+    private var noKeyIdentityGate = OuraNoKeyIdentityGate()
+    private var noKeyIdentityTimeoutWorkItem: DispatchWorkItem?
+    private static let noKeyIdentityResponseTimeout: TimeInterval = 2.0
     /// A peripheral asked to connect before `centralManagerDidUpdateState` reported `.poweredOn`.
     private var pendingConnectID: UUID?
     /// Peripherals retained by identifier so a chosen one survives until connection (exact
@@ -750,6 +793,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         stopHistoryFetchTimer()
         cancelTimeSyncReleaseFallback()
         cancelHistorySummarySettle()
+        cancelNoKeyIdentityQualification()
         if let p = peripheral { central.cancelPeripheralConnection(p) }
         peripheral = nil
         writeCharacteristic = nil
@@ -848,6 +892,9 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     private func advance(_ transition: OuraTransition) {
         guard let driver else { return }
         let commands = driver.nextStep(after: transition)
+        if driver.phase == .needsKeyInstall, !adoptIntent {
+            beginNoKeyIdentityQualification(commands: commands)
+        }
         write(commands)
         // Surface the driver's coarse phase honestly into the UI state.
         switch driver.phase {
@@ -856,8 +903,9 @@ public final class OuraLiveSource: NSObject, ObservableObject {
             // install is the ONLY thing that recovers it, and ONLY with explicit adopt consent: provision
             // when `adoptIntent`, otherwise stay honest (never loop the dangerous command).
             if adoptIntent {
+                cancelNoKeyIdentityQualification()
                 provisionKeyInstall()
-            } else {
+            } else if !noKeyIdentityGate.isWaiting {
                 announceNeedsPairing(reason: .factoryResetOrNoKey)
             }
         case .authFailed(let status):
@@ -887,6 +935,40 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         default:
             break
         }
+    }
+
+    /// Arm the no-key identity window before the commands are enqueued, so even a very fast response
+    /// cannot race the gate. A second call replaces the prior window; `.ready` is the only normal caller.
+    private func beginNoKeyIdentityQualification(commands: [OuraCommand]) {
+        guard noKeyIdentityGate.begin(commands: commands) else { return }
+        noKeyIdentityTimeoutWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, self.noKeyIdentityGate.isWaiting else { return }
+            self.log("Oura: identity qualification timed out - continuing with the pairing-required state")
+            self.cancelNoKeyIdentityQualification()
+            self.announceNeedsPairing(reason: .factoryResetOrNoKey)
+        }
+        noKeyIdentityTimeoutWorkItem = item
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.noKeyIdentityResponseTimeout,
+            execute: item
+        )
+    }
+
+    /// Consume only identity opcodes expected by the active no-key window. Opcode 0x19 is also used by
+    /// Ring 4 event-category acknowledgements, but those occur after authentication/history fetch and can
+    /// never overlap this pre-auth gate.
+    private func recordNoKeyIdentityResponse(op: UInt8) {
+        guard noKeyIdentityGate.receive(op: op) == .complete else { return }
+        log("Oura: serial-free identity qualification complete")
+        cancelNoKeyIdentityQualification()
+        announceNeedsPairing(reason: .factoryResetOrNoKey)
+    }
+
+    private func cancelNoKeyIdentityQualification() {
+        noKeyIdentityTimeoutWorkItem?.cancel()
+        noKeyIdentityTimeoutWorkItem = nil
+        noKeyIdentityGate.reset()
     }
 
     /// Queue the one sensor-setting write needed for overnight percentage records. The caller is the
@@ -1238,6 +1320,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     /// failed install must never leave a wrongly-trusted key). RECOVERY-HONEST: a factory-reset ring is NOT
     /// bricked; re-pairing it in the Oura app brings it back. We never claim a key was installed here.
     private func announceNeedsPairing(reason: NeedsPairingReason) {
+        cancelNoKeyIdentityQualification()
         // A failed install must drop its pending key whether or not this is the first announce.
         pendingInstallKey = nil
         adoptPhase = .failed
@@ -1352,6 +1435,7 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         failedReconnectAttempts = 0   // a real connection clears the reconnect backoff (#912)
         peripheral.delegate = self
         resetCommandQueue()
+        cancelNoKeyIdentityQualification()
         inboundNotifyUUIDs.removeAll()
         pendingNotifyUUIDs.removeAll()
         enabledNotifyCount = 0
@@ -1431,6 +1515,7 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         stopHistoryFetchTimer()
         cancelTimeSyncReleaseFallback()
         cancelHistorySummarySettle()
+        cancelNoKeyIdentityQualification()
         // The uncommitted page remains on-ring and will be refetched after reconnect.
         discardUnanchoredHistory()
         driver?.stop()
@@ -1592,6 +1677,7 @@ extension OuraLiveSource: @preconcurrency CBPeripheralDelegate {
             } else {
                 log("Oura: identity firmware response received but could not be decoded (\(frame.body.count)B)")
             }
+            recordNoKeyIdentityResponse(op: frame.op)
         }
         for frame in frames where frame.op == OuraFraming.productInfoResponseOp {
             if pendingEventCategoryResponses > 0, driver.phase == .fetchingHistory {
@@ -1605,6 +1691,7 @@ extension OuraLiveSource: @preconcurrency CBPeripheralDelegate {
             } else {
                 log("Oura: identity hardware response received but no privacy-safe family token was found (\(frame.body.count)B)")
             }
+            recordNoKeyIdentityResponse(op: frame.op)
         }
         // The `0x25` SetAuthKey-response is an OUTER frame (NOT a 0x2F secure sub-frame): `25 01 <status>`,
         // status `0x00` = OK (OURA_PROTOCOL.md s3.2). It only ever arrives during an adopt install we
