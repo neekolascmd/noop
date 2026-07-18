@@ -312,6 +312,11 @@ final class OuraDriverTests: XCTestCase {
         XCTAssertEqual(burst.unixSeconds(forRingTimestamp: 21_000), Int(epochSeconds) + 1)
     }
 
+    func testProductionTimeSyncTokenRangeExcludesReservedBurstToken() {
+        XCTAssertEqual(OuraDriver.normalTimeSyncTokenRange, UInt8.min ... 0xFC)
+        XCTAssertFalse(OuraDriver.normalTimeSyncTokenRange.contains(0xFD))
+    }
+
     func testRing4RejectsStaleAnchorAndRingStartRegressionClearsFreshAnchor() {
         let requested: Int64 = 1_700_000_000
         func payload(epochSeconds: Int64, token: UInt8) -> [UInt8] {

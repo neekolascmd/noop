@@ -13,6 +13,24 @@ import org.junit.Test
 
 class OuraHistoryDurableWriterTest {
     @Test
+    fun qualifiedLargeRing4PageFitsTheParkedBatchPolicy() {
+        assertTrue(OuraHistoryBatchPolicy.canPersist(eventCount = 74_000, overflowed = false))
+        assertTrue(
+            OuraHistoryBatchPolicy.canPersist(
+                eventCount = OuraHistoryBatchPolicy.MAX_PARKED_EVENTS,
+                overflowed = false,
+            ),
+        )
+        assertFalse(
+            OuraHistoryBatchPolicy.canPersist(
+                eventCount = OuraHistoryBatchPolicy.MAX_PARKED_EVENTS + 1,
+                overflowed = false,
+            ),
+        )
+        assertFalse(OuraHistoryBatchPolicy.canPersist(eventCount = 74_000, overflowed = true))
+    }
+
+    @Test
     fun writerAwaitsStreamsBeforeContinuingToSleepAndSuccess() = runTest {
         val releaseStreams = CompletableDeferred<Unit>()
         val calls = mutableListOf<String>()

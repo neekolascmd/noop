@@ -453,7 +453,7 @@ class OuraLiveSource(
     private var provisionalHistoryPageCount = 0
     private var provisionalHistoryOverflowed = false
     private val provisionalHistoryPageLimit = 32
-    private val provisionalHistoryEventLimit = 4_096
+    private val provisionalHistoryEventLimit = OuraHistoryBatchPolicy.MAX_PARKED_EVENTS
     private var anchorBootstrapSkippedHistory = false
     private var anchorBootstrapWindowCount = 0
     private val anchorBootstrapWindowLimit = 8
@@ -702,8 +702,10 @@ class OuraLiveSource(
             advance(OuraTransition.HistoryCursorAdvanced(cursor = 0L, moreData = false))
             return@guardedCallback
         }
-        val parkedBatchIsWithinLimit = !provisionalHistoryOverflowed &&
-            pendingAnchorEvents.size <= provisionalHistoryEventLimit
+        val parkedBatchIsWithinLimit = OuraHistoryBatchPolicy.canPersist(
+            eventCount = pendingAnchorEvents.size,
+            overflowed = provisionalHistoryOverflowed,
+        )
         if (d.hasFreshAnchorForActiveFetch && anchorBootstrapSkippedHistory) {
             pendingAnchorEvents.clear()
             anchorBootstrapSkippedHistory = false

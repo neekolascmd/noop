@@ -73,8 +73,12 @@ public final class OuraDriver {
     /// needsKeyInstall and writes nothing dangerous. Only an explicit opt-in adopt flow sets this true.
     /// Per OURA_PROTOCOL.md s3.2 (the 0x24 SetAuthKey is a DANGEROUS, one-time provisioning write).
     public let allowKeyInstall: Bool
-    /// Deterministic token injection for replay/tests; production leaves nil and uses a fresh random byte.
+    /// Deterministic token injection for replay/tests. Passing 0xFD explicitly selects the qualified
+    /// burst-clock fixture; production leaves this nil and must never choose that reserved token randomly.
     private let fixedTimeSyncToken: UInt8?
+    /// Ring 4 interprets 0xFD as a 1 ms/tick burst-clock marker rather than the normal 100 ms/tick scale.
+    /// Keep production history syncs in the normal range so a random token can never rescale a batch 100x.
+    static let normalTimeSyncTokenRange: ClosedRange<UInt8> = UInt8.min ... 0xFC
 
     public private(set) var phase: OuraDriverPhase = .idle
     /// Tracks how many of the live-HR enable triplet ACKs have been seen.
@@ -222,8 +226,8 @@ public final class OuraDriver {
             persistedAnchorNeedsContinuity = ringGen == .gen4 && primaryTimeAnchor != nil
             timeSyncReleaseIssued = false
             if ringGen == .gen4, unixSeconds >= 0 {
-                let sync = OuraCommands.syncTime(unixSeconds: unixSeconds,
-                                                 token: fixedTimeSyncToken ?? .random(in: .min ... .max))
+                let token = fixedTimeSyncToken ?? UInt8.random(in: Self.normalTimeSyncTokenRange)
+                let sync = OuraCommands.syncTime(unixSeconds: unixSeconds, token: token)
                 pendingSyncCounter = UInt32(unixSeconds / 256) & 0x00FF_FFFF
                 pendingSyncToken = sync.bytes[2]
                 // Ring 4's official sequence enables the event stream before SyncTime and gates the
