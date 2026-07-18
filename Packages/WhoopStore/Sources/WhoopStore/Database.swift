@@ -446,6 +446,15 @@ extension WhoopStore {
                 t.primaryKey(["deviceId", "startTs"])
             }
         }
+
+        // v23: preserve the scale of each SpO2 row. Existing WHOOP/raw rows remain `raw_adc`; Oura's
+        // qualified 0x6F percentages are stored as `tenths_percent`, allowing readers to distinguish a
+        // percentage from optical ADC values without guessing from magnitude or a missing IR channel.
+        migrator.registerMigration("v23-spo2-unit") { db in
+            try db.alter(table: "spo2Sample") { t in
+                t.add(column: "unit", .text).notNull().defaults(to: "raw_adc")
+            }
+        }
         return migrator
     }
 }

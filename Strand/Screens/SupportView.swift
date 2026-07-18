@@ -3,9 +3,11 @@ import StrandDesign
 
 /// Support, attribution, and contact.
 struct SupportView: View {
+    @State private var showDiagnostics = false
+
     var body: some View {
         ScreenScaffold(title: "Support",
-                       subtitle: "Project information, attribution, and contact details.") {
+                       subtitle: "Help, diagnostics, project information, and contact details.") {
             VStack(alignment: .leading, spacing: NoopMetrics.sectionSpacing) {
                 VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
                     SectionHeader("Help & Contact", overline: "Get in touch")
@@ -15,6 +17,16 @@ struct SupportView: View {
                 .staggeredAppear(index: 0)
                 disclaimerCard
                     .staggeredAppear(index: 1)
+            }
+        }
+        .sheet(isPresented: $showDiagnostics) {
+            NavigationStack {
+                TestCentreView()
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { showDiagnostics = false }
+                        }
+                    }
             }
         }
     }
@@ -48,18 +60,34 @@ struct SupportView: View {
 
     private var contactCard: some View {
         NoopCard {
-            Button {
-                if let url = URL(string: "mailto:\(ProjectInfo.contactEmail)") { PlatformOpen.url(url) }
-            } label: {
-                groupedRow(icon: "envelope.fill", tint: StrandPalette.accent,
-                           title: "Get in touch",
-                           detail: String(localized: "Questions, feedback, bugs: \(ProjectInfo.contactEmail)"),
-                           showsChevron: true)
-                    .contentShape(Rectangle())
+            VStack(spacing: 12) {
+                Button {
+                    showDiagnostics = true
+                } label: {
+                    groupedRow(icon: "stethoscope", tint: StrandPalette.accent,
+                               title: "Diagnostics & Support",
+                               detail: String(localized: "Create a redacted report and capture extra detail for the connected device."),
+                               showsChevron: true)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Open Diagnostics and Support")
+
+                Divider().overlay(StrandPalette.hairline)
+
+                Button {
+                    if let url = URL(string: "mailto:\(ProjectInfo.contactEmail)") { PlatformOpen.url(url) }
+                } label: {
+                    groupedRow(icon: "envelope.fill", tint: StrandPalette.accent,
+                               title: "Get in touch",
+                               detail: String(localized: "Questions, feedback, bugs: \(ProjectInfo.contactEmail)"),
+                               showsChevron: true)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Email \(ProjectInfo.contactEmail)")
+                .help("Email \(ProjectInfo.contactEmail)")
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Email \(ProjectInfo.contactEmail)")
-            .help("Email \(ProjectInfo.contactEmail)")
         }
     }
 

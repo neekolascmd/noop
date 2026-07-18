@@ -30,6 +30,8 @@ public enum OuraStreamMapping {
     public static let hrvEventKind = "OURA_HRV"
     /// WhoopEvent.kind for a decoded sleep-phase code (2-bit: awake/light/deep/rem).
     public static let sleepPhaseEventKind = "OURA_SLEEP_PHASE"
+    /// Verified 0x6A measurements, preserved without interpreting its unnamed 0/1/2 state as stages.
+    public static let sleepPeriodEventKind = "OURA_SLEEP_PERIOD"
 
     /// Build a `Streams` from a batch of decoded Oura events, all stamped at the arrival wall-clock `ts`
     /// (unix seconds). Pure → unit-testable. Section-4 table:
@@ -74,10 +76,17 @@ public enum OuraStreamMapping {
                 ]))
 
             case .spo2(let v):
-                // Oura reports a single SpO2 channel; `SpO2Sample` is the WHOOP-shaped two-channel raw row,
-                // so we record the decoded value on `red` and leave `ir` at 0 (no second channel). `unit`
-                // carries the decoder's own scale tag ("raw"/"dc_raw") so downstream never assumes a %.
-                out.spo2.append(SpO2Sample(ts: ts, red: v.value, ir: 0, unit: v.unit))
+                // Only percentage-qualified sources become a durable oxygen sample. Ring 4's 0x77 DC
+                // channel is a raw optical waveform, not a percentage, and must never feed daily SpO2.
+                let tenths: Int
+                switch v.unit {
+                case "percent": tenths = v.value * 10
+                case "tenths_percent": tenths = v.value
+                default: continue
+                }
+                guard (700...1000).contains(tenths) else { continue }
+                out.spo2.append(SpO2Sample(ts: ts + v.sampleOffsetSeconds,
+                                          red: tenths, ir: 0, unit: "tenths_percent"))
 
             case .temp(let v):
                 // The decoder yields degrees C. The durable `SkinTempSample.raw` is an integer in the
@@ -95,6 +104,14 @@ public enum OuraStreamMapping {
                     "index": .int(v.index),
                 ]))
 
+            case .sleepPeriod(let v):
+                out.events.append(WhoopEvent(ts: ts, kind: sleepPeriodEventKind, payload: [
+                    "average_hr_bpm": .double(v.averageHeartRate),
+                    "respiration_bpm": .double(v.respirationRate),
+                    "motion_count": .int(v.motionCount),
+                    "sleep_state": .int(v.sleepState),
+                ]))
+
             case .battery(let v):
                 out.battery.append(BatterySample(
                     ts: ts,
@@ -102,7 +119,7 @@ public enum OuraStreamMapping {
                     mv: v.voltageMv,
                     charging: v.charging))
 
-            case .motion, .state, .timeSync, .rtcBeacon, .debugText, .tierB, .activityInfo:
+            case .bedtimePeriod, .motion, .state, .timeSync, .rtcBeacon, .debugText, .tierB, .activityInfo:
                 // Not a durable per-device stream row (timeSync/rtcBeacon anchor the transport's clock;
                 // motion/state/debug are diagnostics; Tier-B / .activityInfo are UNVERIFIED and must
                 // never feed scoring or the steps stream).

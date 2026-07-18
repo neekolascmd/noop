@@ -24,6 +24,10 @@ object TestCentreLayout {
     /** The shipped registry projected for the current strap. Section 1 binds this. */
     fun visibleModes(is5MG: Boolean): List<TestMode> = order(TestModeRegistry.all, is5MG)
 
+    /** The shipped registry projected for a device's real diagnostic coverage. */
+    fun visibleModes(is5MG: Boolean, supportedDomains: Set<TestDomain>): List<TestMode> =
+        order(TestModeRegistry.all.filter { it.domain in supportedDomains }, is5MG)
+
     /**
      * The row status string, twin of Swift statusText. "Off" when inactive; "On" for an active toggle
      * mode; "Capturing K of N <unit>" for an active guided mode. No em-dash.

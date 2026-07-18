@@ -120,6 +120,10 @@ class SourceCoordinator(
     private val _ouraNeedsPairing = MutableStateFlow<String?>(null)
     val ouraNeedsPairing: StateFlow<String?> = _ouraNeedsPairing.asStateFlow()
 
+    /** Read-only feature-0x04 state for the active ring; null until a reply or without an Oura source. */
+    private val _ouraSpO2AutomaticEnabled = MutableStateFlow<Boolean?>(null)
+    val ouraSpO2AutomaticEnabled: StateFlow<Boolean?> = _ouraSpO2AutomaticEnabled.asStateFlow()
+
     /** Collects the active Oura source's adoptPhase / needsPairing into the mirrors above; cancelled and
      *  nulled on teardown so a forgotten ring never leaks a stale outcome. */
     private var ouraStateJob: kotlinx.coroutines.Job? = null
@@ -365,7 +369,21 @@ class SourceCoordinator(
                 // mid-session (the adopt install) is picked up on the post-install re-auth.
                 authKey = { OuraInstallKeyStore.load(ctx, id) },
                 persist = { batch: StreamBatch, deviceId: String ->
-                    scope.launch { runCatching { repo.insert(batch, deviceId) } }
+                    runCatching { repo.insert(batch, deviceId); true }.getOrDefault(false)
+                },
+                persistSleepSession = { start, end ->
+                    runCatching {
+                        repo.upsertSleepSessions(
+                            listOf(
+                                com.noop.data.SleepSession(
+                                    deviceId = "$id-noop",
+                                    startTs = start,
+                                    endTs = end,
+                                ),
+                            ),
+                        )
+                        true
+                    }.getOrDefault(false)
                 },
                 log = straplog,           // Oura connect/auth/stream lifecycle → the SAME exported strap log (#421)
                 onBattery = batterySink,  // ring battery → the same live state the WHOOP strap battery uses
@@ -386,6 +404,7 @@ class SourceCoordinator(
             ouraStateJob = scope.launch {
                 launch { source.adoptPhase.collect { _ouraAdoptPhase.value = it } }
                 launch { source.needsPairing.collect { _ouraNeedsPairing.value = it } }
+                launch { source.spo2AutomaticEnabled.collect { _ouraSpO2AutomaticEnabled.value = it } }
             }
             if (!address.isNullOrEmpty()) source.connect(address) else source.scan()
             ouraSource = source
@@ -418,6 +437,11 @@ class SourceCoordinator(
         onStrap = true
     }
 
+    /** Forward the Devices-screen's explicit opt-in to the currently active Oura source. */
+    fun requestOuraAutomaticSpO2Enable() {
+        ouraSource?.requestAutomaticSpO2Enable()
+    }
+
     /** Stop whichever non-WHOOP source (standard strap, FTMS machine, Huami device, or Oura ring) is live,
      *  and drop the reference. Idempotent. Exactly one is ever live, but we stop all defensively. */
     private fun tearDownNonWhoopSource() {
@@ -430,6 +454,7 @@ class SourceCoordinator(
         ouraStateJob?.cancel(); ouraStateJob = null
         _ouraAdoptPhase.value = OuraLiveSource.AdoptPhase.Idle
         _ouraNeedsPairing.value = null
+        _ouraSpO2AutomaticEnabled.value = null
         // A stale speed/cadence/power readout must not outlive the strap session (the source's own stop()
         // already pushes an empty SensorMetrics, but reset here too so leaving for WHOOP / FTMS / Huami —
         // none of which feed this flow — is clean and immediate).

@@ -18,6 +18,28 @@ approximate; current downloads are on the
 
 ---
 
+## 8.3.0: a stronger Oura Ring 4 path (all platforms)
+
+This release turns the earlier experimental Ring 4 lane into a much more complete local connection
+on Android and macOS, while keeping every remaining hardware gap visible.
+
+- **Oura Ring 4 can be adopted locally.** After a factory reset, NOOP installs its own acknowledged
+  application key, stores it encrypted on-device, and reconnects later without another reset.
+- **Live data and battery are device-aware.** Heart rate, R-R intervals, and battery stream directly
+  from the ring. Settings, Devices, Live, menus, and diagnostics no longer call every wearable a
+  WHOOP strap.
+- **Overnight history is durable.** UTC anchors and cursors are committed together, retained pages
+  can safely exceed 70,000 decoded events, and the ring is never acknowledged before database
+  persistence succeeds.
+- **Sleep and SpO2 stay honest.** Qualified bedtime windows become stage-less sleep sessions.
+  Blood-oxygen analytics accept only percentage records; NOOP does not invent sleep stages or derive
+  SpO2 from raw optical values.
+- **The remaining limits are explicit.** Ring 4 has substantial Android and macOS hardware evidence,
+  but reference-sensor, out-of-range, second-ring, full-day, and physical-iPhone testing remain
+  before a broader Supported claim.
+- **Project contact is current.** Support now points to `noopapp@tuta.io`, and retired Discord and
+  Reddit links have been removed.
+
 ## 8.2.1: the continuation release (all platforms)
 
 The first release from the community-maintained fork. The canonical project home and future

@@ -1363,9 +1363,10 @@ private fun OuraConfirmStep(
                 }
             }
             Text(
-                "Beta. * is an on-device estimate. Skin temp is a trend versus your own baseline, steps " +
-                    "are a raw motion count, and HRV needs you to be still. No Oura Readiness or SpO2 " +
-                    "percentage comes off the ring (import an Oura file for those).",
+                "Beta. * is an on-device estimate or needs overnight qualification. Skin temp is a " +
+                    "trend versus your own baseline, steps are a raw motion count, and HRV needs you to " +
+                    "be still. SpO2 requires automatic measurement on the ring. NOOP never reads Oura " +
+                    "Readiness or Sleep scores.",
                 style = NoopType.footnote,
                 color = Palette.textTertiary,
             )
@@ -1532,7 +1533,7 @@ private fun OuraBulletList(lines: List<String>) {
  * label) pair: a tick for decoded-and-used, * for a best-effort on-device estimate, and a dash for
  * not-available-off-the-ring. Gen3/Ring4 are the verified path; the newer (gen4-family / gen5) variant
  * carries the same set with the extra caveat that decoding is least proven. Mirrors the macOS capability
- * matrix; no Oura Readiness/Sleep score or absolute SpO2 % ever comes off the ring.
+ * matrix; Oura scores never come off the ring and SpO2 needs qualified percentage records.
  */
 private fun ouraCapabilityRows(gen: OuraRingGen): List<Pair<String, String>> {
     val live = if (gen == OuraRingGen.GEN5) "*" else "✓"   // newer rings: live HR is best-effort
@@ -1541,11 +1542,12 @@ private fun ouraCapabilityRows(gen: OuraRingGen): List<Pair<String, String>> {
         live to "Live heart rate",
         "*" to "HRV (rMSSD)",
         firm to "Resting heart rate",
-        firm to "Sleep staging",
+        firm to "Sleep window",
+        "*" to "Sleep stages",
         "*" to "Skin-temperature trend",
         "*" to "Steps / motion",
         firm to "Battery",
-        "-" to "Blood oxygen (SpO2 %)",
+        "*" to "Blood oxygen (SpO2 %)",
         "-" to "Oura Readiness / Sleep score",
     )
 }

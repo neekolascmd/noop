@@ -1,6 +1,7 @@
 import XCTest
 import Combine
 @testable import Strand
+import OuraProtocol
 import WhoopStore
 
 /// Pins the DETERMINISTIC pieces of the experimental clean-room BLE drivers: the Huami custom HR parse,
@@ -8,6 +9,35 @@ import WhoopStore
 /// hardware-verified here (CoreBluetooth needs a real radio + a real band), so these tests cover the pure
 /// logic the drivers stand on. Mirrors the StandardHeartRate / FTMSDecode test discipline.
 final class ExperimentalDriversTests: XCTestCase {
+
+    // MARK: - Oura no-key identity ordering
+
+    func testOuraNoKeyIdentityGateWaitsForBothRequestedReplies() {
+        var gate = OuraNoKeyIdentityGate()
+
+        XCTAssertTrue(gate.begin(commands: [
+            OuraCommands.getFirmwareVersion(),
+            OuraCommands.getProductHardware(),
+        ]))
+        XCTAssertEqual(gate.receive(op: 0xFF), .ignored)
+        XCTAssertEqual(gate.receive(op: OuraFraming.firmwareResponseOp), .waiting)
+        XCTAssertTrue(gate.isWaiting)
+        XCTAssertEqual(gate.receive(op: OuraFraming.productInfoResponseOp), .complete)
+        XCTAssertFalse(gate.isWaiting)
+    }
+
+    func testOuraNoKeyIdentityGateIgnoresDuplicateAndCanReset() {
+        var gate = OuraNoKeyIdentityGate()
+
+        XCTAssertTrue(gate.begin(commands: [OuraCommands.getFirmwareVersion()]))
+        XCTAssertEqual(gate.receive(op: OuraFraming.firmwareResponseOp), .complete)
+        XCTAssertEqual(gate.receive(op: OuraFraming.firmwareResponseOp), .ignored)
+
+        XCTAssertTrue(gate.begin(commands: [OuraCommands.getProductHardware()]))
+        gate.reset()
+        XCTAssertFalse(gate.isWaiting)
+        XCTAssertEqual(gate.receive(op: OuraFraming.productInfoResponseOp), .ignored)
+    }
 
     // MARK: - Huami custom HR parse
 

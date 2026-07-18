@@ -37,7 +37,7 @@ final class MoreListParityTests: XCTestCase {
 
     // MARK: - M5 gate (S1 grouping): every destination stays reachable after grouping
 
-    /// The S1 macOS sidebar grouping (#805) folds the 28 flat `NavItem` cases into ~5 collapsible
+    /// The S1 macOS sidebar grouping (#805) folds the flat `NavItem` cases into ~5 collapsible
     /// `NavGroup`s. The regression it guards against is a destination silently vanishing during a
     /// consolidation (the way the iPhone Smart-Alarm row did). This pins the contract: EVERY `NavItem`
     /// case must appear in exactly one group, so nothing is dropped and nothing is double-listed.

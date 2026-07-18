@@ -35,6 +35,14 @@ public enum TestCentreLayout {
     public static func visibleModes(is5MG: Bool) -> [TestMode] {
         order(TestModeRegistry.all, is5MG: is5MG)
     }
+
+    /// The shipped registry projected for a device's real diagnostic coverage. App-level callers derive
+    /// this set from the active source and its capabilities, then this pure helper preserves the same
+    /// requires-5/MG gate and priority ordering as the unfiltered screen.
+    public static func visibleModes(is5MG: Bool,
+                                    supportedDomains: Set<TestDomain>) -> [TestMode] {
+        order(TestModeRegistry.all.filter { supportedDomains.contains($0.domain) }, is5MG: is5MG)
+    }
 }
 
 public extension TestCentreLayout {

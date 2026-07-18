@@ -88,8 +88,8 @@ class DecoderGoldenTest {
         val s = OuraDecoders.decodeSpO2PerSample(rec)
         assertEquals(
             listOf(
-                OuraSpO2(ringTimestamp = rt, value = 95),
-                OuraSpO2(ringTimestamp = rt, value = 96),
+                OuraSpO2(ringTimestamp = rt, value = 95, unit = "percent", sampleOffsetSeconds = -1),
+                OuraSpO2(ringTimestamp = rt, value = 96, unit = "percent"),
             ),
             s,
         )
@@ -102,7 +102,20 @@ class DecoderGoldenTest {
         // BE 0x03CA = 970. If decoded LE it would be 0xCA03 = 51715, so this proves the BE path.
         val rec = record("7b060200010003ca")
         val s = OuraDecoders.decodeSpO2Stable(rec)
-        assertEquals(OuraSpO2(ringTimestamp = rt, value = 970), s)
+        assertEquals(OuraSpO2(ringTimestamp = rt, value = 970, unit = "tenths_percent"), s)
+    }
+
+    @Test
+    fun testSleepPeriod0x6AAndBedtimeBounds0x76() {
+        val sleep = record("6a0e020001006e000000700003010000")
+        assertEquals(
+            OuraSleepPeriod(rt, averageHeartRate = 55.0, respirationRate = 14.0,
+                motionCount = 3, sleepState = 1),
+            OuraDecoders.decodeSleepPeriod(sleep),
+        )
+
+        val bedtime = record("760c02000100e8030000740e0000")
+        assertEquals(OuraBedtimePeriod(rt, 1000, 3700), OuraDecoders.decodeBedtimePeriod(bedtime))
     }
 
     // MARK: - 0x46 temperature (int16 LE / 100)
@@ -118,7 +131,7 @@ class DecoderGoldenTest {
         assertEquals(36.55, t[1].celsius, eps)
     }
 
-    // MARK: - 0x42 time sync (int64 LE epoch ms + tz int8 x1800)
+    // MARK: - 0x42 time sync (generation-specific)
 
     @Test
     fun testTimeSync0x42() {
@@ -126,6 +139,27 @@ class DecoderGoldenTest {
         val rec = record("420d0200010000d2dd639001000002")
         val ts = OuraDecoders.decodeTimeSync(rec)
         assertEquals(OuraTimeSync(ringTimestamp = rt, epochMs = 1_719_662_400_000L, tzOffsetSeconds = 3600), ts)
+    }
+
+    @Test
+    fun testRing4TimeSync0x42UsesCompressedEpochAndTokenFactor() {
+        val normal = record("420d0200010000f1536500000000f6")
+        assertEquals(
+            OuraTimeSync(
+                ringTimestamp = rt, epochMs = 1_700_000_000L,
+                tzOffsetSeconds = 0, factorMsPerTick = 100, token = 0x00,
+            ),
+            OuraDecoders.decodeTimeSync(normal, OuraRingGen.GEN4),
+        )
+
+        val burst = record("420d02000100fdf1536500000000f6")
+        assertEquals(
+            OuraTimeSync(
+                ringTimestamp = rt, epochMs = 1_700_000_000L,
+                tzOffsetSeconds = 0, factorMsPerTick = 1, token = 0xFD,
+            ),
+            OuraDecoders.decodeTimeSync(burst, OuraRingGen.GEN4),
+        )
     }
 
     // MARK: - 0x4E sleep phase (2-bit codes MSB-first; header byte skipped)

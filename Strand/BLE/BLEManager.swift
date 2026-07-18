@@ -700,6 +700,11 @@ public final class BLEManager: NSObject, ObservableObject {
     private var historicalAckLogCounter = 0
     private var clockRequested = false
     private var intentionalDisconnect = false
+    /// Whether WHOOP is the registry-selected live source. nil until the store/registry has been read on
+    /// cold launch; `connect()` makes it true and `disconnect()` makes it false on later device switches.
+    /// System callbacks may reconnect WHOOP only when this is explicitly true, so the WHOOP central cannot
+    /// race ahead of an active Oura/generic source while the registry is still bootstrapping.
+    private var whoopConnectionAllowed: Bool?
     /// Consecutive `didFailToConnect` count, for the auto-reconnect backoff (#414). Reset to 0 on a
     /// successful connect; grows the reschedule delay so a strap that's genuinely out of range doesn't
     /// hammer Bluetooth (vs the disconnect path's flat 3s, which is fine for an already-bonded drop).
@@ -835,14 +840,18 @@ public final class BLEManager: NSObject, ObservableObject {
             log("Backfill: bootstrap FAILED opening store — \(ns.domain) code=\(ns.code): \(ns.localizedDescription)")
             return
         }
-        // Route deviceId through the device registry: use the active device's id (migration v15 seeds
-        // a single 'my-whoop' row as active, so this is still "my-whoop" today — zero behaviour change).
-        // Guarded + best-effort: if the registry is empty/unreadable, deviceId stays as it was, so no
-        // crash and no behaviour change. registryWriter is nonisolated/Sendable (the Pool manages
-        // its own concurrency).
-        if let activeId = try? DeviceRegistryStore(dbQueue: store.registryWriter).activeDeviceId(),
-           !activeId.isEmpty {
-            self.deviceId = activeId
+        // Resolve the ACTIVE registry row before any system-driven WHOOP connect. A non-WHOOP source
+        // (notably Oura) must suppress the WHOOP cold-start scan and must NOT become the WHOOP collector's
+        // deviceId. The old active-id-only read attributed early WHOOP bootstrap rows to Oura and labelled
+        // its generic `device` metadata "WHOOP 4.0".
+        let registry = DeviceRegistryStore(dbQueue: store.registryWriter)
+        let active = (try? registry.all())?.first(where: { $0.status == .active })
+        let activeIsWhoop = active.map(Self.registryDeviceIsWhoop) ?? true
+        // Do not overwrite a switch/manual-connect intent that landed while the async store open was in
+        // flight. On a normal cold launch this is nil and the persisted registry becomes authoritative.
+        if whoopConnectionAllowed == nil { whoopConnectionAllowed = activeIsWhoop }
+        if activeIsWhoop, let active, !active.id.isEmpty {
+            self.deviceId = active.id
         }
         try? await store.upsertDevice(id: deviceId, mac: nil, name: "WHOOP 4.0")
         // Research toggle — OFF by default. When disabled the app is decoded-only and never
@@ -948,6 +957,7 @@ public final class BLEManager: NSObject, ObservableObject {
     /// silently un-pause the give-up and re-run the full refusal hammer, forever, one burst per event
     /// (#78 hole-2; Android's onBluetoothRadioOn always had the correct one-attempt-latched shape).
     public func connect(model: WhoopModel = .persisted) {
+        whoopConnectionAllowed = true
         // #747/#750: re-arm on the user's explicit retry: clear the give-up streak + pause so this fresh
         // attempt isn't immediately re-paused and the auto-reconnect works again if it bonds.
         if autoReconnectPausedForBondLoop {
@@ -965,7 +975,30 @@ public final class BLEManager: NSObject, ObservableObject {
     /// path schedules nothing afterwards, so the hammer loop cannot restart. A genuine bond still fully
     /// resets via the didWriteValueFor path, so a strap freed since the give-up self-heals.
     func connectFromSystem(model: WhoopModel = .persisted) {
+        // A poweredOn callback can arrive long after SourceCoordinator deliberately stopped WHOOP because
+        // Oura / a generic HR strap became active. Re-entering connectCore here would clear
+        // `intentionalDisconnect` and start a WHOOP scan behind that active source; because the registry id
+        // did not change, SourceCoordinator would not receive another emission to stop it again. Preserve
+        // the teardown until an explicit `connect()` (or a switch back to WHOOP) clears it.
+        guard Self.shouldConnectFromSystem(intentionalDisconnect: intentionalDisconnect,
+                                           whoopConnectionAllowed: whoopConnectionAllowed) else {
+            log("System reconnect skipped - WHOOP is intentionally stopped")
+            return
+        }
         connectCore(model: model)
+    }
+
+    /// Pure policy seam for the poweredOn / deferred-reconnect gate above. Kept separate so the
+    /// non-WHOOP-active regression is pinned without constructing a live CoreBluetooth manager in tests.
+    nonisolated static func shouldConnectFromSystem(intentionalDisconnect: Bool,
+                                                    whoopConnectionAllowed: Bool?) -> Bool {
+        !intentionalDisconnect && whoopConnectionAllowed == true
+    }
+
+    /// Registry classifier shared by bootstrap identity routing and its tests. `liveBLE` alone is not
+    /// enough (Polar/Garmin also use it); the seeded id or WHOOP brand is the stable distinction.
+    nonisolated static func registryDeviceIsWhoop(_ device: PairedDevice) -> Bool {
+        device.id == "my-whoop" || device.brand.caseInsensitiveCompare("WHOOP") == .orderedSame
     }
 
     private func connectCore(model: WhoopModel) {
@@ -1047,6 +1080,7 @@ public final class BLEManager: NSObject, ObservableObject {
     }
 
     public func disconnect() {
+        whoopConnectionAllowed = false
         intentionalDisconnect = true
         cancelScanFallback()
         // A user-initiated teardown is a clean slate: clear any #80 marginal-radio fallback so the next
@@ -2665,20 +2699,32 @@ extension BLEManager: @preconcurrency CBCentralManagerDelegate {
     public func centralManagerDidUpdateState(_ central: CBCentralManager) {
         log("Central state: \(central.state.rawValue) (5 = poweredOn)")
         guard central.state == .poweredOn else { return }
-        // Bootstrap the async store once on first poweredOn (idempotent if already set).
-        Task { @MainActor in await bootstrapStore() }
-        if let p = restoredPeripheral {
-            log("poweredOn with restored peripheral — reconnecting \(p.identifier)")
-            if p.state != .connected {
-                central.connect(p, options: nil)
-            } else {
-                discoverPrimaryServices(on: p)
+        // Cold launch must read the registry BEFORE WHOOP connects. Previously this method launched the
+        // async bootstrap and immediately scanned WHOOP in parallel, so an active Oura ring lost the race;
+        // early WHOOP rows could also be written under Oura's device id. Once bootstrap establishes the
+        // source permission, run the restored/system path only when WHOOP is actually selected.
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.bootstrapStore()
+            guard self.central.state == .poweredOn,
+                  Self.shouldConnectFromSystem(intentionalDisconnect: self.intentionalDisconnect,
+                                               whoopConnectionAllowed: self.whoopConnectionAllowed) else {
+                self.log("poweredOn: WHOOP auto-connect suppressed for the active non-WHOOP source")
+                return
             }
-        } else {
-            // #78 hole-2: poweredOn is SYSTEM-initiated (every Bluetooth toggle / bluetoothd restart
-            // lands here), so it must not reset a latched bond-loop give-up - it gets ONE bounded
-            // attempt with the give-up intact (Android onBluetoothRadioOn parity), not a fresh hammer.
-            connectFromSystem()
+            if let p = self.restoredPeripheral {
+                self.log("poweredOn with restored peripheral — reconnecting \(p.identifier)")
+                if p.state != .connected {
+                    self.central.connect(p, options: nil)
+                } else {
+                    self.discoverPrimaryServices(on: p)
+                }
+            } else {
+                // #78 hole-2: poweredOn is SYSTEM-initiated (every Bluetooth toggle / bluetoothd restart
+                // lands here), so it must not reset a latched bond-loop give-up - it gets ONE bounded
+                // attempt with the give-up intact (Android onBluetoothRadioOn parity), not a fresh hammer.
+                self.connectFromSystem()
+            }
         }
     }
 

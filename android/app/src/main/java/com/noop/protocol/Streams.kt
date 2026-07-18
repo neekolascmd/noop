@@ -25,8 +25,7 @@ data class RrInterval(val ts: Int, val rrMs: Int)
  * [unit] preserves the decoder's own scale tag (e.g. "raw_adc"/"raw"/"dc_raw") so a downstream
  * reader never assumes a percentage. This mirrors the unit fidelity the Swift `SpO2Sample` carries,
  * so the unit is not silently dropped on the Kotlin side at the carrier level. (The Room `Spo2Sample`
- * entity has no unit column yet; the carrier-level tag documents the convention until a migration
- * adds one.)
+ * the Room entity persists the same unit tag so raw ADC and qualified percentages never mix.)
  */
 data class Spo2Sample(val ts: Int, val red: Int, val ir: Int, val unit: String = "raw_adc")
 

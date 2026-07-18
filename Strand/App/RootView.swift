@@ -30,7 +30,6 @@ enum NavItem: String, CaseIterable, Identifiable, Hashable {
     case smartAlarm = "Smart Alarm"
     case settings = "Settings"
     case support = "Support"
-    case testCentre = "Test Centre"
 
     var id: String { rawValue }
 
@@ -69,7 +68,6 @@ enum NavItem: String, CaseIterable, Identifiable, Hashable {
         case .smartAlarm: return "Alarms"
         case .settings: return "Settings"
         case .support: return "Support"
-        case .testCentre: return "Test Centre"
         }
     }
 
@@ -110,7 +108,6 @@ enum NavItem: String, CaseIterable, Identifiable, Hashable {
         case .smartAlarm: return String(localized: "Alarms")
         case .settings: return String(localized: "Settings")
         case .support: return String(localized: "Support")
-        case .testCentre: return String(localized: "Test Centre")
         }
     }
 
@@ -144,13 +141,12 @@ enum NavItem: String, CaseIterable, Identifiable, Hashable {
         case .smartAlarm: return "alarm.fill"
         case .settings: return "gearshape.fill"
         case .support: return "heart.fill"
-        case .testCentre: return "stethoscope"
         }
     }
 }
 
-/// One collapsible sidebar section (S1, #805): the 28 flat `NavItem` cases are grouped into ~5
-/// labelled sections so the macOS sidebar stops being a 28-item flat wall. The enum cases are NOT
+/// One collapsible sidebar section (S1, #805): the flat `NavItem` cases are grouped into ~5
+/// labelled sections so the macOS sidebar stops being a flat wall. The enum cases are NOT
 /// touched (M5 gate): only the layout that consumes them changes. `NavGroup.all` is the single source
 /// of truth for what each section holds, so the M5 routability test can assert every `NavItem` case is
 /// still present across the groups (nothing vanished the way the iPhone Smart-Alarm row did).
@@ -163,7 +159,7 @@ struct NavGroup: Identifiable {
     /// The 5 sidebar sections, in order, mirroring the iOS More-tab grouping idiom (Insights / Body /
     /// Data & App) plus Today + Sleep as their own top sections. Devices/pairing sits at the TOP of the
     /// Data & App group so the first thing a new user reaches for stays near the surface. Every one of the
-    /// 28 `NavItem` cases appears exactly once across these groups (asserted by the M5 routability test).
+    /// Every `NavItem` case appears exactly once across these groups (asserted by the M5 routability test).
     static let all: [NavGroup] = [
         NavGroup(title: "Today", id: "today", items: [.today]),
         NavGroup(title: "Sleep", id: "sleep", items: [.sleep]),
@@ -178,7 +174,7 @@ struct NavGroup: Identifiable {
         ]),
         NavGroup(title: "Data & App", id: "data_app", items: [
             .devices, .dataSources, .appleHealth, .xiaomi, .backupSync, .fusedRecord,
-            .notifications, .automation, .smartAlarm, .settings, .support, .testCentre,
+            .notifications, .automation, .smartAlarm, .settings, .support,
         ]),
     ]
 
@@ -203,7 +199,7 @@ struct RootView: View {
     /// (`.today`). The single-item Today/Sleep sections always read expanded so their one row shows; the
     /// multi-item groups (Body / Insights / Data & App) collapse to just their header until tapped.
     @State private var expandedGroups: Set<String> = Self.initialExpandedGroups(for: .today)
-    /// Sidebar filter text (#915). Since the collapsible sections landed (S1), 27 of the 28
+    /// Sidebar filter text (#915). Since the collapsible sections landed (S1), most
     /// destinations sit inside collapsed groups; typing here filters every group by its localized row
     /// title so any screen is reachable without knowing which section owns it.
     @State private var searchQuery = ""
@@ -441,7 +437,6 @@ struct RootView: View {
         case .smartAlarm: SmartAlarmView()
         case .settings: settingsDetail
         case .support: SupportView()
-        case .testCentre: TestCentreView()
         }
     }
 
@@ -461,9 +456,9 @@ struct RootView: View {
         #endif
     }
 
-    // Settings now pushes into Test Centre via a NavigationLink. On macOS the detail column has no
-    // enclosing NavigationStack of its own, so the same #753 fix applies: wrap the Settings pane in its
-    // own NavigationStack so the Test Centre push gets Back chrome. iOS already wraps each tab.
+    // Settings contains several drill-in NavigationLinks. On macOS the detail column has no enclosing
+    // NavigationStack of its own, so wrap the pane to give those pushes Back chrome. iOS already wraps
+    // each tab.
     @ViewBuilder private var settingsDetail: some View {
         #if os(macOS)
         NavigationStack { SettingsView() }
@@ -472,7 +467,7 @@ struct RootView: View {
         #endif
     }
 
-    // Live's strap-log card pushes into Test Centre (#507/#509). Same macOS NavigationStack wrap so the
+    // Live's device-log card pushes into Diagnostics & Support. Same macOS NavigationStack wrap so the
     // push gets Back chrome on the detail column; iOS already wraps each tab.
     @ViewBuilder private var liveDetail: some View {
         #if os(macOS)
@@ -520,6 +515,7 @@ struct BrandMark: View {
 /// list + detail) does not re-render on the ~1 Hz HR / frame stream.
 private struct SidebarStatus: View {
     @EnvironmentObject var live: LiveState
+    @EnvironmentObject var model: AppModel
     var body: some View {
         HStack(spacing: 9) {
             Circle()
@@ -530,7 +526,9 @@ private struct SidebarStatus: View {
                 Text(statusText)
                     .font(StrandFont.rounded(12, weight: .medium))
                     .foregroundStyle(StrandPalette.textPrimary)
-                Text(live.batteryPct.map { String(localized: "Battery \(Int($0))%") } ?? String(localized: "Strap not connected"))
+                Text(currentBattery.map { String(localized: "\(model.activeDeviceDisplayName) battery \(Int($0))%") }
+                    ?? (live.connected ? String(localized: "Waiting for \(model.activeDeviceNoun) data")
+                                       : String(localized: "\(model.activeDeviceDisplayName) not connected")))
                     .font(StrandFont.rounded(11))
                     .foregroundStyle(StrandPalette.textTertiary)
             }
@@ -538,6 +536,11 @@ private struct SidebarStatus: View {
         }
         .padding(10)
         .background(StrandPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var currentBattery: Double? {
+        guard live.connected, model.activeDeviceSupportsLiveBattery else { return nil }
+        return live.batteryPct
     }
 
     // Shares LiveState.connectionStatus* with the Settings strap card so the two never disagree (#266):

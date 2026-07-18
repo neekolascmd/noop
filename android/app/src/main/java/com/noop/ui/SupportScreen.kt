@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.VolunteerActivism
@@ -38,12 +39,30 @@ private val attributions = listOf(
  * Support, attribution, and contact. Ports SupportView.swift.
  */
 @Composable
-fun SupportScreen() {
+fun SupportScreen(onOpenDiagnostics: () -> Unit) {
     ScreenScaffold(
         title = "Support",
-        subtitle = "Project information, attribution, and contact details.",
+        subtitle = "Help, diagnostics, project information, and contact details.",
     ) {
         SectionHeader("Help & Contact", overline = "Get in touch")
+
+        // Diagnostics is support tooling, not a top-level app destination.
+        NoopCard(padding = 18.dp) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                NoopButton(
+                    text = "Diagnostics & Support",
+                    leadingIcon = Icons.Filled.BugReport,
+                    kind = NoopButtonKind.Secondary,
+                    fullWidth = true,
+                    onClick = onOpenDiagnostics,
+                )
+                Text(
+                    "Create a redacted report and capture extra detail for the connected device.",
+                    style = NoopType.footnote,
+                    color = Palette.textTertiary,
+                )
+            }
+        }
 
         // Contact — a frosted row with a tinted glyph chip.
         NoopCard(padding = 18.dp) {

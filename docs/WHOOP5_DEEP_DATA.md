@@ -94,7 +94,7 @@ detection and sleep behaviour, but those effects still require controlled before
 
 ## How to help (5.0 / MG owners)
 
-1. Turn on **Test Centre → Record puffin frames to a file** before connecting.
+1. Turn on **Settings → Experimental → Record puffin frames to a file** before connecting.
 2. With the strap worn and fully bonded, let one normal history sync finish before changing R22 flags.
 3. Only if you accept a persistent change that NOOP cannot currently restore, send **WHOOP 5/MG R22
    configuration** on iPhone/Android, then repeat the same labelled movement/rest/off-wrist sequence.

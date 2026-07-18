@@ -115,6 +115,16 @@ class FramingTest {
         assertNull(OuraFraming.parseSecureFrame(outer))
     }
 
+    @Test
+    fun testParseRing4SyncTimeAckButNeverAsTlv() {
+        val body = intArrayOf(0x00, 0xAA, 0xBB, 0xCC, 0x00)
+        val response = OuraFraming.parseSyncTimeResponse(body)
+        assertEquals(0, response?.ackCode)
+        assertEquals(0x00CC_BBAAL, response?.counterEcho)
+        assertNull(OuraFraming.parseSyncTimeResponse(intArrayOf(0x00, 0x01)))
+        assertNull(OuraFraming.parseRecord(intArrayOf(0x13, 0x05) + body))
+    }
+
     // MARK: - TLV record parsing
 
     @Test

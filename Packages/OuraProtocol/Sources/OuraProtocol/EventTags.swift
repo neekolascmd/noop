@@ -62,6 +62,8 @@ public enum OuraEventTag: UInt8, Sendable, CaseIterable, Codable {
     // --- Sleep phase codes (Tier A: 2-bit phase codes are byte-for-byte verified) ---
     case sleepPhase       = 0x4E   // sleep_phase_details (2-bit codes), OURA_PROTOCOL.md s6.12
     case sleepPhaseAlt    = 0x5A   // sleep_phase_details alias, OURA_PROTOCOL.md s6.12
+    case sleepPeriod      = 0x6A   // sleep_period_info_2 (open periodic measurements), s6.12
+    case bedtimePeriod    = 0x76   // verified start/end ring-clock sleep bounds, s6.12
 
     // --- Activity / MET (Tier B, UNVERIFIED) ---
     case activityInfo     = 0x50   // activity_info (MET-class), OURA_PROTOCOL.md s6.13 (UNVERIFIED)
@@ -119,6 +121,8 @@ public enum OuraEventTag: UInt8, Sendable, CaseIterable, Codable {
         case .sleepSummaryF: return "SLEEP_SUMMARY_58"
         case .sleepPhase: return "SLEEP_PHASE"
         case .sleepPhaseAlt: return "SLEEP_PHASE_ALT"
+        case .sleepPeriod: return "SLEEP_PERIOD"
+        case .bedtimePeriod: return "BEDTIME_PERIOD"
         case .activityInfo: return "ACTIVITY_INFO"
         case .activitySummary1: return "ACTIVITY_SUMMARY_1"
         case .activitySummary2: return "ACTIVITY_SUMMARY_2"

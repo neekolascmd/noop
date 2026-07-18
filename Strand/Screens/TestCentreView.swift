@@ -3,14 +3,11 @@ import StrandDesign
 import StrandAnalytics
 import StrandImport
 
-/// Settings -> Test Centre. The single home for every diagnostic, log and test control (spec section 7).
+/// Diagnostics & Support. Keeps the focused capture modes and redacted report flow while leaving normal
+/// preferences, calibration, scheduled exports, and experimental feature switches in Settings.
 ///
-/// Four sections: domain test modes (rendered from the registry projection), diagnostic tools, export
-/// and auto-export, advanced/experimental. Section 1 iterates TestCentreLayout.visibleModes so adding a
-/// profile later is a registry entry, never a new screen. The lower three sections re-host the same
-/// bindings and actions that live in SettingsView (strap log, recalibrate, scheduled export, the 5/MG
-/// experimental toggles) so the Test Centre is the one place to find them; SettingsView keeps a thin nav
-/// link in. No em-dash in any string here.
+/// Capture modes are filtered against the active device so an Oura Ring, Apple Watch, gym machine, or
+/// generic sensor never sees a WHOOP-only diagnostic it cannot satisfy. No em-dash in any string here.
 struct TestCentreView: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var live: LiveState
@@ -21,33 +18,41 @@ struct TestCentreView: View {
     /// Re-read activation on appear so a toggle flip elsewhere reflects here.
     @State private var refreshToken = 0
 
-    // Section 2: recalibrate confirm.
-    @State private var showRecalibrateConfirm = false
-    @State private var infoTitle = ""
-    @State private var infoMessage = ""
-    @State private var showInfo = false
-
-    // Section 3: scheduled daily auto-export, the same ScheduledDebugExport store the Settings card uses.
-    @State private var debugExportOn = ScheduledDebugExport.isEnabled
-    @State private var debugExportMinutes = ScheduledDebugExport.timeMinutes
-
-    // Section 4: the experimental toggles, on the SAME @AppStorage keys as SettingsView (preserved per
-    // spec section 10), so toggling here and there is one and the same setting.
-    @AppStorage(PuffinExperiment.experimentalSleepV2Key) private var experimentalSleepV2Enabled = false
-    @AppStorage(PuffinExperiment.keepRealtimeForDataKey) private var continuousHrvEnabled = false
-    @AppStorage(PuffinExperiment.defaultsKey) private var puffinExperiments = false
-    @AppStorage(PuffinExperiment.deepDataKey) private var deepDataEnabled = false
-    @AppStorage(PuffinExperiment.broadcastHrKey) private var broadcastHrEnabled = false
-    @AppStorage(PuffinFrameRecorder.enabledKey) private var puffinCapture = false
-
     /// The strap model the user last picked, the same key SettingsView's showFiveMGControls gate reads.
     @AppStorage("selectedWhoopModel") private var selectedWhoopModelRaw = WhoopModel.whoop4.rawValue
 
     /// True when the connected strap is a 5/MG, so the 5/MG experimental block shows. Mirrors the
     /// SettingsView gate (#22): a confident 4.0 owner never sees controls that cannot touch their strap.
-    private var is5MG: Bool { selectedWhoopModelRaw == WhoopModel.whoop5mg.rawValue }
+    private var is5MG: Bool {
+        model.activeDeviceIsWhoop && selectedWhoopModelRaw == WhoopModel.whoop5mg.rawValue
+    }
 
-    /// The "whole app" report profile for the section-3 manual Report button. master is not a registry
+    /// Diagnostics that can produce a meaningful trace for the active device. WHOOP retains the complete
+    /// existing registry. Other sources keep app-level modes plus only the measurements they actually
+    /// expose. Connection & Sync is intentionally WHOOP-only today because its deep trace is emitted by
+    /// BLEManager; non-WHOOP lifecycle lines are still included automatically in every redacted report.
+    private var supportedDomains: Set<TestDomain> {
+        guard let device = model.activePairedDevice, !model.activeDeviceIsWhoop else {
+            return Set(TestModeRegistry.all.map(\.domain))
+        }
+
+        var domains: Set<TestDomain> = [.workouts, .display, .dataImport]
+        if device.capabilities.contains(.sleep) { domains.insert(.sleep) }
+        if device.capabilities.contains(.steps) { domains.insert(.steps) }
+        if device.capabilities.contains(.hrv) {
+            domains.insert(.recovery)
+            domains.insert(.hrv)
+        }
+        switch device.sourceKind {
+        case .liveBLE, .historyBLE, .huami, .oura:
+            domains.insert(.battery)
+        case .cloudImport, .fileImport, .ftms, .liveAppleWatch:
+            break
+        }
+        return domains
+    }
+
+    /// The "whole app" report profile for the manual Report button. master is not a registry
     /// mode (it has no wear-and-capture flow), so the deep-link self-applies the test:all label via this.
     static let masterReportMode = TestMode(
         domain: .master, title: String(localized: "Bug report"), blurb: "", icon: "ladybug", priority: .high,
@@ -55,34 +60,18 @@ struct TestCentreView: View {
         capture: .toggle, includesScreenshot: false, requires5MG: false)
 
     var body: some View {
-        ScreenScaffold(title: "Test Centre",
-                       subtitle: "Turn on a test for the thing that's wrong, wear the strap, then tap Report. All on \(Platform.deviceNounPhrase).") {
+        ScreenScaffold(title: "Diagnostics & Support",
+                       subtitle: "Capture a problem with \(model.activeDeviceDisplayName), then create a redacted report. Nothing leaves \(Platform.deviceNounPhrase) until you share it.") {
             VStack(alignment: .leading, spacing: NoopMetrics.sectionSpacing) {
                 domainModesCard.staggeredAppear(index: 0)
-                diagnosticToolsCard.staggeredAppear(index: 1)
-                exportCard.staggeredAppear(index: 2)
-                advancedCard.staggeredAppear(index: 3)
+                exportCard.staggeredAppear(index: 1)
+                diagnosticToolsCard.staggeredAppear(index: 2)
             }
         }
         .id(refreshToken)
-        .onAppear {
-            refreshToken &+= 1
-            ScheduledDebugExport.activateIfEnabled()
-        }
+        .onAppear { refreshToken &+= 1 }
         .sheet(item: $report.pending) { _ in
             ReportReviewSheet(report: report)
-        }
-        .confirmationDialog("Recalibrate your Charge baseline?",
-                            isPresented: $showRecalibrateConfirm, titleVisibility: .visible) {
-            Button("Recalibrate") { recalibrateCharge() }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("This restarts the roughly 4-night build-up for Charge and your HRV baseline. Your history stays.")
-        }
-        .alert(infoTitle, isPresented: $showInfo) {
-            Button("OK", role: .cancel) { }
-        } message: {
-            Text(infoMessage)
         }
     }
 
@@ -91,13 +80,14 @@ struct TestCentreView: View {
     @ViewBuilder private var domainModesCard: some View {
         NoopCard {
             VStack(alignment: .leading, spacing: NoopMetrics.space3) {
-                Text("TEST MODES")
+                Text("CAPTURE A PROBLEM")
                     .font(StrandFont.overline).tracking(StrandFont.overlineTracking)
                     .foregroundStyle(StrandPalette.textSecondary)
-                Text("Each test logs extra detail for one part of the app while you wear the strap, then bundles it for a bug report.")
+                Text("Each mode logs extra detail while you use \(model.activeDeviceDisplayName). Only captures this device can produce are shown.")
                     .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
-                let modes = TestCentreLayout.visibleModes(is5MG: is5MG)
+                let modes = TestCentreLayout.visibleModes(is5MG: is5MG,
+                                                          supportedDomains: supportedDomains)
                 ForEach(Array(modes.enumerated()), id: \.element.id) { idx, mode in
                     if idx > 0 { Divider().overlay(StrandPalette.hairline) }
                     TestModeRow(mode: mode, report: report)
@@ -106,64 +96,44 @@ struct TestCentreView: View {
         }
     }
 
-    // MARK: - Section 2: Diagnostic tools (strap log + recalibrate + env dump)
+    // MARK: - Support files
 
     @ViewBuilder private var diagnosticToolsCard: some View {
         NoopCard {
             VStack(alignment: .leading, spacing: NoopMetrics.space3) {
-                Text("DIAGNOSTIC TOOLS")
+                Text("SUPPORT FILES")
                     .font(StrandFont.overline).tracking(StrandFont.overlineTracking)
                     .foregroundStyle(StrandPalette.textSecondary)
 
-                // Strap log, the same exportableLogText the Settings + Live strap-log cards share.
                 HStack(spacing: 12) {
-                    Text("STRAP LOG").font(StrandFont.overline).tracking(StrandFont.overlineTracking)
+                    Text("DEVICE LOG").font(StrandFont.overline).tracking(StrandFont.overlineTracking)
                         .foregroundStyle(StrandPalette.textSecondary)
                     Spacer()
                     Button("Copy") { PlatformPasteboard.copy(live.exportableLogText()) }
                         .buttonStyle(.plain).font(StrandFont.mono).foregroundStyle(StrandPalette.accent)
                     Button("Save…") {
                         FileExport.exportText(live.exportableLogText(),
-                                              suggestedName: FileExport.timestampedName("noop-strap-log", ext: "txt"))
+                                              suggestedName: FileExport.timestampedName("noop-device-log", ext: "txt"))
                     }
                     .buttonStyle(.plain).font(StrandFont.mono).foregroundStyle(StrandPalette.accent)
                 }
-                Text("Grab this when you report a bug. It tells me what the app saw.")
+                Text("The redacted report already includes this log. Copy or save it only if support asks for the text by itself.")
                     .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
-
-                Divider().overlay(StrandPalette.hairline)
-
-                // Recalibrate Charge baseline: the same Baselines.recalibrateRecoveryBaselines call the
-                // Settings Recovery card uses.
-                NoopButton("Recalibrate Charge baseline", systemImage: "arrow.triangle.2.circlepath", kind: .secondary) {
-                    showRecalibrateConfirm = true
-                }
-                Text("Re-anchors every baseline that feeds Charge to your recent nights. No stored day is deleted.")
-                    .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Divider().overlay(StrandPalette.hairline)
-
-                // Environment dump: the IOSDiagnostics-backed block exportableLogText already carries,
-                // surfaced as a copyable readout (spec section 3.4).
-                NoopButton("Copy environment dump", systemImage: "info.circle", kind: .secondary) {
-                    PlatformPasteboard.copy(live.exportableLogText())
-                }
             }
         }
     }
 
-    // MARK: - Section 3: Export and auto-export (manual Report + scheduled export)
+    // MARK: - Redacted report
 
     @ViewBuilder private var exportCard: some View {
         NoopCard {
             VStack(alignment: .leading, spacing: NoopMetrics.space3) {
-                Text("EXPORT")
+                Text("CREATE A REPORT")
                     .font(StrandFont.overline).tracking(StrandFont.overlineTracking)
                     .foregroundStyle(StrandPalette.textSecondary)
 
-                NoopButton("Report a bug with my log", systemImage: "paperplane", kind: .primary) {
+                NoopButton("Create redacted bug report", systemImage: "paperplane", kind: .primary) {
                     // A generic "whole app" report: the master profile so the deep-link self-applies the
                     // test:all label. master is not in the registry (it is not a wear-and-capture mode), so
                     // build the lightweight mode inline.
@@ -193,163 +163,8 @@ struct TestCentreView: View {
                     .accessibilityLabel("Copy the redacted report to the clipboard")
                 }
 
-                Divider().overlay(StrandPalette.hairline)
-
-                // Scheduled daily auto-export, the same ScheduledDebugExport reads/writes as the Settings
-                // Diagnostics card. iOS BGAppRefresh is best-effort, the honest caption is kept.
-                Toggle(isOn: $debugExportOn) {
-                    Text("Daily auto-export of the strap log")
-                        .font(StrandFont.subhead).foregroundStyle(StrandPalette.textPrimary)
-                }
-                .toggleStyle(.switch).tint(StrandPalette.accent)
-                .onChangeCompat(of: debugExportOn) { on in ScheduledDebugExport.setEnabled(on) }
-
-                if debugExportOn {
-                    HStack {
-                        Text("Time of day").font(StrandFont.subhead).foregroundStyle(StrandPalette.textPrimary)
-                        Spacer()
-                        DatePicker("", selection: debugExportTimeBinding, displayedComponents: .hourAndMinute)
-                            .labelsHidden()
-                            .accessibilityLabel("Daily auto-export time")
-                    }
-                    NoopButton("Run now", systemImage: "square.and.arrow.down.on.square", kind: .secondary) {
-                        runScheduledExportNow()
-                    }
-                    Text("On iPhone this is best-effort (iOS decides when background tasks run). Everything stays on \(Platform.deviceNounPhrase).")
-                        .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
             }
         }
-    }
-
-    // MARK: - Section 4: Advanced / experimental
-
-    @ViewBuilder private var advancedCard: some View {
-        NoopCard {
-            VStack(alignment: .leading, spacing: NoopMetrics.space3) {
-                Text("ADVANCED")
-                    .font(StrandFont.overline).tracking(StrandFont.overlineTracking)
-                    .foregroundStyle(StrandPalette.textSecondary)
-
-                // Model-agnostic advanced toggles (shown on every strap), same @AppStorage keys as Settings.
-                Toggle(isOn: $experimentalSleepV2Enabled) {
-                    Text("Experimental sleep staging (V2)")
-                        .font(StrandFont.subhead).foregroundStyle(StrandPalette.textPrimary)
-                }
-                .toggleStyle(.switch).tint(StrandPalette.accent)
-
-                Toggle(isOn: $continuousHrvEnabled) {
-                    Text("Continuous HRV capture")
-                        .font(StrandFont.subhead).foregroundStyle(StrandPalette.textPrimary)
-                }
-                .toggleStyle(.switch).tint(StrandPalette.accent)
-                .onChangeCompat(of: continuousHrvEnabled) { on in model.ble.setKeepRealtimeForData(on) }
-
-                // 5/MG-only probes, hidden off a 4.0 strap (the #22 gate, same as SettingsView).
-                if is5MG {
-                    Divider().overlay(StrandPalette.hairline)
-                    Text("WHOOP 5 / MG").font(StrandFont.overline).tracking(StrandFont.overlineTracking)
-                        .foregroundStyle(StrandPalette.textSecondary)
-
-                    Toggle(isOn: $puffinExperiments) {
-                        Text("Try WHOOP 5/MG protocol probes")
-                            .font(StrandFont.subhead).foregroundStyle(StrandPalette.textPrimary)
-                    }
-                    .toggleStyle(.switch).tint(StrandPalette.accent)
-
-                    Toggle(isOn: $deepDataEnabled) {
-                        Text("Persistent WHOOP 5/MG R22 flags")
-                            .font(StrandFont.subhead).foregroundStyle(StrandPalette.textPrimary)
-                    }
-                    .toggleStyle(.switch).tint(StrandPalette.accent)
-
-                    if deepDataEnabled {
-                        #if os(macOS)
-                        Text("R22 configuration requires a fully encrypted iPhone or Android connection. Mac can record and decode history, but cannot send this sequence.")
-                            .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        #else
-                        NoopButton("Write persistent R22 flags", systemImage: "bolt.badge.automatic", kind: .secondary) {
-                            model.ble.enableWhoop5DeepData()
-                        }
-                        .disabled(!live.encryptedBond || !live.worn || live.r22SequenceInFlight)
-                        Text(live.encryptedBond
-                             ? (live.r22SequenceInFlight ? "Sending the 15 R22 configuration writes…" : (live.worn ? "Persistent write: NOOP has no restore sequence. Use only for a controlled before/after capture." : "Put the strap on before sending the configuration."))
-                             : "Pair WHOOP 5/MG fully to NOOP first; a live-HR-only connection cannot carry configuration writes.")
-                            .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        #endif
-                    }
-
-                    Toggle(isOn: $broadcastHrEnabled) {
-                        Text("Broadcast heart rate (Garmin/ANT)")
-                            .font(StrandFont.subhead).foregroundStyle(StrandPalette.textPrimary)
-                    }
-                    .toggleStyle(.switch).tint(StrandPalette.accent)
-                    .onChangeCompat(of: broadcastHrEnabled) { on in model.ble.setBroadcastHr(on) }
-
-                    Toggle(isOn: $puffinCapture) {
-                        Text("Record puffin frames to a file")
-                            .font(StrandFont.subhead).foregroundStyle(StrandPalette.textPrimary)
-                    }
-                    .toggleStyle(.switch).tint(StrandPalette.accent)
-                }
-
-                Text("These are experimental probes, off by default. The fuller WHOOP 5/MG controls and the raw-sensor CSV export still live in Settings under Diagnostics.")
-                    .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    // MARK: - Shared actions (same calls as the SettingsView controls these re-host)
-
-    /// Re-anchor every baseline that feeds Charge from now, via the single cross-platform source of
-    /// truth, then kick a recompute. Same path as the Settings Recovery card.
-    private func recalibrateCharge() {
-        Baselines.recalibrateRecoveryBaselines()
-        Task {
-            await model.intelligence.analyzeRecent()
-            await model.repo.refresh()
-        }
-        infoTitle = String(localized: "Charge baseline recalibrating")
-        infoMessage = String(localized: "NOOP will re-learn your baseline from tonight's data onward. Your history is kept, and it takes a few nights to settle.")
-        showInfo = true
-    }
-
-    private var debugExportTimeBinding: Binding<Date> {
-        Binding(
-            get: {
-                var c = DateComponents()
-                c.hour = debugExportMinutes / 60
-                c.minute = debugExportMinutes % 60
-                return Calendar.current.date(from: c) ?? Date()
-            },
-            set: { date in
-                let c = Calendar.current.dateComponents([.hour, .minute], from: date)
-                let m = (c.hour ?? 7) * 60 + (c.minute ?? 0)
-                debugExportMinutes = m
-                ScheduledDebugExport.setTimeMinutes(m)
-            }
-        )
-    }
-
-    private func runScheduledExportNow() {
-        model.ble.flushPuffinCaptures()
-        let url = ScheduledDebugExport.runNow(captureURL: live.puffinCaptureURL)
-        if let url {
-            infoTitle = String(localized: "Strap log exported")
-            #if os(iOS)
-            infoMessage = String(localized: "Saved \(url.lastPathComponent) to NOOP's folder in the Files app.")
-            #else
-            infoMessage = String(localized: "Saved \(url.lastPathComponent) to your Documents folder.")
-            #endif
-        } else {
-            infoTitle = String(localized: "Export failed")
-            infoMessage = String(localized: "Couldn't write the strap log right now.")
-        }
-        showInfo = true
     }
 }
 
@@ -404,7 +219,7 @@ private struct TestModeRow: View {
                         }
                     }
             }
-            Text(mode.blurb)
+            Text(deviceAwareBlurb)
                 .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)
             // Live readout (Group E/F): the per-mode panel binding the registry's liveReadout ids. Shown
@@ -455,6 +270,19 @@ private struct TestModeRow: View {
             // .onAppear above. This keeps the perpetual-display-link contract: a link exists only while the
             // Test Centre is on screen with the mode on.
             if mode.domain == .display { DisplayPerformanceMonitor.shared.stop() }
+        }
+    }
+
+    private var deviceAwareBlurb: String {
+        switch mode.domain {
+        case .sleep:
+            return String(localized: "Use \(model.activeDeviceDisplayName) for a few nights so we can see which gate kept or dropped each sleep run.")
+        case .battery:
+            return String(localized: "Use \(model.activeDeviceDisplayName) for a few days so we can fit its real discharge slope.")
+        case .connection:
+            return String(localized: "Turn this on if \(model.activeDeviceDisplayName) keeps dropping or will not finish a sync.")
+        default:
+            return mode.blurb
         }
     }
 
@@ -694,6 +522,7 @@ private struct ReadoutRow: View {
 /// the user is about to share, with explicit Share and Cancel. Nothing leaves the device until Share.
 private struct ReportReviewSheet: View {
     @ObservedObject var report: TestCentreReport
+    @EnvironmentObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -706,7 +535,7 @@ private struct ReportReviewSheet: View {
                     // for the very thing being reported (the #812 capture_check only grades ACTIVE modes,
                     // so without this the report just looked thin with no explanation). Warn plainly, with
                     // the fix, BEFORE the user ships a report a maintainer can't act on.
-                    Text("Heads up: this test mode is off, so the report has no capture for it. For a useful report, turn the mode on, reproduce the problem while wearing the strap, then report again.")
+                    Text("Heads up: this test mode is off, so the report has no capture for it. For a useful report, turn the mode on, reproduce the problem while using \(model.activeDeviceDisplayName), then report again.")
                         .font(StrandFont.caption)
                         .foregroundStyle(StrandPalette.statusWarning)
                         .fixedSize(horizontal: false, vertical: true)

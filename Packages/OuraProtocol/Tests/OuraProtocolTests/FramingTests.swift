@@ -103,6 +103,15 @@ final class FramingTests: XCTestCase {
         XCTAssertNil(OuraFraming.parseSecureFrame(outer))
     }
 
+    func testParseRing4SyncTimeAckButNeverAsTLV() {
+        let body: [UInt8] = [0x00, 0xAA, 0xBB, 0xCC, 0x00]
+        let response = OuraFraming.parseSyncTimeResponse(body)
+        XCTAssertEqual(response?.ackCode, 0)
+        XCTAssertEqual(response?.counterEcho, 0x00CC_BBAA)
+        XCTAssertNil(OuraFraming.parseSyncTimeResponse([0x00, 0x01]))
+        XCTAssertNil(OuraFraming.parseRecord([0x13, 0x05] + body))
+    }
+
     // MARK: - TLV record parsing
 
     func testParseTLVRecord() {

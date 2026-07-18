@@ -438,6 +438,9 @@ object IntelligenceEngine {
             val grav = repo.gravitySamples(owner, from, to, STREAM_LIMIT)
             val steps = repo.stepSamples(owner, from, to, STREAM_LIMIT)
             val skin = repo.skinTempSamples(owner, from, to, STREAM_LIMIT)
+            val spo2 = repo.spo2Samples(owner, from, to, STREAM_LIMIT)
+            val knownSleepWindows = repo.sleepSessions("$owner-noop", from, to, 100)
+                .map { it.effectiveStartTs to it.endTs }
             // #938: the strap family that WROTE this owner's skin-temp rows, so analyzeDay converts the raw
             // register on the right scale (5/MG banks centidegrees, a WHOOP 4.0 v24 banks a raw ADC). The
             // owner source resolves it from the registry; unknown/non-WHOOP owners fall back to WHOOP5 (the
@@ -499,6 +502,8 @@ object IntelligenceEngine {
                 dayHr = dayHr,
                 daySteps = daySteps,
                 dayGravity = dayGrav,
+                spo2 = spo2,
+                knownSleepWindows = knownSleepWindows,
                 skinTemp = skin,
                 skinTempFamily = skinFamily,   // #938
                 profile = profile,

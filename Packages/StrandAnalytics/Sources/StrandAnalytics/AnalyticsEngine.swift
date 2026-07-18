@@ -253,6 +253,12 @@ public enum AnalyticsEngine {
                                   dayHr: [HRSample]? = nil,
                                   daySteps: [StepSample]? = nil,
                                   dayGravity: [GravitySample]? = nil,
+                                  // Direct, unit-qualified Oura percentages. Raw WHOOP red/IR rows are
+                                  // ignored here; they remain an uncalibrated timeline diagnostic.
+                                  spo2: [SpO2Sample] = [],
+                                  // Verified device-provided sleep bounds (for example Oura 0x76), used
+                                  // only to gate sleep-only vitals when the motion stager has no input.
+                                  knownSleepWindows: [(start: Int, end: Int)] = [],
                                   // Wear-gated nightly skin-temp mean is harvested here
                                   // (baseline-independent); IntelligenceEngine seeds a personal
                                   // baseline from these means across nights and re-derives
@@ -583,6 +589,18 @@ public enum AnalyticsEngine {
             dayHrFiltered, profile: profile, hrmax: effMaxHR,
             restingHR: restingHRDaily.map(Double.init))
 
+        let oxygenWindows = matched.isEmpty
+            ? knownSleepWindows
+            : matched.map { (start: $0.start, end: $0.end) }
+        let oxygen = spo2.compactMap { sample -> Double? in
+            guard sample.unit == "tenths_percent", sample.ir == 0,
+                  (700...1000).contains(sample.red),
+                  oxygenWindows.contains(where: { sample.ts >= $0.start && sample.ts <= $0.end })
+            else { return nil }
+            return Double(sample.red) / 10.0
+        }
+        let spo2Pct = oxygen.isEmpty ? nil : oxygen.reduce(0, +) / Double(oxygen.count)
+
         // ── Assemble DailyMetric ──────────────────────────────────────────────
         let daily = DailyMetric(
             day: day,
@@ -597,7 +615,7 @@ public enum AnalyticsEngine {
             recovery: recovery,
             strain: strain,
             exerciseCount: workouts.count,
-            spo2Pct: nil,
+            spo2Pct: spo2Pct,
             skinTempDevC: skinTempDevC,
             respRateBpm: respRateDaily,
             steps: stepsTotal,

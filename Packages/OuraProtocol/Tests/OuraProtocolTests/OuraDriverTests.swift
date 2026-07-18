@@ -24,11 +24,11 @@ final class OuraDriverTests: XCTestCase {
         let d = OuraDriver(ringGen: .gen3, authKey: key)
         XCTAssertEqual(d.phase, .idle)
 
-        // ready -> enable notifications + request nonce.
+        // ready -> request nonce first, then capture serial-free identity.
         let onReady = d.nextStep(after: .ready)
         XCTAssertEqual(d.phase, .authenticating)
-        XCTAssertEqual(onReady.map { $0.label }, ["notify_all", "get_nonce"])
-        XCTAssertEqual(onReady[1].bytes, [0x2F, 0x01, 0x2B])
+        XCTAssertEqual(onReady.map { $0.label }, ["get_nonce", "get_firmware", "get_hardware"])
+        XCTAssertEqual(onReady[0].bytes, [0x2F, 0x01, 0x2B])
 
         // nonce -> submit proof.
         let nonce = bytes("0102030405060708090a0b0c0d0e0f")
@@ -38,7 +38,7 @@ final class OuraDriverTests: XCTestCase {
         // The proof body matches the known vector.
         XCTAssertEqual(Array(onNonce[0].bytes[3...]), bytes("c49fb9e83c46087a555183a9dc511ee9"))
 
-        // auth success -> first live-HR enable step (read DHR status).
+        // auth success -> first live-HR step (read DHR status); CCCDs are already enabled by transport.
         let onAuth = d.nextStep(after: .authCompleted(.success))
         XCTAssertEqual(d.phase, .enablingLiveHR)
         XCTAssertEqual(onAuth.map { $0.label }, ["dhr_read"])
@@ -63,8 +63,21 @@ final class OuraDriverTests: XCTestCase {
     func testNoKeyDrivesNeedsKeyInstall() {
         let d = OuraDriver(ringGen: .gen3, authKey: nil)
         let cmds = d.nextStep(after: .ready)
-        XCTAssertTrue(cmds.isEmpty, "without an app key we cannot authenticate; emit no commands")
+        XCTAssertEqual(cmds.map { $0.label }, ["get_firmware", "get_hardware"],
+                       "without a key, collect only safe serial-free identity and never authenticate")
         XCTAssertEqual(d.phase, .needsKeyInstall)
+    }
+
+    func testRing4ReadyUsesOfficialReadOnlyPreAuthOrder() {
+        let d = OuraDriver(ringGen: .gen4, authKey: key)
+        let commands = d.nextStep(after: .ready)
+        XCTAssertEqual(commands.map(\.label), [
+            "get_firmware", "get_hardware",
+            "ring4_pre_auth_session_00", "ring4_pre_auth_session_01", "get_nonce",
+        ])
+        XCTAssertEqual(commands[2].bytes, [0x2F, 0x02, 0x01, 0x00])
+        XCTAssertEqual(commands[3].bytes, [0x2F, 0x02, 0x01, 0x01])
+        XCTAssertEqual(commands[4].bytes, [0x2F, 0x01, 0x2B])
     }
 
     func testFactoryResetStatusDrivesNeedsKeyInstall() {
@@ -90,7 +103,7 @@ final class OuraDriverTests: XCTestCase {
         // No injected key -> the honest needs-pairing path; the transport will provision one.
         let d = OuraDriver(ringGen: .gen3, authKey: nil, allowKeyInstall: true)
         let onReady = d.nextStep(after: .ready)
-        XCTAssertTrue(onReady.isEmpty)
+        XCTAssertEqual(onReady.map { $0.label }, ["get_firmware", "get_hardware"])
         XCTAssertEqual(d.phase, .needsKeyInstall)
 
         // The transport generates + persists a fresh 16-byte key and asks the driver for the install
@@ -103,8 +116,8 @@ final class OuraDriverTests: XCTestCase {
 
         // The ring acks with `25 01 00`; the transport calls back and the driver drives re-auth.
         let onAck = d.keyInstallAcknowledged()
-        XCTAssertEqual(onAck.map { $0.label }, ["notify_all", "get_nonce"])
-        XCTAssertEqual(onAck[1].bytes, [0x2F, 0x01, 0x2B])
+        XCTAssertEqual(onAck.map { $0.label }, ["get_nonce"])
+        XCTAssertEqual(onAck[0].bytes, [0x2F, 0x01, 0x2B])
         XCTAssertEqual(d.phase, .authenticating)
 
         // Re-auth uses the freshly-installed key: the proof matches the known vector for that key.
@@ -144,13 +157,52 @@ final class OuraDriverTests: XCTestCase {
 
     // MARK: - History fetch loop
 
-    func testHistoryFetchFlushesThenFetchesThenAcks() {
-        let d = OuraDriver(ringGen: .gen3, authKey: key)
-        let start = d.nextStep(after: .startHistoryFetch(cursor: 0))
+    func testRing4HistoryFetchWaitsForTimeSyncAckThenFlushesFetchesAndAcks() {
+        let d = OuraDriver(ringGen: .gen4, authKey: key, timeSyncToken: 0x5A)
+        let start = d.nextStep(after: .startHistoryFetch(cursor: 0, unixSeconds: 256))
         XCTAssertEqual(d.phase, .fetchingHistory)
-        XCTAssertEqual(start.map { $0.label }, ["flush_buffer", "get_events"])
+        XCTAssertEqual(start.map { $0.label }, [
+            "event_stream_enable", "sync_time", "ring4_post_sync_state",
+            "event_category_14", "event_category_18", "event_category_28",
+            "event_category_34", "event_category_04", "event_category_08",
+            "get_battery", "ring4_param_read_02", "ring4_param_read_04",
+            "ring4_history_session_mode",
+            "ring4_param_read_0b", "ring4_param_read_0d", "ring4_param_read_03",
+            "ring4_param_read_0b_again", "ring4_param_read_10",
+        ])
+        XCTAssertEqual(start[0].bytes, [0x16, 0x01, 0x02])
+        XCTAssertEqual(Array(start[1].bytes[0...1]), [0x12, 0x09])
+        XCTAssertEqual(Array(start[1].bytes[3...5]), [0x01, 0x00, 0x00])
+        XCTAssertEqual(Array(start[1].bytes[6...10]), [0x00, 0x00, 0x00, 0x00, 0xF6])
+        XCTAssertEqual(start[2].bytes, [0x1C, 0x01, 0xBF])
+        XCTAssertEqual(Array(start.dropFirst(3).prefix(6).map(\.bytes)), [
+            [0x18, 0x03, 0x14, 0x00, 0x10],
+            [0x18, 0x03, 0x18, 0x00, 0x10],
+            [0x18, 0x03, 0x28, 0x00, 0x09],
+            [0x18, 0x03, 0x34, 0x00, 0x04],
+            [0x18, 0x03, 0x04, 0x00, 0x10],
+            [0x18, 0x03, 0x08, 0x00, 0x10],
+        ])
+        XCTAssertEqual(start[9].bytes, [0x0C, 0x00])
+        XCTAssertEqual(Array(start.dropFirst(10).map(\.bytes)), [
+            [0x2F, 0x02, 0x20, 0x02],
+            [0x2F, 0x02, 0x20, 0x04],
+            [0x2F, 0x02, 0x03, 0x01],
+            [0x2F, 0x02, 0x20, 0x0B],
+            [0x2F, 0x02, 0x20, 0x0D],
+            [0x2F, 0x02, 0x20, 0x03],
+            [0x2F, 0x02, 0x20, 0x0B],
+            [0x2F, 0x02, 0x20, 0x10],
+        ])
+
+        let fetch = d.nextStep(after: .timeSyncAcknowledged(cursor: 0))
+        XCTAssertEqual(fetch.map { $0.label }, ["flush_buffer", "get_events"])
+        XCTAssertTrue(d.nextStep(after: .timeSyncAcknowledged(cursor: 0)).isEmpty,
+                      "a duplicate 0x13 must not release a second history fetch")
+        XCTAssertTrue(d.nextStep(after: .timeSyncReleaseTimedOut(cursor: 0)).isEmpty,
+                      "a late timeout must not release a second history fetch")
         // get_events cursor 0, max 255, flags FFFFFFFF.
-        XCTAssertEqual(start[1].bytes, [0x10, 0x09, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF])
+        XCTAssertEqual(fetch[1].bytes, [0x10, 0x09, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF])
 
         // More data -> ack-fetch (max 0) at the advanced cursor.
         let ack = d.nextStep(after: .historyCursorAdvanced(cursor: 0x12345678, moreData: true))
@@ -161,6 +213,26 @@ final class OuraDriverTests: XCTestCase {
         let stop = d.nextStep(after: .historyCursorAdvanced(cursor: 0x12345678, moreData: false))
         XCTAssertTrue(stop.isEmpty)
         XCTAssertEqual(d.phase, .streaming)
+
+        let nextPoll = d.nextStep(after: .startHistoryFetch(cursor: 0x12345678, unixSeconds: 512))
+        XCTAssertEqual(nextPoll.map(\.label), ["event_stream_enable", "sync_time"],
+                       "category masks are sent once per BLE session")
+    }
+
+    func testRing4TimeSyncTimeoutReleasesExactlyOneGuardedFetch() {
+        let d = OuraDriver(ringGen: .gen4, authKey: key, timeSyncToken: 0x5A)
+        _ = d.nextStep(after: .startHistoryFetch(cursor: 7, unixSeconds: 256))
+        let fetch = d.nextStep(after: .timeSyncReleaseTimedOut(cursor: 7))
+        XCTAssertEqual(fetch.map { $0.label }, ["flush_buffer", "get_events"])
+        let provisional = d.nextStep(after: .continueProvisionalHistory(cursor: 0x12345678))
+        XCTAssertEqual(provisional.map(\.label), ["get_events"])
+        XCTAssertEqual(provisional[0].bytes,
+                       [0x10, 0x09, 0x78, 0x56, 0x34, 0x12, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF],
+                       "provisional continuation must read max=255 and never emit a max=0 ACK")
+        XCTAssertTrue(d.nextStep(after: .timeSyncReleaseTimedOut(cursor: 7)).isEmpty)
+        XCTAssertTrue(d.nextStep(after: .timeSyncAcknowledged(cursor: 7)).isEmpty)
+        XCTAssertFalse(d.hasFreshAnchorForActiveFetch,
+                       "timeout release alone must never authorize cursor commit")
     }
 
     // MARK: - Ring-time -> UTC anchor (s5.5)
@@ -176,6 +248,28 @@ final class OuraDriverTests: XCTestCase {
     func testNoAnchorBeforeAnyTimeSyncOrBeacon() {
         let d = OuraDriver(ringGen: .gen3, authKey: key)
         XCTAssertNil(d.unixSeconds(forRingTimestamp: rt))
+    }
+
+    func testSyncTimeResponseIsAckOnlyAndDoesNotAnchor() {
+        let d = OuraDriver(ringGen: .gen4, authKey: key, timeSyncToken: 0x5A)
+        let requested = 1_800_000_123
+        _ = d.nextStep(after: .startHistoryFetch(cursor: 0, unixSeconds: requested))
+        let counter = UInt32(requested / 256)
+        let body: [UInt8] = [0x00, UInt8(counter & 0xFF), UInt8((counter >> 8) & 0xFF),
+                             UInt8((counter >> 16) & 0xFF), 0x00]
+        let response = OuraFraming.parseSyncTimeResponse(body)
+        XCTAssertEqual(response?.ackCode, 0)
+        XCTAssertEqual(response?.counterEcho, counter)
+        XCTAssertTrue(d.handleSyncTimeAcknowledgement(body: body))
+        var nonZeroStatus = body
+        nonZeroStatus[0] = 0x7F
+        XCTAssertTrue(d.handleSyncTimeAcknowledgement(body: nonZeroStatus),
+                      "0x13 is one-way liveness; its fields never authorize history commit")
+        XCTAssertTrue(d.handleSyncTimeAcknowledgement(body: [0x00, 0x01, 0x02, 0x03, 0x00]),
+                      "a well-formed 0x13 is liveness-only even when firmware does not echo our counter")
+        XCTAssertFalse(d.handleSyncTimeAcknowledgement(body: [0x00, 0x01]))
+        XCTAssertNil(d.unixSeconds(forRingTimestamp: 1_000))
+        XCTAssertFalse(d.hasUtcAnchor)
     }
 
     func testTimeSyncSetsAnchorAndConvertsPastAndFutureRingTimes() {
@@ -195,6 +289,220 @@ final class OuraDriverTests: XCTestCase {
         XCTAssertEqual(d.unixSeconds(forRingTimestamp: anchorRt - 100), Int(anchorEpochSeconds) - 10)
         // 100 ticks AFTER the anchor -> 10s later.
         XCTAssertEqual(d.unixSeconds(forRingTimestamp: anchorRt + 100), Int(anchorEpochSeconds) + 10)
+    }
+
+    func testRing4TimeSyncSetsNormalAndBurstClockFactors() {
+        let epochSeconds: Int64 = 1_700_000_000
+        let counter = UInt32(epochSeconds / 256)
+        func payload(token: UInt8) -> [UInt8] {
+            [token, UInt8(counter & 0xFF), UInt8((counter >> 8) & 0xFF),
+             UInt8((counter >> 16) & 0xFF), 0, 0, 0, 0, 0xF6]
+        }
+
+        let normal = OuraDriver(ringGen: .gen4, authKey: key, timeSyncToken: 0x00)
+        _ = normal.nextStep(after: .startHistoryFetch(cursor: 0, unixSeconds: Int(epochSeconds)))
+        _ = normal.ingest(record: OuraRecord(type: OuraEventTag.timeSync.rawValue,
+                                             ringTimestamp: 10_000, payload: payload(token: 0x00)))
+        XCTAssertEqual(normal.unixSeconds(forRingTimestamp: 10_010), Int(epochSeconds) + 1)
+
+        let burst = OuraDriver(ringGen: .gen4, authKey: key, timeSyncToken: 0xFD)
+        _ = burst.nextStep(after: .startHistoryFetch(cursor: 0, unixSeconds: Int(epochSeconds)))
+        _ = burst.ingest(record: OuraRecord(type: OuraEventTag.timeSync.rawValue,
+                                            ringTimestamp: 20_000, payload: payload(token: 0xFD)))
+        XCTAssertEqual(burst.unixSeconds(forRingTimestamp: 21_000), Int(epochSeconds) + 1)
+    }
+
+    func testProductionTimeSyncTokenRangeExcludesReservedBurstToken() {
+        XCTAssertEqual(OuraDriver.normalTimeSyncTokenRange, UInt8.min ... 0xFC)
+        XCTAssertFalse(OuraDriver.normalTimeSyncTokenRange.contains(0xFD))
+    }
+
+    func testRing4RejectsStaleAnchorAndRingStartRegressionClearsFreshAnchor() {
+        let requested: Int64 = 1_700_000_000
+        func payload(epochSeconds: Int64, token: UInt8) -> [UInt8] {
+            let counter = UInt32(epochSeconds / 256)
+            return [token, UInt8(counter & 0xFF), UInt8((counter >> 8) & 0xFF),
+                    UInt8((counter >> 16) & 0xFF), 0, 0, 0, 0, 0xF6]
+        }
+
+        let d = OuraDriver(ringGen: .gen4, authKey: key, timeSyncToken: 0x5A)
+        _ = d.nextStep(after: .startHistoryFetch(cursor: 0, unixSeconds: Int(requested)))
+        _ = d.ingest(record: OuraRecord(type: OuraEventTag.timeSync.rawValue,
+                                        ringTimestamp: 9_000,
+                                        payload: payload(epochSeconds: requested - 256, token: 0x5A)))
+        XCTAssertFalse(d.hasUtcAnchor, "a plausible stale backlog anchor must not match the active request")
+
+        _ = d.ingest(record: OuraRecord(type: OuraEventTag.timeSync.rawValue,
+                                        ringTimestamp: 10_000,
+                                        payload: payload(epochSeconds: requested, token: 0x01)))
+        XCTAssertFalse(d.hasUtcAnchor, "the right counter with the wrong request token must remain provisional")
+
+        _ = d.ingest(record: OuraRecord(type: OuraEventTag.timeSync.rawValue,
+                                        ringTimestamp: 10_001,
+                                        payload: payload(epochSeconds: requested, token: 0x5A)))
+        XCTAssertTrue(d.hasUtcAnchor)
+        XCTAssertTrue(d.hasFreshAnchorForActiveFetch)
+        _ = d.ingest(record: OuraRecord(type: OuraEventTag.ringStart.rawValue,
+                                        ringTimestamp: 1, payload: []))
+        XCTAssertFalse(d.hasUtcAnchor)
+        XCTAssertNil(d.unixSeconds(forRingTimestamp: 10_000))
+    }
+
+    func testRing4BoundedBootstrapAcceptsHistoricalAnchorThenRefetchesDurableCursor() {
+        let requested: Int64 = 1_700_000_000
+        let historical: Int64 = requested - 256
+        let counter = UInt32(historical / 256)
+        let payload: [UInt8] = [
+            0x11, UInt8(counter & 0xFF), UInt8((counter >> 8) & 0xFF),
+            UInt8((counter >> 16) & 0xFF), 0, 0, 0, 0, 0xF6,
+        ]
+        let d = OuraDriver(ringGen: .gen4, authKey: key, timeSyncToken: 0x5A)
+        _ = d.nextStep(after: .startHistoryFetch(cursor: 77, unixSeconds: Int(requested)))
+        d.enableHistoricalAnchorBootstrap()
+        _ = d.ingest(record: OuraRecord(type: OuraEventTag.timeSync.rawValue,
+                                        ringTimestamp: 9_000, payload: payload))
+        XCTAssertTrue(d.hasFreshAnchorForActiveFetch)
+        let restart = d.nextStep(after: .restartHistoryFromBootstrap(cursor: 77))
+        XCTAssertEqual(restart.map(\.label), ["flush_buffer", "get_events"])
+        XCTAssertEqual(restart[1].bytes,
+                       [0x10, 0x09, 0x4D, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF])
+        XCTAssertTrue(d.hasFreshAnchorForActiveFetch)
+        XCTAssertNil(d.activeHistoryHighWater)
+    }
+
+    func testRing4PersistedAnchorTranslatesButNeedsMonotonicContinuityToCommit() {
+        let anchor = OuraTimeAnchor(ringTimestamp: 1_000,
+                                    utcMilliseconds: 1_700_000_000_000,
+                                    factorMillisecondsPerTick: 100)
+        let d = OuraDriver(ringGen: .gen4, authKey: key, timeSyncToken: 0x5A,
+                           persistedTimeAnchor: anchor)
+        XCTAssertEqual(d.currentPrimaryTimeAnchor, anchor)
+        XCTAssertEqual(d.unixSeconds(forRingTimestamp: 1_100), 1_700_000_010)
+
+        _ = d.nextStep(after: .startHistoryFetch(cursor: 1_100, unixSeconds: 1_700_000_100))
+        XCTAssertFalse(d.hasFreshAnchorForActiveFetch,
+                       "loading a mapping must never authorize a cursor ACK by itself")
+        XCTAssertFalse(d.canResolveHistoryTimestamps,
+                       "history must stay parked until continuity authorizes the active fetch")
+
+        _ = d.ingest(record: OuraRecord(type: 0x99, ringTimestamp: 1_099, payload: []))
+        XCTAssertFalse(d.hasFreshAnchorForActiveFetch,
+                       "a record behind the durable cursor cannot prove continuity")
+        _ = d.ingest(record: OuraRecord(type: 0x99, ringTimestamp: 1_100, payload: []))
+        XCTAssertTrue(d.hasFreshAnchorForActiveFetch)
+        XCTAssertTrue(d.canResolveHistoryTimestamps)
+    }
+
+    func testRing4RejectsInvalidPersistedAnchors() {
+        let zeroRingTime = OuraTimeAnchor(ringTimestamp: 0,
+                                          utcMilliseconds: 1_700_000_000_000,
+                                          factorMillisecondsPerTick: 100)
+        let badFactor = OuraTimeAnchor(ringTimestamp: 1_000,
+                                       utcMilliseconds: 1_700_000_000_000,
+                                       factorMillisecondsPerTick: 10)
+        let futureEpoch = OuraTimeAnchor(ringTimestamp: 1_000,
+                                         utcMilliseconds: 2_200_000_000_000,
+                                         factorMillisecondsPerTick: 100)
+        for anchor in [zeroRingTime, badFactor, futureEpoch] {
+            let d = OuraDriver(ringGen: .gen4, authKey: key, persistedTimeAnchor: anchor)
+            XCTAssertNil(d.currentPrimaryTimeAnchor)
+            XCTAssertFalse(d.hasUtcAnchor)
+        }
+    }
+
+    func testPersistedAnchorRingStartRegressionSignalsDurableStateInvalidationOnce() {
+        let anchor = OuraTimeAnchor(ringTimestamp: 1_000,
+                                    utcMilliseconds: 1_700_000_000_000,
+                                    factorMillisecondsPerTick: 100)
+        let d = OuraDriver(ringGen: .gen4, authKey: key, persistedTimeAnchor: anchor)
+        _ = d.nextStep(after: .startHistoryFetch(cursor: 1_100, unixSeconds: 1_700_000_100))
+
+        _ = d.ingest(record: OuraRecord(type: OuraEventTag.ringStart.rawValue,
+                                        ringTimestamp: 5, payload: []))
+
+        XCTAssertNil(d.currentPrimaryTimeAnchor)
+        XCTAssertFalse(d.hasUtcAnchor)
+        XCTAssertTrue(d.consumePersistentTimeStateInvalidation())
+        XCTAssertFalse(d.consumePersistentTimeStateInvalidation())
+    }
+
+    func testRtcBeaconIsNeverExportedAsDurablePrimaryAnchor() {
+        let d = OuraDriver(ringGen: .gen4, authKey: key)
+        let seconds = 1_700_000_500
+        let beaconPayload: [UInt8] = [
+            UInt8(seconds & 0xFF), UInt8((seconds >> 8) & 0xFF),
+            UInt8((seconds >> 16) & 0xFF), UInt8((seconds >> 24) & 0xFF),
+        ]
+        _ = d.ingest(record: OuraRecord(type: OuraEventTag.rtcBeacon.rawValue,
+                                        ringTimestamp: 5_000, payload: beaconPayload))
+        XCTAssertTrue(d.hasUtcAnchor, "the beacon remains useful within this connection")
+        XCTAssertNil(d.currentPrimaryTimeAnchor,
+                     "the secondary beacon must not become reconnect-durable state")
+    }
+
+    func testRing4RecentRtcBeaconQualifiesActiveFetchWhenFirmwareOmitsTimeSyncRecord() {
+        let requested = 1_700_000_000
+        let beaconSeconds = requested - 8 * 60 * 60
+        let beaconPayload: [UInt8] = [
+            UInt8(beaconSeconds & 0xFF), UInt8((beaconSeconds >> 8) & 0xFF),
+            UInt8((beaconSeconds >> 16) & 0xFF), UInt8((beaconSeconds >> 24) & 0xFF),
+        ]
+        let d = OuraDriver(ringGen: .gen4, authKey: key, timeSyncToken: 0x5A)
+        _ = d.nextStep(after: .startHistoryFetch(cursor: 77, unixSeconds: requested))
+        _ = d.ingest(record: OuraRecord(type: OuraEventTag.rtcBeacon.rawValue,
+                                        ringTimestamp: 5_000, payload: beaconPayload))
+
+        XCTAssertTrue(d.hasFreshAnchorForActiveFetch)
+        XCTAssertEqual(d.currentPrimaryTimeAnchor,
+                       OuraTimeAnchor(ringTimestamp: 5_000,
+                                      utcMilliseconds: Int64(beaconSeconds) * 1_000,
+                                      factorMillisecondsPerTick: 100))
+        XCTAssertEqual(d.unixSeconds(forRingTimestamp: 5_010), beaconSeconds + 1)
+    }
+
+    func testRing4RetainedRtcBeaconJustOverTwoDaysQualifiesActiveFetch() {
+        let requested = 1_700_000_000
+        let beaconSeconds = requested - 52 * 60 * 60
+        let beaconPayload: [UInt8] = [
+            UInt8(beaconSeconds & 0xFF), UInt8((beaconSeconds >> 8) & 0xFF),
+            UInt8((beaconSeconds >> 16) & 0xFF), UInt8((beaconSeconds >> 24) & 0xFF),
+        ]
+        let d = OuraDriver(ringGen: .gen4, authKey: key, timeSyncToken: 0x5A)
+        _ = d.nextStep(after: .startHistoryFetch(cursor: 77, unixSeconds: requested))
+        _ = d.ingest(record: OuraRecord(type: OuraEventTag.rtcBeacon.rawValue,
+                                        ringTimestamp: 5_000, payload: beaconPayload))
+
+        XCTAssertTrue(d.hasFreshAnchorForActiveFetch)
+        XCTAssertEqual(d.currentPrimaryTimeAnchor?.utcMilliseconds,
+                       Int64(beaconSeconds) * 1_000)
+    }
+
+    func testRing4StaleRtcBeaconCannotAuthorizeActiveFetch() {
+        let requested = 1_700_000_000
+        let beaconSeconds = requested - 4 * 24 * 60 * 60
+        let beaconPayload: [UInt8] = [
+            UInt8(beaconSeconds & 0xFF), UInt8((beaconSeconds >> 8) & 0xFF),
+            UInt8((beaconSeconds >> 16) & 0xFF), UInt8((beaconSeconds >> 24) & 0xFF),
+        ]
+        let d = OuraDriver(ringGen: .gen4, authKey: key, timeSyncToken: 0x5A)
+        _ = d.nextStep(after: .startHistoryFetch(cursor: 77, unixSeconds: requested))
+        _ = d.ingest(record: OuraRecord(type: OuraEventTag.rtcBeacon.rawValue,
+                                        ringTimestamp: 5_000, payload: beaconPayload))
+
+        XCTAssertFalse(d.hasFreshAnchorForActiveFetch)
+        XCTAssertNil(d.currentPrimaryTimeAnchor)
+    }
+
+    func testHistoryHighWaterUsesEveryValidInnerRecordAndStartsEmpty() {
+        let d = OuraDriver(ringGen: .gen4, authKey: key, timeSyncToken: 0x5A)
+        _ = d.nextStep(after: .startHistoryFetch(cursor: 0, unixSeconds: 1_700_000_000))
+        XCTAssertNil(d.activeHistoryHighWater)
+        _ = d.ingest(record: OuraRecord(type: 0x99, ringTimestamp: 10, payload: []))
+        _ = d.ingest(record: OuraRecord(type: OuraEventTag.stateChange.rawValue,
+                                        ringTimestamp: 42, payload: [1]))
+        _ = d.ingest(record: OuraRecord(type: 0x13, ringTimestamp: 999, payload: []))
+        XCTAssertEqual(d.activeHistoryHighWater, 42,
+                       "unknown valid TLVs count; outer opcodes below 0x41 never do")
     }
 
     func testRtcBeaconOnlyAnchorsWhenNoTimeSyncSeenYet() {
@@ -268,7 +576,7 @@ final class OuraDriverTests: XCTestCase {
         // 0x7B SpO2 stable record -> one spo2 event (970, BE).
         let rec = OuraFraming.parseRecord(bytes("7b060200010003ca"))!
         let events = d.ingest(record: rec)
-        XCTAssertEqual(events, [.spo2(OuraSpO2(ringTimestamp: rt, value: 970))])
+        XCTAssertEqual(events, [.spo2(OuraSpO2(ringTimestamp: rt, value: 970, unit: "tenths_percent"))])
     }
 
     func testIngestUnknownTagYieldsNothing() {
@@ -416,6 +724,11 @@ final class OuraDriverTests: XCTestCase {
         let dhrReadAck = OuraSecureFrame(subop: 0x21, subBody: bytes("0201110200"))
         XCTAssertEqual(d.handleSecureFrame(dhrReadAck), .enableAck)
 
+        let spo2Status = OuraSecureFrame(subop: 0x21, subBody: bytes("0401000000"))
+        XCTAssertEqual(d.handleSecureFrame(spo2Status),
+                       .featureStatus(OuraFeatureStatus(feature: 0x04, mode: 0x01,
+                                                        status: 0, state: 0, subscription: 0)))
+
         // The push subBody is the 14 bytes AFTER `2f 0f 28` from the s5.6 wire frame (IBI at [5..6]).
         let pushBody = bytes("020002000001040000000000007f")
         XCTAssertEqual(pushBody.count, 14)
@@ -436,6 +749,16 @@ final class OuraDriverTests: XCTestCase {
         ])
     }
 
+    func testUnknownOuterOpcodeCannotChangeLivePushRingTime() {
+        let d = OuraDriver(ringGen: .gen3, authKey: key)
+        let valid = OuraFraming.parseRecord(bytes("420d0200010000d2dd639001000002"))!
+        _ = d.ingest(record: valid)
+        _ = d.ingest(record: OuraRecord(type: 0x13, ringTimestamp: 0xDEAD_BEEF, payload: []))
+
+        let events = d.ingestLiveHRPush(body: bytes("020002000001040000000000007f"))
+        XCTAssertEqual(events.first, .hr(OuraHR(ringTimestamp: rt, bpm: 59, ibiMs: 1025)))
+    }
+
     // MARK: - Notification-level ingest via reassembler
 
     func testIngestNotificationReassemblesAndDecodes() {
@@ -445,7 +768,7 @@ final class OuraDriverTests: XCTestCase {
         let value = bytes("7b060200010003ca" + "460802000100420e470e")
         let events = d.ingest(notification: value, reassembler: reassembler)
         XCTAssertEqual(events, [
-            .spo2(OuraSpO2(ringTimestamp: rt, value: 970)),
+            .spo2(OuraSpO2(ringTimestamp: rt, value: 970, unit: "tenths_percent")),
             .temp(OuraTemp(ringTimestamp: rt, celsius: 36.50)),
             .temp(OuraTemp(ringTimestamp: rt, celsius: 36.55)),
         ])
@@ -456,16 +779,21 @@ final class OuraDriverTests: XCTestCase {
     func testRingGenMtuAndCaps() {
         XCTAssertEqual(OuraRingGen.gen3.mtu, 203)
         XCTAssertEqual(OuraRingGen.gen5.mtu, 247)
+        XCTAssertTrue(OuraRingGen.gen4.hasExtraNotifyChars)
         XCTAssertTrue(OuraRingGen.gen5.hasExtraNotifyChars)
         XCTAssertFalse(OuraRingGen.gen3.hasExtraNotifyChars)
+        XCTAssertEqual(OuraGatt.characteristicUUIDs(for: .gen4).count, 5)
         XCTAssertEqual(OuraRingGen.from(model: "Oura Ring 5"), .gen5)
         XCTAssertEqual(OuraRingGen.from(model: "Oura Ring 3"), .gen3)
+        XCTAssertEqual(OuraRingGen.recognise(advertisedName: "Oura Ring 4"), .gen4)
+        XCTAssertEqual(OuraRingGen.recognise(advertisedName: "Oura Gen 5"), .gen5)
+        XCTAssertNil(OuraRingGen.recognise(advertisedName: "Oura 9051280476123456"))
         XCTAssertTrue(OuraRingGen.gen3.capabilities.contains(.hrv))
     }
 
     func testSyncTimeCommandCounter() {
         // counter = floor(unix / 256). For unix = 256 -> counter 1 -> bytes 01 00 00, trailer 0xF6.
-        let cmd = OuraCommands.syncTime(unixSeconds: 256)
+        let cmd = OuraCommands.syncTime(unixSeconds: 256, token: 0)
         XCTAssertEqual(cmd.bytes, [0x12, 0x09, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF6])
     }
 
@@ -478,5 +806,11 @@ final class OuraDriverTests: XCTestCase {
         // The normal command builders never produce a reboot/reset opcode.
         XCTAssertNotEqual(OuraCommands.getBattery().bytes.first, 0x0E)
         XCTAssertNotEqual(OuraCommands.getBattery().bytes.first, 0x1A)
+    }
+
+    func testAutomaticSpO2CommandsAreByteExactAndExplicitlyNamed() {
+        XCTAssertEqual(OuraCommands.spO2ReadStatus().bytes, [0x2F, 0x02, 0x20, 0x04])
+        XCTAssertEqual(OuraCommands.spO2EnableAutomatic().bytes, [0x2F, 0x03, 0x22, 0x04, 0x01])
+        XCTAssertEqual(OuraCommands.spO2EnableAutomatic().label, "spo2_enable_automatic")
     }
 }

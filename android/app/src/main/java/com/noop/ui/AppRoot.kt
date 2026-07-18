@@ -214,7 +214,7 @@ private val drawerGroups: List<DrawerGroup> = listOf(
     ), defaultExpanded = false),
     DrawerGroup("App", R.string.more_group_app, listOf(
         Destination.Automations, Destination.SmartAlarm, Destination.Notifications,
-        Destination.TestCentre, Destination.Settings, Destination.Support,
+        Destination.Settings, Destination.Support,
     ), defaultExpanded = false),
 )
 
@@ -370,7 +370,9 @@ fun AppRoot(viewModel: AppViewModel = viewModel()) {
                 composable(Destination.Automations.route) { AutomationsScreen(viewModel) }
                 composable(Destination.SmartAlarm.route) { SmartAlarmScreen(viewModel) }
                 composable(Destination.Workouts.route) { WorkoutsScreen(viewModel) }
-                composable(Destination.Support.route) { SupportScreen() }
+                composable(Destination.Support.route) {
+                    SupportScreen(onOpenDiagnostics = { nav.navigate(Destination.TestCentre.route) })
+                }
                 composable(Destination.Intelligence.route) { IntelligenceScreen(viewModel) }
 
                 // --- Placeholder routes (later waves fill these in) ---
@@ -425,7 +427,7 @@ fun AppRoot(viewModel: AppViewModel = viewModel()) {
                 composable(Destination.BackupSync.route) { BackupSyncScreen() }
                 composable(Destination.Notifications.route) { NotificationsSettingsScreen(viewModel) }
                 composable(Destination.Settings.route) {
-                    SettingsScreen(viewModel, onOpenTestCentre = { nav.navigate(Destination.TestCentre.route) })
+                    SettingsScreen(viewModel)
                 }
                 composable(Destination.TestCentre.route) { TestCentreScreen(viewModel) }
                 // The "More" page — the iOS More tab's twin: a navigated ScreenScaffold page hosting the

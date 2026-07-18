@@ -323,9 +323,6 @@ struct RootTabView: View {
                     // Automations screen instead. Its absence from the iPhone More list is correct.
                     MoreRow("Alarms", "alarm.fill") { SmartAlarmView() }
                     MoreRow("Automations", "wand.and.stars") { AutomationsView() }
-                    // The Test Centre (the diagnostics + bug-report hub) gets a first-class home here, not
-                    // just buried in Settings, so the feedback loop is one tap from the More tab.
-                    MoreRow("Test Centre", "stethoscope") { TestCentreView() }
                     MoreRow("Siri & Shortcuts", "mic.fill") { SiriShortcutsSettingsView() }
                     MoreRow("Settings", "gearshape.fill") { SettingsView() }
                     MoreRow("Support", "hands.clap.fill") { SupportView() }

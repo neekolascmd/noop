@@ -56,6 +56,7 @@ private struct DevicesContent: View {
     @State private var renameDraft = ""
     @State private var removeTarget: PairedDevice?
     @State private var deleteDataTarget: PairedDevice?
+    @State private var confirmSpO2Enable = false
     /// After removing the ACTIVE device with other devices still paired, prompt to pick a new active one.
     @State private var pickNewActive = false
 
@@ -104,6 +105,12 @@ private struct DevicesContent: View {
                     onRename: { renameDraft = device.nickname ?? device.displayName; renameTarget = device },
                     onRemove: { removeTarget = device })
                     .staggeredAppear(index: idx)
+                if device.sourceKind == .oura && device.status == .active {
+                    OuraSpO2Setting(
+                        connected: live.connected,
+                        enabled: model.ouraSpO2AutomaticEnabled,
+                        onEnable: { confirmSpO2Enable = true })
+                }
             }
 
             addButton
@@ -119,6 +126,13 @@ private struct DevicesContent: View {
             AddDeviceWizard(live: live) { showAddWizard = false }
                 .environmentObject(model)
                 .environmentObject(live)
+        }
+        .alert("Enable automatic blood oxygen measurements?",
+               isPresented: $confirmSpO2Enable) {
+            Button("Cancel", role: .cancel) { }
+            Button("Enable") { model.enableOuraAutomaticSpO2() }
+        } message: {
+            Text("This changes the ring's measurement setting and may use more battery. It does not reset the ring or erase data. NOOP will read only the percentage records the ring stores overnight.")
         }
         // Switch confirm
         .alert("Make this your active strap?",
@@ -263,6 +277,50 @@ private struct DevicesContent: View {
                 pickNewActive = true
             }
         }
+    }
+}
+
+/// Explicit opt-in surface for the one Oura sensor setting NOOP can safely qualify. Reading the status is
+/// automatic and read-only; the write is reachable only through the confirmation above.
+private struct OuraSpO2Setting: View {
+    let connected: Bool
+    let enabled: Bool?
+    let onEnable: () -> Void
+
+    var body: some View {
+        StrandCard(padding: 14) {
+            HStack(spacing: 12) {
+                Image(systemName: "lungs.fill")
+                    .foregroundStyle(StrandPalette.textSecondary)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Automatic blood oxygen")
+                        .font(StrandFont.subhead)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                    Text(statusText)
+                        .font(StrandFont.footnote)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                }
+                Spacer()
+                if enabled == true {
+                    StatePill("On", tone: .positive)
+                } else if connected && enabled == false {
+                    Button("Enable", action: onEnable)
+                        .buttonStyle(.bordered)
+                } else {
+                    StatePill(connected ? "Checking…" : "Connect ring",
+                              tone: .neutral, showsDot: false)
+                }
+            }
+        }
+    }
+
+    private var statusText: String {
+        if enabled == true { return String(localized: "The ring can bank overnight SpO₂ percentage records.") }
+        if enabled == false { return String(localized: "Off on this ring. Enable it before the next overnight test.") }
+        return connected
+            ? String(localized: "Reading the ring's current setting.")
+            : String(localized: "Connect the ring to read this setting.")
     }
 }
 
@@ -611,7 +669,7 @@ struct DeviceCapabilityProfile {
         // EXPERIMENTAL locally-adopted Oura ring (gen 3/4/5). The gen is carried on `model` ("Oura Ring
         // 3/4/5") and recovered with OuraRingGen.from(model:). NOOP reads the ring's OWN raw signals + open
         // HRV/sleep-phase tags and computes its own Charge/Effort/Rest; it NEVER reads Oura's encrypted
-        // Readiness/Sleep scores, and claims NO absolute SpO₂ %. Estimates carry "*"; a signal it can't read
+        // Readiness/Sleep scores. Percentage SpO₂ is accepted only from qualified records. Estimates carry
         // stays "-". Per-gen copy and the canonical Beta caveat (spec
         // docs/superpowers/specs/2026-06-29-oura-onboarding-ux.md s3/s4).
         if d.sourceKind == .oura {
@@ -619,8 +677,8 @@ struct DeviceCapabilityProfile {
             // gen3/4 are verified-shape; gen5 ("newer") carries the least-proven caveat.
             let newer = (gen == .gen5)
             let captures = newer
-                ? String(localized: "Heart rate* · HRV* · Sleep* · Resting HR* · Skin temp* · Battery*")
-                : String(localized: "Heart rate · HRV* · Sleep · Resting HR · Skin temp* · Battery")
+                ? String(localized: "Heart rate* · HRV* · Sleep* · Resting HR* · Skin temp* · SpO₂* · Battery*")
+                : String(localized: "Heart rate · HRV* · Sleep window · Resting HR · Skin temp* · SpO₂* · Battery")
             let powers = newer
                 ? String(localized: "Powers Effort now; Charge and Rest once enough nights and decode are confirmed")
                 : String(localized: "Powers Charge, Effort, Rest and Sleep")
@@ -628,7 +686,7 @@ struct DeviceCapabilityProfile {
                 displayModel: String(localized: "\(gen.displayName) (Beta)"),
                 captures: captures,
                 powers: powers,
-                footnote: String(localized: "Beta. * is an on-device estimate. Skin temp is a trend versus your own baseline, and HRV needs you to be still. No Oura Readiness or SpO₂ percentage comes off the ring (import an Oura file for those)."))
+                footnote: String(localized: "Beta. * is an on-device estimate or needs overnight qualification. SpO₂ appears only when automatic measurement is enabled and the ring reports percentage records. NOOP never reads Oura Readiness or Sleep scores."))
         }
         // Apple Watch (live HealthKit source). UNLIKE the WHOOP/strap branches, the watch's stored
         // capability `Set` is already the honest per-model trim (AppleWatchDevice only adds a metric

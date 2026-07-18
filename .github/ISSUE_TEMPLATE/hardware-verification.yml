@@ -54,7 +54,7 @@ body:
     attributes:
       label: NOOP release or commit SHA
       description: Do not write "latest"; give a release number or full commit.
-      placeholder: "8.2.1 or e69833096c9b17ecf3bd1707bd13205225650ec2"
+      placeholder: "8.3.0 or b6aa5a641d074121b5f64c36e9c6b343d110191b"
     validations:
       required: true
 
@@ -101,12 +101,30 @@ body:
         - Pairing:
         - Live HR:
         - Live R-R intervals:
+        - Out-of-range reconnect:
+        - App relaunch reconnect:
         - History sync:
+        - Overnight / 24-hour history continuity:
+        - Historical timestamp plausibility:
         - Sleep duration and stages:
         - Workout detection/import:
         - Haptics:
         - Scheduled alarm set/read/fire/cancel:
         - Firmware-sensitive or unexpected behavior:
+    validations:
+      required: true
+
+  - type: textarea
+    id: device_identity
+    attributes:
+      label: Device identity diagnostics
+      description: >-
+        For Oura, paste the redacted "Oura: identity" lines from the strap log. They contain firmware
+        and hardware family but omit the ProductInfo serial and Bluetooth address. For another lane,
+        include the equivalent firmware/model diagnostic or write "not exposed".
+      placeholder: |
+        Oura: identity selected=Oura Ring 3 firmware=3.4.3 api=... bootloader=... bluetooth=...
+        Oura: identity hardware=BLB_03
     validations:
       required: true
 

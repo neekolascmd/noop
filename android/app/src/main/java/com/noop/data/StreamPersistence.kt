@@ -29,11 +29,9 @@ object StreamPersistence {
         // via the historical-offload path), so for a WHOOP batch these stay empty. A live source that
         // DOES decode them (the Oura ring) populates the protocol Streams' spo2/skinTemp, which widen
         // 1:1 onto the existing Room insert shape here.
-        // `unit` is carried on the protocol Spo2Sample/SkinTempSample for fidelity but is not yet
-        // persisted: Spo2Row/SkinTempRow (and the Room entities) have no unit column. The raw integers
-        // follow fixed conventions (skinTemp = centi-°C, °C = raw/100; spo2 = raw_adc), documented on the
-        // protocol carriers, so a missing column never causes a misread until a migration adds one.
-        spo2 = streams.spo2.map { Spo2Row(it.ts.toLong(), it.red, it.ir) },
+        // Preserve the SpO2 unit all the way into Room. This prevents legacy raw ADC rows from ever being
+        // interpreted as the qualified percentage samples emitted by the Oura Ring 4 history decoder.
+        spo2 = streams.spo2.map { Spo2Row(it.ts.toLong(), it.red, it.ir, it.unit) },
         skinTemp = streams.skinTemp.map { SkinTempRow(it.ts.toLong(), it.raw) },
         // resp/gravity/steps/ppgHr remain type-47-only (historical offload), unchanged.
     )

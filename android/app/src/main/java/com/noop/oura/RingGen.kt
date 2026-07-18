@@ -4,7 +4,7 @@ package com.noop.oura
 // transport handles all gens by swapping command sets, not code paths. The framing/auth/event-tag
 // dictionary are generation-invariant (per OURA_PROTOCOL.md s7.2), so RingGen only drives:
 //   - MTU clamp (203 vs 247)
-//   - which characteristics to discover (gen5 extra notify chars, currently unused)
+//   - which characteristics to discover (gen4/5 extra notify chars, currently unused)
 //   - the live-HR enable command set (verified on gen3, expected-same on gen4/5)
 //   - the registered capability set surfaced to the app
 //
@@ -37,13 +37,13 @@ enum class OuraRingGen(val raw: String) {
     val maxWritePayload: Int get() = mtu - OuraGatt.attOverhead
 
     /**
-     * Whether this generation advertises the extra ...0004/5/6 characteristics. Only gen5 does, and
-     * v1 never writes to them (roles unconfirmed). Per OURA_PROTOCOL.md s1.2 / s7.2.
+     * Whether this generation advertises the extra ...0004/5/6 characteristics. Hardware discovery
+     * confirms Ring 4 does too; v1 never writes to them (roles unconfirmed).
      */
     val hasExtraNotifyChars: Boolean
         get() = when (this) {
-            GEN3, GEN4 -> false
-            GEN5 -> true
+            GEN3 -> false
+            GEN4, GEN5 -> true
         }
 
     /**
@@ -85,9 +85,13 @@ enum class OuraRingGen(val raw: String) {
             val name = advertisedName?.lowercase() ?: return null
             // Only treat as an Oura ring at all if the name carries the brand token.
             if (!name.contains("oura") && !name.contains("ring")) return null
-            if (name.contains("5")) return GEN5
-            if (name.contains("4")) return GEN4
-            if (name.contains("3") || name.contains("horizon")) return GEN3
+            // Reset-mode advertisements can contain long serial-like digit runs. Only accept a
+            // number when it is explicitly labelled as a Ring/Gen token.
+            if (Regex("""\b(?:ring|gen)\s*5\b""").containsMatchIn(name)) return GEN5
+            if (Regex("""\b(?:ring|gen)\s*4\b""").containsMatchIn(name)) return GEN4
+            if (Regex("""\b(?:ring|gen)\s*3\b""").containsMatchIn(name) ||
+                Regex("""\bhorizon\b""").containsMatchIn(name)
+            ) return GEN3
             return null
         }
 
@@ -97,11 +101,7 @@ enum class OuraRingGen(val raw: String) {
          * usable command set. Per architecture plan s5.
          */
         fun from(model: String): OuraRingGen {
-            val m = model.lowercase()
-            if (m.contains("5")) return GEN5
-            if (m.contains("4")) return GEN4
-            if (m.contains("3")) return GEN3
-            return GEN3
+            return recognise(model) ?: GEN3
         }
     }
 }

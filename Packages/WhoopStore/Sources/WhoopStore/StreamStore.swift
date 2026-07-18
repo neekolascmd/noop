@@ -88,11 +88,11 @@ extension WhoopStore {
             }
             if !streams.spo2.isEmpty {
                 let stmt = try db.cachedStatement(sql: """
-                    INSERT INTO spo2Sample (deviceId, ts, red, ir) VALUES (?, ?, ?, ?)
+                    INSERT INTO spo2Sample (deviceId, ts, red, ir, unit) VALUES (?, ?, ?, ?, ?)
                     ON CONFLICT(deviceId, ts) DO NOTHING
                     """)
                 for s in streams.spo2 {
-                    try stmt.execute(arguments: [deviceId, s.ts, s.red, s.ir])
+                    try stmt.execute(arguments: [deviceId, s.ts, s.red, s.ir, s.unit])
                     spo2 += db.changesCount
                 }
             }

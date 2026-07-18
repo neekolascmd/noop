@@ -464,6 +464,22 @@ public final class LiveState: ObservableObject {
         lastFrameAtUnix = nil             // #987: a stale "last frame" freshness must not outlive it either
     }
 
+    /// Clear values owned by the previously-active wearable before another source starts. Connection and
+    /// battery are shared presentation channels, so leaving either populated can briefly label the old
+    /// device's telemetry as the newly-selected device.
+    func clearDeviceTelemetryForTransition() {
+        connected = false
+        bonded = false
+        encryptedBond = false
+        streamingLiveHR = false
+        liveFeedActive = false
+        batteryPct = nil
+        charging = nil
+        lastFrameType = nil
+        lastEvent = nil
+        clearBiometrics()
+    }
+
     /// Cap on the in-app strap-log ring buffer. Raised from the old ~1h (200 lines) to retain a rolling
     /// ~24h of activity (#510 — maddognik's protocol RE wants a full day to correlate against): a busy
     /// live session emits a few lines a minute, so 5,000 lines comfortably spans a day. Each line is a

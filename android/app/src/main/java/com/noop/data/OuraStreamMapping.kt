@@ -37,6 +37,9 @@ object OuraStreamMapping {
     /** The event `kind` recorded for the ring's own open sleep-phase (0x49.../0x58) tags. */
     const val EVENT_SLEEP_PHASE = "OURA_SLEEP_PHASE"
 
+    /** Verified 0x6A measurements; the unnamed state is preserved raw, never promoted to a stage. */
+    const val EVENT_SLEEP_PERIOD = "OURA_SLEEP_PERIOD"
+
     /**
      * Fold a batch of decoded [events] into a protocol [Streams] for one flush. [anchor] maps a
      * ring-clock timestamp to wall-clock unix seconds (null => drop the sample). Pure: no BLE, no DB,
@@ -76,12 +79,21 @@ object OuraStreamMapping {
                 }
 
                 is OuraEvent.Spo2 -> {
-                    // The ring exposes ONE combined SpO2 reading (not separate red/ir channels): its
-                    // raw value goes in `red`; `ir` stays 0 (an unread channel, never a fabricated
-                    // second reading). `unit` carries the decoder's own scale tag so downstream never
-                    // assumes a percentage, mirroring the Swift twin's SpO2Sample(unit:).
                     val ts = anchor(ev.value.ringTimestamp) ?: continue
-                    out.spo2.add(Spo2Sample(ts = ts, red = ev.value.value, ir = 0, unit = ev.value.unit))
+                    val tenths = when (ev.value.unit) {
+                        "percent" -> ev.value.value * 10
+                        "tenths_percent" -> ev.value.value
+                        else -> continue
+                    }
+                    if (tenths !in 700..1000) continue
+                    out.spo2.add(
+                        Spo2Sample(
+                            ts = ts + ev.value.sampleOffsetSeconds,
+                            red = tenths,
+                            ir = 0,
+                            unit = "tenths_percent",
+                        ),
+                    )
                 }
 
                 is OuraEvent.Temp -> {
@@ -109,6 +121,22 @@ object OuraStreamMapping {
                             payload = linkedMapOf<String, Any?>(
                                 "phase" to ev.value.stage.raw,
                                 "index" to ev.value.index,
+                            ),
+                        ),
+                    )
+                }
+
+                is OuraEvent.SleepPeriodEvent -> {
+                    val ts = anchor(ev.value.ringTimestamp) ?: continue
+                    out.events.add(
+                        WhoopEvent(
+                            ts = ts,
+                            kind = EVENT_SLEEP_PERIOD,
+                            payload = linkedMapOf<String, Any?>(
+                                "average_hr_bpm" to ev.value.averageHeartRate,
+                                "respiration_bpm" to ev.value.respirationRate,
+                                "motion_count" to ev.value.motionCount,
+                                "sleep_state" to ev.value.sleepState,
                             ),
                         ),
                     )
