@@ -18,12 +18,12 @@
       "screenshotURLs": [],
       "versions": [
         {
-          "version": "8.2.1",
-          "buildVersion": "171",
-          "date": "2026-07-11",
-          "localizedDescription": "The first community-maintained continuation release, with safer backup restores and a reproducible release pipeline.",
-          "downloadURL": "https://github.com/neekolascmd/noop/releases/download/v8.2.1/NOOP-v8.2.1-ios.ipa",
-          "size": 14031200,
+          "version": "8.3.0",
+          "buildVersion": "172",
+          "date": "2026-07-18",
+          "localizedDescription": "Direct local Oura Ring 4 adoption, durable history sync, device-aware UI, and conservative sleep and SpO2 handling.",
+          "downloadURL": "https://github.com/neekolascmd/noop/releases/download/v8.3.0/NOOP-v8.3.0-ios.ipa",
+          "size": 14129366,
           "minOSVersion": "17.0"
         }
       ],
@@ -37,12 +37,12 @@
           "NSHealthUpdateUsageDescription": "NOOP writes the metrics it computes from your strap back into Apple Health, on-device and only when you allow it."
         }
       },
-      "version": "8.2.1",
-      "buildVersion": "171",
-      "versionDate": "2026-07-11",
-      "versionDescription": "The first community-maintained continuation release, with safer backup restores and a reproducible release pipeline.",
-      "downloadURL": "https://github.com/neekolascmd/noop/releases/download/v8.2.1/NOOP-v8.2.1-ios.ipa",
-      "size": 14031200,
+      "version": "8.3.0",
+      "buildVersion": "172",
+      "versionDate": "2026-07-18",
+      "versionDescription": "Direct local Oura Ring 4 adoption, durable history sync, device-aware UI, and conservative sleep and SpO2 handling.",
+      "downloadURL": "https://github.com/neekolascmd/noop/releases/download/v8.3.0/NOOP-v8.3.0-ios.ipa",
+      "size": 14129366,
       "minOSVersion": "17.0"
     }
   ],
