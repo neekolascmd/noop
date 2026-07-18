@@ -158,8 +158,8 @@ struct SettingsView: View {
     @StateObject private var updateChecker = UpdateChecker()
     @Environment(\.openURL) private var openURL
 
-    /// Whether the "Advanced" disclosure (Recovery, Test Centre, experimental probes, Backup &
-    /// restore) is expanded. Default FALSE so a first-run user lands on the handful of everyday
+    /// Whether the "Advanced" disclosure (Recovery, experimental probes, Backup & restore) is expanded.
+    /// Default FALSE so a first-run user lands on the handful of everyday
     /// sections (profile, units, appearance, strap, features) instead of the full wall of 11 cards
     /// (S3). Nothing is removed; every section below stays one tap away by expanding this group.
     /// Persisted so it remembers the user's choice; mirrors the Android `noop.settingsAdvancedOpen` key.
@@ -183,15 +183,14 @@ struct SettingsView: View {
 
                 // Lower-frequency sections collapse behind a single default-closed disclosure so the
                 // screen opens at ~6 sections instead of 11. Nothing is removed; every section here
-                // (Recovery / advanced scoring, Test Centre, the experimental probes + raw-capture, and
-                // Backup & restore) stays one tap away. Modelled on the Test Centre "Advanced" group.
+                // (Recovery / advanced scoring, the experimental probes + raw-capture, and Backup &
+                // restore) stays one tap away.
                 SettingsDisclosureGroup(
                     title: "Advanced",
-                    subtitle: "Recovery, Test Centre, experimental probes, and backup. Tucked away to keep the everyday screen tidy.",
+                    subtitle: "Recovery, experimental probes, and backup. Tucked away to keep the everyday screen tidy.",
                     isExpanded: $advancedOpen
                 ) {
                     recoveryCard
-                    testCentreCard
                     experimentalCard
                     backupCard
                 }
@@ -970,34 +969,6 @@ struct SettingsView: View {
         backupAlertTitle = String(localized: "Charge baseline recalibrating")
         backupAlertMessage = String(localized: "NOOP will re-learn your baseline from tonight's data onward. Your history is kept, and it takes a few nights to settle.")
         showBackupAlert = true
-    }
-
-    // MARK: - Test Centre (the diagnostic home, #507/#509)
-
-    /// A nav row into the Test Centre, the single home for the diagnostic, log and test controls (spec
-    /// section 7). The strap log, recalibrate, scheduled export and experimental toggles also live there
-    /// on the same bindings, so this is a faster door to the full set without growing this screen.
-    private var testCentreCard: some View {
-        SettingsSection(
-            icon: "testtube.2",
-            title: "Test Centre",
-            blurb: "Turn on a test for the thing that's wrong, wear the strap, then tap Report. Your strap log, recalibrate, scheduled export and experimental probes all live here too."
-        ) {
-            NavigationLink(destination: TestCentreView()) {
-                HStack {
-                    Text("Open Test Centre")
-                        .font(StrandFont.body)
-                        .foregroundStyle(StrandPalette.textPrimary)
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(StrandPalette.textTertiary)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(LiquidPressStyle())
-            .accessibilityLabel("Open Test Centre")
-        }
     }
 
     // MARK: - Features (opt-in trackers)
@@ -2152,7 +2123,7 @@ enum SettingsDisclosureDefaults {
 
 /// A collapsible group that tucks the lower-frequency settings sections behind one tap. It is NOT a
 /// section card itself (the cards it wraps keep their own `SettingsSection` chrome). It's just a
-/// header row + a default-collapsed reveal, modelled on the Test Centre "Advanced" group. Nothing is
+/// header row + a default-collapsed reveal. Nothing is
 /// removed: collapsed simply means the wrapped sections aren't drawn until the row is tapped open.
 /// A custom header (not SwiftUI's `DisclosureGroup`) is used so it matches NOOP's near-black
 /// instrument look, which the system control's tint and inset don't.

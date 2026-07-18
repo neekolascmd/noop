@@ -20,6 +20,19 @@ final class TestCentreLayoutTests: XCTestCase {
                        [.sleep, .connection, .workouts, .display, .dataImport, .steps, .battery, .recovery, .hrv])
     }
 
+    /// A capability-aware caller can hide device-specific captures that cannot produce a useful trace
+    /// while retaining the registry's priority order for the modes that remain.
+    func testSupportedDomainFilterKeepsRegistryOrder() {
+        let rows = TestCentreLayout.visibleModes(
+            is5MG: false,
+            supportedDomains: [.sleep, .workouts, .battery, .hrv])
+        XCTAssertEqual(rows.map(\.domain), [.sleep, .workouts, .battery, .hrv])
+    }
+
+    func testSupportedDomainFilterCanReturnNoDeviceModes() {
+        XCTAssertTrue(TestCentreLayout.visibleModes(is5MG: false, supportedDomains: []).isEmpty)
+    }
+
     /// The filter drops a requires5MG mode for a 4.0 owner. Synthesised input proves the rule
     /// independently of which modes ship in Phase 1.
     func testRequires5MGHiddenForNon5MG() {

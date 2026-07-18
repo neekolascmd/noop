@@ -1098,7 +1098,7 @@ private struct ActiveWorkoutLive: View {
     }
 }
 
-/// The device log + export controls + Test Centre link. Owns LiveState so the streaming log lines
+/// The device log + export controls + Diagnostics & Support link. Owns LiveState so the streaming log lines
 /// re-render only this card. Wrapped in the liquid frosted card style.
 private struct LiveLogCard: View {
     @EnvironmentObject private var live: LiveState
@@ -1134,12 +1134,12 @@ private struct LiveLogCard: View {
             }
 
             // Users look on Live first when something's wrong (#507/#509), so link straight into the
-            // Test Centre diagnostic home, one tap from the log.
+            // Diagnostics & Support, one tap from the log.
             Divider().overlay(StrandPalette.hairline)
             NavigationLink(destination: TestCentreView()) {
                 HStack(spacing: 8) {
-                    Image(systemName: "testtube.2").foregroundStyle(StrandPalette.accent)
-                    Text("Open Test Centre to report a bug").font(StrandFont.mono)
+                    Image(systemName: "stethoscope").foregroundStyle(StrandPalette.accent)
+                    Text("Open Diagnostics & Support").font(StrandFont.mono)
                         .foregroundStyle(StrandPalette.accent)
                     Spacer()
                     Image(systemName: "chevron.right").foregroundStyle(StrandPalette.textSecondary)
@@ -1147,7 +1147,7 @@ private struct LiveLogCard: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Open Test Centre")
+            .accessibilityLabel("Open Diagnostics and Support")
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)

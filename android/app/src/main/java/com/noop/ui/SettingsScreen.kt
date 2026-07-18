@@ -312,7 +312,7 @@ class ProfileStore(private val prefs: SharedPreferences) {
 // MARK: - Screen
 
 @Composable
-fun SettingsScreen(vm: AppViewModel, onOpenTestCentre: () -> Unit = {}) {
+fun SettingsScreen(vm: AppViewModel) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val live by vm.live.collectAsStateWithLifecycle()
@@ -1266,7 +1266,7 @@ fun SettingsScreen(vm: AppViewModel, onOpenTestCentre: () -> Unit = {}) {
         // Lower-frequency sections collapse behind a single default-closed disclosure (S3) so the
         // screen opens at the everyday handful instead of the full wall of cards. Nothing is removed;
         // the experimental probes, diagnostics, raw-capture export and Trends report all stay one tap
-        // away. Mirrors the iOS SettingsView "Advanced" disclosure and the Test Centre Advanced group.
+        // away. Mirrors the iOS SettingsView "Advanced" disclosure.
         SettingsDisclosure(
             title = "Advanced",
             subtitle = "Experimental probes, diagnostics, raw-sensor export, and the Trends report. Tucked away to keep the everyday screen tidy.",
@@ -1799,24 +1799,6 @@ fun SettingsScreen(vm: AppViewModel, onOpenTestCentre: () -> Unit = {}) {
                     },
                 )
             }
-        }
-
-        // --- Test Centre (the diagnostic home, #507/#509) ---
-        // A nav row into the Test Centre: the single home for the diagnostic, log and test controls (spec
-        // section 7). The strap log, recalibrate, scheduled export and experimental toggles also live there
-        // on the same bindings, so this is a faster door to the full set without growing this screen.
-        SettingsSection(
-            icon = Icons.Filled.BugReport,
-            title = "Test Centre",
-            blurb = "Turn on a test for the thing that's wrong, wear the strap, then tap Report. Your strap log, recalibrate, scheduled export and experimental probes all live here too.",
-        ) {
-            NoopButton(
-                text = "Open Test Centre",
-                leadingIcon = Icons.Filled.BugReport,
-                kind = NoopButtonKind.Secondary,
-                fullWidth = true,
-                onClick = onOpenTestCentre,
-            )
         }
 
         // --- Charge (Recovery) advanced ---
@@ -2508,7 +2490,7 @@ internal object SettingsDisclosurePrefs {
 /**
  * A collapsible group that tucks the lower-frequency settings sections behind one tap. It is NOT a
  * section card itself (the cards it wraps keep their own [SettingsSection] chrome). It's a header row
- * plus a default-collapsed reveal, modelled on the Test Centre "Advanced" group. Nothing is removed:
+ * plus a default-collapsed reveal. Nothing is removed:
  * collapsed simply means the wrapped sections aren't composed until the row is tapped open. A custom
  * header (not Material's ExposedDropdown / accordion) keeps it on NOOP's near-black instrument look.
  */
