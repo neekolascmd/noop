@@ -25,7 +25,7 @@ object AppChangelog {
      * Bump this when you add a release below. The "What's New" sheet shows automatically when the
      * stored last-seen version is behind this. (Decoupled from the bundle version on purpose.)
      */
-    const val CURRENT_VERSION = "8.2.1"
+    const val CURRENT_VERSION = "8.3.0"
 
     data class Release(
         val version: String,
@@ -36,6 +36,19 @@ object AppChangelog {
 
     /** Newest first. */
     val releases: List<Release> = listOf(
+        Release(
+            version = "8.3.0",
+            title = "A stronger Oura Ring 4 path",
+            date = "July 2026",
+            items = listOf(
+                "**Oura Ring 4 can be adopted locally.** After a factory reset, NOOP on Mac or Android can install its own application key, keep it encrypted on-device, and reconnect later without resetting the ring again.",
+                "**Live ring data looks like ring data.** Heart rate, R-R intervals, and battery can stream directly from the ring, while Settings, Devices, Live, menus, and diagnostics use Oura-aware wording instead of calling every wearable a WHOOP strap.",
+                "**Overnight history is durable.** NOOP preserves the ring's UTC anchor and cursor together, persists very large retained pages in bounded chunks, and never acknowledges history before it reaches the database.",
+                "**Sleep stays honest.** Qualified bedtime windows become stage-less sleep sessions. NOOP does not invent sleep stages the tested ring did not send.",
+                "**SpO2 stays honest too.** Only qualified percentage records can feed blood-oxygen analytics. If the ring does not emit one, NOOP shows no value instead of estimating it from raw optical data.",
+                "**Support is still evidence-based.** Ring 4 has substantial Android and macOS hardware evidence, but reference-sensor, out-of-range, second-ring, full-day, and physical-iPhone testing remain before a broader Supported claim.",
+            ),
+        ),
         Release(
             version = "8.2.1",
             title = "The continuation release",
