@@ -23,7 +23,7 @@
           "date": "2026-07-18",
           "localizedDescription": "Direct local Oura Ring 4 adoption, durable history sync, device-aware UI, and conservative sleep and SpO2 handling.",
           "downloadURL": "https://github.com/neekolascmd/noop/releases/download/v8.3.0/NOOP-v8.3.0-ios.ipa",
-          "size": 14129366,
+          "size": 14129354,
           "minOSVersion": "17.0"
         }
       ],
@@ -42,7 +42,7 @@
       "versionDate": "2026-07-18",
       "versionDescription": "Direct local Oura Ring 4 adoption, durable history sync, device-aware UI, and conservative sleep and SpO2 handling.",
       "downloadURL": "https://github.com/neekolascmd/noop/releases/download/v8.3.0/NOOP-v8.3.0-ios.ipa",
-      "size": 14129366,
+      "size": 14129354,
       "minOSVersion": "17.0"
     }
   ],
