@@ -94,6 +94,7 @@ import com.noop.BuildConfig
 import com.noop.analytics.Baselines
 import com.noop.analytics.Zones
 import com.noop.ble.PuffinExperiment
+import com.noop.ble.PolarPmdExperiment
 import com.noop.ble.WhoopModel
 import com.noop.data.DataBackup
 import com.noop.ingest.RawSensorExport
@@ -374,6 +375,8 @@ fun SettingsScreen(vm: AppViewModel) {
     var puffinCapture by remember { mutableStateOf(puffinExperiment.isCaptureEnabled) }
     var deepData by remember { mutableStateOf(puffinExperiment.isDeepDataEnabled) }
     var broadcastHr by remember { mutableStateOf(puffinExperiment.broadcastHr) }
+    val polarPmdExperiment = remember { PolarPmdExperiment.from(context) }
+    var polarDeepStreams by remember { mutableStateOf(polarPmdExperiment.enabled) }
     // Opt-in "Experimental sleep staging (V2)" (off by default). Model-agnostic, so it lives outside the
     // 5/MG-only card — it works on WHOOP 4 and 5. Re-stages detected nights with SleepStagerV2; V1 default.
     var experimentalSleepV2 by remember { mutableStateOf(puffinExperiment.experimentalSleepV2) }
@@ -1484,6 +1487,55 @@ fun SettingsScreen(vm: AppViewModel) {
             }
         }
         } // end if (showFiveMGControls)
+
+        // --- Experimental · Polar PMD --- (every model; only activates when the connected device
+        // advertises Polar's vendor PMD service). Standard HR/battery are unchanged when this is off.
+        SettingsSection(
+            icon = Icons.Filled.Science,
+            title = "Experimental · Polar deep streams",
+            blurb = "For Polar devices that expose the vendor PMD service. Standard heart rate and battery already work without this.",
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    Text(
+                        "Capture Polar PPI + motion",
+                        style = NoopType.subhead,
+                        color = Palette.textPrimary,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Switch(
+                        checked = polarDeepStreams,
+                        onCheckedChange = {
+                            polarDeepStreams = it
+                            polarPmdExperiment.enabled = it
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Palette.surfaceBase,
+                            checkedTrackColor = Palette.accent,
+                            uncheckedThumbColor = Palette.textSecondary,
+                            uncheckedTrackColor = Palette.surfaceInset,
+                            uncheckedBorderColor = Palette.hairline,
+                        ),
+                        modifier = Modifier.semantics {
+                            contentDescription = "Capture Polar PPI and motion"
+                        },
+                    )
+                }
+                Text(
+                    "On the next Polar connection, NOOP requests beat-to-beat PPI and accelerometer " +
+                        "data, uses PPI only if standard heart rate goes quiet, and stores motion at one " +
+                        "sample per second. It is off by default because continuous PMD streaming uses " +
+                        "more device battery. ECG/PPG packet decoding is built, but high-rate waveforms " +
+                        "are not recorded yet.",
+                    style = NoopType.caption,
+                    color = Palette.textTertiary,
+                )
+            }
+        }
 
         // --- Diagnostics (every model) --- the raw-sensor CSV export is split out of the 5/MG card so it
         // stays available on a WHOOP 4.0 too (#22): a 4.0 owner still needs it to share decoded streams.
