@@ -102,11 +102,10 @@ entitlement set (`Strand/Resources/Strand.entitlements`):
 That is the entire entitlement file. Three keys:
 
 - **`app-sandbox`** — the process runs inside the macOS App Sandbox container.
-- **`device.bluetooth`** — permits BLE access to talk to the strap. The matching
-  `NSBluetoothAlwaysUsageDescription` string (declared in `project.yml`) states
-  plainly: *"NOOP connects directly to your WHOOP strap over Bluetooth to read heart
-  rate, R-R intervals, battery, and sensor data locally on your Mac. Nothing leaves
-  your device."*
+- **`device.bluetooth`** — permits BLE access to talk to the health device. The matching
+  `NSBluetoothAlwaysUsageDescription` string (declared in `project.yml`) says that NOOP
+  reads heart rate, R-R intervals, battery, and supported sensor data locally, and that
+  nothing leaves the device.
 - **`files.user-selected.read-write`** — lets the app read import files the user
   explicitly picks (and write the database in its own container).
 

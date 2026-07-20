@@ -57,6 +57,9 @@ struct SettingsView: View {
     /// the staging call site in `Repository`. See [PuffinExperiment.experimentalSleepV2Key].
     @AppStorage(PuffinExperiment.experimentalSleepV2Key) private var experimentalSleepV2Enabled = false
 
+    /// Opt-in Polar PMD beat-to-beat + motion streams. Standard HR/battery do not depend on this.
+    @AppStorage(PolarPMDExperiment.defaultsKey) private var polarDeepStreamsEnabled = false
+
     // Imperial/Metric display preference (D#103). Stored data is always SI; this only changes how
     // distances/weights/heights/temperatures are SHOWN — and lets the profile fields below take
     // imperial entry. Temperature has a separate override so °C/°F can be picked independently.
@@ -1042,8 +1045,35 @@ struct SettingsView: View {
         liquidTodayCard
         liveSessionsCard
         if showFiveMGControls { fiveMGCard }
+        polarPMDCard
         sleepStagingCard
         rawSensorDiagnosticsCard
+    }
+
+    /// Polar's vendor PMD service exposes more than the standard HR profile. The first production-safe
+    /// lane persists PPI (as an HR/R-R fallback) and one motion vector per second. High-rate ECG/PPG
+    /// decoding exists in the protocol package, but is not recorded until NOOP has a bounded waveform
+    /// capture/store rather than an unbounded biometric database.
+    private var polarPMDCard: some View {
+        SettingsSection(
+            icon: "waveform.path.ecg",
+            title: "Experimental · Polar deep streams",
+            blurb: "For Polar devices that expose the vendor PMD service. Standard heart rate and battery already work without this."
+        ) {
+            VStack(alignment: .leading, spacing: NoopMetrics.rowSpacing) {
+                Toggle(isOn: $polarDeepStreamsEnabled) {
+                    Text("Capture Polar PPI + motion")
+                        .font(StrandFont.subhead)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                }
+                .toggleStyle(.switch)
+                .tint(StrandPalette.accent)
+                Text("On the next Polar connection, NOOP requests beat-to-beat PPI and accelerometer data, uses PPI only if standard heart rate goes quiet, and stores motion at one sample per second. It is off by default because continuous PMD streaming uses more device battery. ECG/PPG packet decoding is built, but high-rate waveforms are not recorded yet.")
+                    .font(StrandFont.caption)
+                    .foregroundStyle(StrandPalette.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 
     /// Opt-in liquid Today redesign (default ON in this build). Off falls back to the
