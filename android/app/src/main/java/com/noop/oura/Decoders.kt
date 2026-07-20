@@ -283,6 +283,38 @@ object OuraDecoders {
         return if (out.isEmpty()) null else out
     }
 
+    // MARK: - SpO2 R-ratio + perfusion index (0x8B; s6.7a, Tier B)
+
+    /**
+     * Decode `spo2_r_pi_event`: one opaque header byte followed by 3-byte samples
+     * `(ratioQ14: uint16 big-endian, perfusionIndexRaw: uint8)`. Exact wire integers are retained;
+     * convenience properties expose `ratioQ14 / 16384` and `piRaw / 255 * 0.05`.
+     *
+     * Open Oura validated this layout on Ring 5. It stays Tier B until NOOP confirms it on Ring 4.
+     */
+    fun decodeSpO2RPI(rec: OuraRecord): OuraSpO2RPI? {
+        val b = rec.payload
+        if (b.size < 4 || (b.size - 1) % 3 != 0) return null
+        val samples = ArrayList<OuraSpO2RPISample>()
+        var offset = 1
+        while (offset + 2 < b.size) {
+            samples.add(
+                OuraSpO2RPISample(
+                    sampleIndex = samples.size,
+                    ratioQ14 = u16be(b, offset),
+                    perfusionIndexRaw = b[offset + 2],
+                ),
+            )
+            offset += 3
+        }
+        if (samples.isEmpty()) return null
+        return OuraSpO2RPI(
+            ringTimestamp = rec.ringTimestamp,
+            header = b[0],
+            samples = samples,
+        )
+    }
+
     // MARK: - Temperature (0x46 / 0x69 / 0x75; s6.8)
 
     /**

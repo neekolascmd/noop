@@ -610,6 +610,21 @@ final class OuraDriverTests: XCTestCase {
         }
     }
 
+    func testSpO2RPIIsTierBGatedUntilRing4Capture() {
+        let rec = OuraFraming.parseRecord(bytes("8b110200010000321f8c323795328b9532bb95"))!
+        let normal = OuraDriver(ringGen: .gen4, authKey: key)
+        XCTAssertEqual(normal.ingest(record: rec), [])
+
+        let investigation = OuraDriver(ringGen: .gen4, authKey: key, allowTierB: true)
+        let events = investigation.ingest(record: rec)
+        XCTAssertEqual(events.count, 1)
+        XCTAssertTrue(events[0].isTierB)
+        guard case .spo2RPI(let value) = events[0] else {
+            return XCTFail("expected experimental R/PI event")
+        }
+        XCTAssertEqual(value.samples.compactMap(\.ring4CalibratedTenthsPercent), [930, 929, 928, 927])
+    }
+
     // MARK: - Activity info (0x50, Tier B, third-party formula) - real Gen 3 captures (PR #960)
     //
     // The six payloads below are byte-for-byte what a real Gen 3 ring sent across the PR #960

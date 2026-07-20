@@ -666,6 +666,9 @@ public final class OuraDriver {
         case .spo2Smoothed:
             return [.tierB(OuraTierBSummary(tag: record.type, ringTimestamp: record.ringTimestamp,
                                             rawPayload: record.payload, kind: "spo2_smoothed"))]
+        case .spo2RPI:
+            guard let value = OuraDecoders.decodeSpO2RPI(record) else { return [] }
+            return [.spo2RPI(value)]
         }
     }
 

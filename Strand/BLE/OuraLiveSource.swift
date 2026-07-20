@@ -1218,6 +1218,14 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 }
                 parkHistoryEvent(e, ringTimestamp: s.ringTimestamp)
 
+            case .spo2RPI:
+                // Presence-only until a NOOP Ring 4 capture validates the Open Oura Ring 5 layout and
+                // calibration. Never include raw biometric values in the exportable strap log.
+                if !loggedTierBKinds.contains("spo2_r_pi") {
+                    loggedTierBKinds.insert("spo2_r_pi")
+                    log("Oura: experimental SpO2 R/PI history observed (not persisted)")
+                }
+
             case .hrv(let v):
                 parkHistoryEvent(e, ringTimestamp: v.ringTimestamp)
 
