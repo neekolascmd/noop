@@ -2722,3 +2722,4 @@ private fun AttributionRow(repo: String, note: String) {
         Text("· $note", style = NoopType.footnote, color = Palette.textTertiary)
     }
 }
+
