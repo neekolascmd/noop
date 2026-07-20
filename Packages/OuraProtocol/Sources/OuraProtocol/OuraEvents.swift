@@ -91,48 +91,6 @@ public struct OuraSpO2: Equatable, Sendable, Codable {
     }
 }
 
-/// One raw sample from `spo2_r_pi_event` (`0x8B`). The integer wire values are retained losslessly
-/// so a future decoder/calibration change never requires another ring sync. `ratioQ14` is unsigned
-/// big-endian Q14 and `perfusionIndexRaw` is the original unsigned byte. Open Oura has validated this
-/// layout on Ring 5; NOOP keeps it Tier B until our Ring 4 overnight capture confirms the same tag.
-public struct OuraSpO2RPISample: Equatable, Sendable, Codable {
-    public let sampleIndex: Int
-    public let ratioQ14: Int
-    public let perfusionIndexRaw: Int
-
-    public init(sampleIndex: Int, ratioQ14: Int, perfusionIndexRaw: Int) {
-        self.sampleIndex = sampleIndex
-        self.ratioQ14 = ratioQ14
-        self.perfusionIndexRaw = perfusionIndexRaw
-    }
-
-    /// Red/infrared ratio-of-ratios represented by the Q14 wire value.
-    public var ratio: Double { Double(ratioQ14) / 16_384.0 }
-
-    /// Perfusion index represented as a 0...0.05 fraction.
-    public var perfusionIndex: Double { Double(perfusionIndexRaw) / 255.0 * 0.05 }
-
-    /// Experimental Ring 4/Oreo "SpO2 Simple" result, in tenths of one percent.
-    public var ring4CalibratedTenthsPercent: Int? {
-        OuraSpO2Calibration.ring4OreoTenthsPercent(ratioQ14: ratioQ14)
-    }
-}
-
-/// A complete `0x8B` record: one header byte followed by one or more raw R/PI samples. Sample cadence
-/// is intentionally not guessed; indices preserve wire order while the enclosing ring timestamp
-/// remains the only qualified time. This is investigation data until Ring 4 hardware confirms it.
-public struct OuraSpO2RPI: Equatable, Sendable, Codable {
-    public let ringTimestamp: UInt32
-    public let header: UInt8
-    public let samples: [OuraSpO2RPISample]
-
-    public init(ringTimestamp: UInt32, header: UInt8, samples: [OuraSpO2RPISample]) {
-        self.ringTimestamp = ringTimestamp
-        self.header = header
-        self.samples = samples
-    }
-}
-
 /// One decoded skin-temperature sample in hundredths of a degree C scaled to C (value already / 100).
 public struct OuraTemp: Equatable, Sendable, Codable {
     public let ringTimestamp: UInt32
@@ -330,8 +288,6 @@ public enum OuraEvent: Equatable, Sendable {
     case ibi(OuraIBI)
     case hrv(OuraHRV)
     case spo2(OuraSpO2)
-    /// Experimental raw `0x8B` R-ratio/PI record. Tier B until a NOOP Ring 4 capture validates it.
-    case spo2RPI(OuraSpO2RPI)
     case temp(OuraTemp)
     case battery(OuraBattery)
     case sleepPhase(OuraSleepPhase)
@@ -354,7 +310,7 @@ public enum OuraEvent: Equatable, Sendable {
     /// True for Tier-B events, so a consumer can assert none leaked into a Tier-A-only sink.
     public var isTierB: Bool {
         switch self {
-        case .tierB, .activityInfo, .spo2RPI: return true
+        case .tierB, .activityInfo: return true
         default: return false
         }
     }

@@ -15,7 +15,7 @@ claim. Exact device, firmware, host, build, and capability evidence belongs in t
 | **Fitness Age / Vitality / Body Age** | ✅ Shipped (v4.0.0) | On-device, from the data above |
 | **Xiaomi Smart Band 8 / 9 / 10** (Mi Band) | ✅ Shipped, **import lane** | Read the Mi Fitness iOS app's own SQLite, on-device (below) |
 | **Xiaomi Smart Band — live BLE sync** | 🔬 Protocol researched, decoder not built | Mi protobuf-v2 over BLE GATT + `encryptKey` handshake (below) — hardware-gated |
-| **Polar deep streams** (ECG / PPG / ACC / PPI) | 🧪 Implemented, hardware-unverified | Cross-platform PMD control/data decoders; opt-in PPI + ACC live lane (below) |
+| **Polar deep streams** (ECG / PPG / ACC / PPI) | 🔬 Protocol verified, decoder not built | PMD service (below) — alpha, hardware-gated |
 | **Garmin** (sleep / HRV / Body Battery / SpO₂ / FIT) | 📋 Researched, not built | Local BLE re-derive (Gadgetbridge-informed, **never** GPLv3 copy) |
 | **Amazfit / Zepp** (incl. Helio deep) | 📋 Researched, not built | Encrypted Huami BLE — needs a one-time **user-pasted** vendor key (NOOP never logs into the vendor cloud) |
 | **Oura** | 🧪 Experimental; Ring 4 partially qualified on Android and macOS | Local BLE protocol package and platform sources; see the per-host graduation matrix before making a support claim |
@@ -23,19 +23,16 @@ claim. Exact device, firmware, host, build, and capability evidence belongs in t
 
 ## Polar Measurement Data (PMD) — verified protocol
 
-Source: the official [`polarofficial/polar-ble-sdk`](https://github.com/polarofficial/polar-ble-sdk)
-was used as a wire-behavior reference. NOOP independently implements the protocol and does not bundle
-Polar's SDK. This can read ECG/PPG/ACC/PPI from a Polar H10 / Verity Sense / OH1 the user owns,
-account-free, on top of the standard HR service.
+Source: official `polarofficial/polar-ble-sdk` (cross-verified). Lets us read ECG/PPG/ACC/PPI from a
+Polar H10 / Verity Sense / OH1 the user owns, account-free, on top of the standard HR service.
 
 - **Service UUID:** `FB005C80-02E7-F387-1CAD-8ACD2D8DF0C8`
   - **Control Point char:** `FB005C81-02E7-F387-1CAD-8ACD2D8DF0C8` (write + indicate)
   - **Data (MTU) char:** `FB005C82-02E7-F387-1CAD-8ACD2D8DF0C8` (notify)
 - **Measurement-type codes (u8):** ECG `0`, PPG `1`, ACC `2`, PPI `3`, GYRO `5`, MAGNETOMETER `6` (mask `0x3F`).
 - **Control-Point opcodes:** GET_MEASUREMENT_SETTINGS `1`, REQUEST_MEASUREMENT_START `2`, STOP_MEASUREMENT `3`.
-  Online start requests use the measurement byte followed by `[SettingType, valueCount, values…]`
-  blocks, where SampleRate is `0x00`, Resolution `0x01`, and Range is `0x02`. `valueCount` is a count
-  of fixed-width values, not a byte length.
+  Start request byte = `(recordingType << 7) | measurementType`; settings are `[SettingType, len, data…]`
+  blocks where SampleRate `0x00`, Resolution `0x01`, Range `0x02`.
 - **Data frame:** `data[0]` = measurement type; `data[1..8]` = 64-bit little-endian timestamp (ns since
   2000-01-01 UTC); `data[9]` = frame type (`& 0x7F` = type, `& 0x80` = delta-compressed); payload from `data[10]`.
   - **ECG** type-0: 24-bit signed µV samples.
@@ -46,18 +43,9 @@ account-free, on top of the standard HR service.
 - **Per-model streams:** **H10** = ECG (130 Hz) + ACC + HR + RR (no PPG); **Verity Sense / OH1** =
   PPG + PPI + ACC + GYRO + HR (no ECG).
 
-**Current implementation:** Swift and Kotlin now have strict feature/settings/control parsing,
-multipart control responses, sensor-clock mapping, raw and delta ACC/PPG decoding, ECG, PPI, and a
-serial settings/start planner. On Apple and Android, the isolated standard-HR source always reads PMD
-capabilities when present. A default-off Settings switch starts PPI + ACC; PPI is used only if the
-standard `0x2A37` stream is quiet for three seconds, and ACC is downsampled into the existing
-one-vector-per-second motion lane. Android serializes all CCCD writes and reads to respect the
-one-operation-at-a-time GATT rule. ECG/PPG decode is covered by fixtures but is not recorded yet:
-NOOP needs a bounded waveform capture/store before enabling high-rate streams continuously.
-
-This is **Implemented**, not hardware-verified. Issue `#421` and each Polar model/firmware still need
-a current physical run before the support matrix can move to Partial or Verified. See
-[Polar PMD implementation and qualification](POLAR_PMD.md).
+**Open item — #421** ("Polar H10 paired, no live data", Android): the generic-HR plumbing is correct
+(CCCD write + both notification callbacks); the leading theory is the WHOOP auto-reconnect reclaiming
+the radio while the strap is active. Needs the reporter's detail + an H10 in hand to verify a fix.
 
 ## Xiaomi Smart Band (Mi Band) — shipped import lane
 

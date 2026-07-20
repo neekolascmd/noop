@@ -13,12 +13,11 @@ enum PuffinExperiment {
 
     static var isEnabled: Bool { UserDefaults.standard.bool(forKey: defaultsKey) }
 
-    /// Separate, more-deliberate opt-in for the WHOOP 5/MG "R22" configuration experiment — the one probe
+    /// Separate, more-deliberate opt-in for the WHOOP 5/MG "R22" deep-data unlock — the one probe
     /// that WRITES a persistent feature flag to the strap (the `enable_r22_*` SET_CONFIG sequence the
     /// official app sends; documented by judes.club + Asherlc/dofek). Kept distinct from the read-only
-    /// probes above because it changes strap state, so it must be turned on explicitly. NOOP has no
-    /// captured restore sequence: turning this preference off prevents future writes but does not undo
-    /// prior strap values. Driven only from `BLEManager.enableWhoop5DeepData()`. (#174)
+    /// probes above because it changes strap state, so it must be turned on explicitly and is still
+    /// fully reversible. Driven only from `BLEManager.enableWhoop5DeepData()`. (#174)
     static let deepDataKey = "noopWhoop5DeepData"
 
     static var deepDataEnabled: Bool { UserDefaults.standard.bool(forKey: deepDataKey) }

@@ -1714,13 +1714,6 @@ class OuraLiveSource(
                 }
                 enqueueAnchoredOrPark(e, e.value.ringTimestamp, d)
             }
-            is OuraEvent.Spo2RPI -> {
-                // Presence-only until Ring 4 validates the Open Oura Ring 5 layout/calibration.
-                // Raw biometric values never belong in the exportable strap log.
-                if (loggedTierBKinds.add("spo2_r_pi")) {
-                    log("Oura: experimental SpO2 R/PI history observed (not persisted)")
-                }
-            }
             is OuraEvent.Hrv -> enqueueAnchoredOrPark(e, e.value.ringTimestamp, d)
             is OuraEvent.SleepPhaseEvent -> enqueueAnchoredOrPark(e, e.value.ringTimestamp, d)
             is OuraEvent.SleepPeriodEvent -> enqueueAnchoredOrPark(e, e.value.ringTimestamp, d)

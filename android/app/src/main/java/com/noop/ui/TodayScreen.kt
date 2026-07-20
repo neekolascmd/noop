@@ -28,6 +28,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.DirectionsRun
+import androidx.compose.material.icons.automirrored.filled.DirectionsWalk
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Accessibility
 import androidx.compose.material.icons.filled.Add
@@ -669,7 +671,7 @@ fun TodayScreen(
 
     // The selected day's representative activity class for the Steps tile icon (#316 / @63). Reads the day's
     // step samples (now carrying `activityClass` after the v13 column) over the local-day window and takes the
-    // LAST non-null class as "what the wrist was doing most recently today" (0=still; 1/2 neutral). null when
+    // LAST non-null class as "what the wrist was doing most recently today" (0=still, 1=walk, 2=run). null when
     // the day has no classed sample (a 4.0 strap, a pre-v13 row, or every record's @63 byte was invalid), then
     // the tile shows NO icon. Mirrors the iOS Today step-activity read exactly. Best-effort: a read hiccup just
     // drops the optional icon.
@@ -4142,8 +4144,8 @@ private fun MetricGrid(
     profileWeightKg: Double = 75.0,
     importedStepsForDay: Int? = null,
     estimatedStepsForDay: Int? = null,
-    // #316 / @63, the selected day's representative motion class (0=still; 1/2 neutral), shown as a small
-    // neutral glyph on a REAL (measured) Steps tile. null hides it when there is no classed sample.
+    // #316 / @63, the selected day's representative activity class (0=still, 1=walk, 2=run), shown as a small
+    // still/walk/run glyph on a REAL (measured) Steps tile. null hides the icon (no classed sample for the day).
     stepActivityClassForDay: Int? = null,
     // #760/#792: the caption under an ESTIMATED Steps tile: the engine's STATUS line (manual k, or
     // k=… from N days + confidence tier) so a frozen-looking estimate self-explains. Built from the SAME
@@ -5453,15 +5455,15 @@ private fun flagColor(flag: ReadinessEngine.Flag): Color = when (flag) {
 }
 
 /**
- * #316 / @63, map a step-sample motion class (0=still; 1/2 neutral) to a glyph and accessibility label.
- * A labelled arm-only capture disproved the former walk/run names, so nonzero classes share a generic
- * figure. Returns (null, "") for any other code so an unmapped value
+ * #316 / @63, map a step-sample activity class (0=still, 1=walk, 2=run) to the still/walk/run icon + an
+ * accessibility label. Mirrors the iOS Steps-tile glyph set (figure.stand / figure.walk / figure.run) and
+ * semantics exactly (cross-platform parity). Returns (null, "") for any other code so an unmapped value
  * shows nothing rather than a wrong glyph.
  */
 private fun stepActivityIconFor(activityClass: Int): Pair<ImageVector?, String> = when (activityClass) {
     0 -> Icons.Filled.Accessibility to "Still"
-    1 -> Icons.Filled.Accessibility to "Movement class 1"
-    2 -> Icons.Filled.Accessibility to "Movement class 2"
+    1 -> Icons.AutoMirrored.Filled.DirectionsWalk to "Walking"
+    2 -> Icons.AutoMirrored.Filled.DirectionsRun to "Running"
     else -> null to ""
 }
 
@@ -5483,8 +5485,8 @@ private fun SparkStatTile(
     sparkColor: Color = Palette.accent,
     onInfo: (() -> Unit)? = null,
     badge: String? = null,
-    // #316 / @63, an optional motion-class code (0=still; 1/2 neutral) rendered as a small glyph in the
-    // label row, tinted with the tile accent. null = no icon. Used by the Steps tile.
+    // #316 / @63, an optional activity-class code (0=still, 1=walk, 2=run) rendered as a small still/walk/run
+    // glyph in the label row, tinted with the tile accent. null = no icon. Used by the Steps tile.
     trailingIcon: Int? = null,
 ) {
     NoopCard(modifier = modifier.height(Metrics.tileHeight), padding = Metrics.space14) {
@@ -5505,7 +5507,7 @@ private fun SparkStatTile(
                         SourceBadge(badge, tint = Palette.textTertiary)
                     }
                     Spacer(Modifier.weight(1f))
-                    // #316, neutral motion glyph, before the optional ⓘ. Self-hides for an unknown code.
+                    // #316, still/walk/run glyph, before the optional ⓘ. Self-hides for an unknown code.
                     if (trailingIcon != null) {
                         val (vector, desc) = stepActivityIconFor(trailingIcon)
                         if (vector != null) {

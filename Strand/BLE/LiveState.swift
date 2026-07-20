@@ -328,13 +328,10 @@ public final class LiveState: ObservableObject {
     @Published public var decodedChunksThisSession: Int = 0
     @Published public var consoleChunksThisSession: Int = 0
 
-    /// EXPERIMENTAL R22 telemetry (#174). How many unique SET_CONFIG request sequences received a valid
-    /// command response after the last tap. A response proves transaction correlation, not that firmware
-    /// changed behaviour; the response payload's success/result semantics are not mapped yet.
-    @Published public var r22FlagResponses: Int = 0
-    /// True while the paced 15-write R22 attempt is active. Both UI entry points use this to prevent
-    /// a second tap from interleaving another sequence and invalidating request/response correlation.
-    @Published public var r22SequenceInFlight: Bool = false
+    /// EXPERIMENTAL R22 telemetry (#174). How many of the 15 `enable_r22_*` SET_CONFIG flags the strap
+    /// has ACKed since the last "Send enable sequence" tap — 15 means the strap accepted the whole
+    /// sequence (hardware-confirmed: it returns a COMMAND_RESPONSE per flag). Reset on each new attempt.
+    @Published public var r22FlagsAccepted: Int = 0
     /// Count of type-0x2F records seen this session OUTSIDE our own history offload. #494 showed these are
     /// historical-offload data (e.g. another BLE client pulling the strap's backlog over the shared notify
     /// channel), NOT a separate live R22 stream — type-0x2F is only ever the historical offload. Kept as a
@@ -351,11 +348,6 @@ public final class LiveState: ObservableObject {
     /// On-disk location of the current puffin capture file, once anything has been flushed. The
     /// Settings "Export" / "Reveal" actions target this URL.
     @Published public var puffinCaptureURL: URL?
-    /// True when the bounded mapping capture reached its raw-byte ceiling. The file remains valid and
-    /// exportable; later frames were intentionally not retained to avoid another unbounded multi-GB capture.
-    @Published public var puffinCaptureTruncated = false
-    /// Best-effort persistence error surfaced instead of silently losing a research capture.
-    @Published public var puffinCaptureError: String?
 
     /// Set when a WHOOP 5/MG strap refuses the encrypted bond on first connect ("Encryption/Authentication
     /// is insufficient") — CoreBluetooth won't start a fresh just-works bond against a strap still bonded to

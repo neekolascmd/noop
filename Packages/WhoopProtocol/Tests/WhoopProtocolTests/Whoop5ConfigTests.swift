@@ -1,7 +1,7 @@
 import XCTest
 @testable import WhoopProtocol
 
-/// WHOOP 5.0/MG "R22" persistent feature-flag enable sequence.
+/// WHOOP 5.0/MG "R22" feature-flag enable sequence (deep-stream unlock).
 ///
 /// These pin the byte-level encoding against the publicly-documented protocol (judes.club's
 /// frame-builder + Asherlc/dofek's APK decompilation). The golden `enable_r22_packets` frame below was

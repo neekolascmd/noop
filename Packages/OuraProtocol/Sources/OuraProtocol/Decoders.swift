@@ -258,30 +258,6 @@ public enum OuraDecoders {
         return out.isEmpty ? nil : out
     }
 
-    // MARK: - SpO2 R-ratio + perfusion index (0x8B; s6.7a, Tier B)
-
-    /// Decode `spo2_r_pi_event`: one opaque header byte followed by 3-byte samples
-    /// `(ratioQ14: uint16 big-endian, perfusionIndexRaw: uint8)`. The exact integer wire values are
-    /// preserved; convenience properties expose `ratioQ14 / 16384` and `piRaw / 255 * 0.05`.
-    ///
-    /// Open Oura validated the layout on a Ring 5 overnight capture. NOOP treats the tag as Tier B
-    /// until our Ring 4 capture confirms it, so this decoder cannot feed scoring by default.
-    public static func decodeSpO2RPI(_ rec: OuraRecord) -> OuraSpO2RPI? {
-        let b = rec.payload
-        guard b.count >= 4, (b.count - 1).isMultiple(of: 3) else { return nil }
-        var samples: [OuraSpO2RPISample] = []
-        var offset = 1
-        while offset + 2 < b.count {
-            samples.append(OuraSpO2RPISample(
-                sampleIndex: samples.count,
-                ratioQ14: u16be(b, offset),
-                perfusionIndexRaw: Int(b[offset + 2])))
-            offset += 3
-        }
-        guard !samples.isEmpty else { return nil }
-        return OuraSpO2RPI(ringTimestamp: rec.ringTimestamp, header: b[0], samples: samples)
-    }
-
     // MARK: - Temperature (0x46 / 0x69 / 0x75; s6.8)
 
     /// Decode the 0x46 temp_event: up to 7 samples, each int16 LE / 100 = C. Even body length.

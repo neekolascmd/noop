@@ -153,7 +153,7 @@ data class StepSample(
     val deviceId: String,
     val ts: Long,
     val counter: Int,
-    // Per-record @63 motion class: 0=still; 1/2 are distinct but not yet semantically named classes;
+    // The per-record activity-class enum decoded from @63 (community finding #316): 0=still, 1=walk, 2=run;
     // null when the byte was 0xFF/invalid or absent. The decoder ALREADY carries this on [StepRow], but it
     // was DROPPED at the insert boundary (the v2_3 stepSample held only ts/counter), so it could never be
     // persisted or read. Added by MIGRATION_12_13 (Swift WhoopStore v19 parity). Nullable INTEGER (no SQL

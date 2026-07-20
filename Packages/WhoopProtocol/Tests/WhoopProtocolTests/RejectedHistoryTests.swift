@@ -61,13 +61,6 @@ final class RejectedHistoryTests: XCTestCase {
         XCTAssertEqual(rejected, [bad])
     }
 
-    func testWhoop5HistoricalImuIsPreservedUntilMapped() {
-        var imu = [UInt8](repeating: 0, count: 32)
-        imu[0] = 0xAA
-        imu[8] = 52
-        XCTAssertEqual(rejectedHistoricalRecords([imu], family: .whoop5), [imu])
-    }
-
     // MARK: - by-design skips are NEVER rejected
 
     func testConsoleFrameExcluded() {

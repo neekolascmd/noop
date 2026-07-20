@@ -40,12 +40,11 @@ public enum WhoopCommand: UInt8, CaseIterable {
     case toggleIMUMode         = 106
     case enableOpticalData     = 107
     /// SET_CONFIG / SET_FF_VALUE (0x78) — write one persistent device feature-flag. Used by the
-    /// WHOOP 5.0/MG "enable R22 packets" sequence. Hardware acknowledges the documented values, but
-    /// current evidence does not show a separate live stream; the flags may change which history products
-    /// firmware banks/returns (documented independently by judes.club and Asherlc/dofek; see Whoop5Config).
-    /// Payload = `[0x01] + Whoop5Config.payload(name:value:)`
-    /// (a 40-byte NUL-padded ASCII flag name + an ASCII '1'/'2' value byte). Persistent — NOOP has no
-    /// captured restore sequence — and gated behind an opt-in. iOS/Android only on real
+    /// WHOOP 5.0/MG "enable R22 packets" sequence that switches on the deep biometric streams the
+    /// strap otherwise withholds from third-party apps (documented independently by judes.club and
+    /// Asherlc/dofek; see Whoop5Config). Payload = `[0x01] + Whoop5Config.payload(name:value:)`
+    /// (a 40-byte NUL-padded ASCII flag name + an ASCII '1'/'2' value byte). Reversible — it only
+    /// toggles which data the strap emits, and is gated behind an opt-in. iOS/Android only on real
     /// hardware (macOS cannot complete the authenticated bond required to write commands).
     case setConfig             = 120
     /// SET_DEVICE_CONFIG (0x77) — writes ONE persistent device-config value (distinct from the

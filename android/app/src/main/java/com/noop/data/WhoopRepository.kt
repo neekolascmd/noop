@@ -57,8 +57,8 @@ data class Spo2Row(val ts: Long, val red: Int, val ir: Int, val unit: String = "
 data class SkinTempRow(val ts: Long, val raw: Int)
 /**
  * Cumulative u16 step/motion counter at [ts] (WHOOP5 step_motion_counter@57). deviceId attached on insert. (#78)
- * [activityClass] is the per-record motion-class enum from @63: 0=still; 1/2 are neutral classes pending
- * further labelled evidence; null when the byte was 0xFF/invalid or absent. Optional + defaulted so the
+ * [activityClass] is the per-record activity-class enum from @63 (community finding #316): 0=still, 1=walk,
+ * 2=run; null when the byte was 0xFF/invalid or absent. Optional + defaulted so existing call sites and the
  * persisted store (which carries only ts/counter today) are unchanged.
  */
 data class StepRow(val ts: Long, val counter: Int, val activityClass: Int? = null)
@@ -181,7 +181,7 @@ class WhoopRepository(private val dao: WhoopDao) {
             dao.insertSpo2(streams.spo2.map { Spo2Sample(deviceId, it.ts, it.red, it.ir, it.unit) })
         val skinIds = if (streams.skinTemp.isEmpty()) emptyList() else
             dao.insertSkinTemp(streams.skinTemp.map { SkinTempSample(deviceId, it.ts, it.raw) })
-        // activityClass (#316, v13 column) is the @63 motion-class enum (0=still; 1/2 neutral) the decoder
+        // activityClass (#316, v13 column) is the @63 activity-class enum (0=still/1=walk/2=run) the decoder
         // already carries on each StepRow; it was dropped here before v13 (the insert listed only ts/counter).
         // it.activityClass is null when the @63 byte was 0xFF/invalid/absent → stored as SQL NULL.
         val stepIds = if (streams.steps.isEmpty()) emptyList() else

@@ -734,26 +734,6 @@ class OuraDriverTest {
         assertArrayEquals(bytes("01020304"), ev.value.rawPayload)
     }
 
-    @Test
-    fun testSpO2RPIIsTierBGatedUntilRing4Capture() {
-        val rec = OuraFraming.parseRecord(bytes("8b110200010000321f8c323795328b9532bb95"))!!
-        val normal = OuraDriver(ringGen = OuraRingGen.GEN4, authKey = key)
-        assertEquals(emptyList<OuraEvent>(), normal.ingest(rec))
-
-        val investigation = OuraDriver(
-            ringGen = OuraRingGen.GEN4,
-            authKey = key,
-            allowTierB = true,
-        )
-        val events = investigation.ingest(rec)
-        assertEquals(1, events.size)
-        assertTrue(events[0].isTierB)
-        val value = (events[0] as OuraEvent.Spo2RPI).value
-        assertEquals(listOf(930, 929, 928, 927), value.samples.mapNotNull {
-            it.ring4CalibratedTenthsPercent
-        })
-    }
-
     // MARK: - Activity info (0x50, Tier B, third-party formula) - real Gen 3 captures (PR #960)
     //
     // PARITY: the six payloads below are byte-for-byte the real Gen 3 captures pinned in the Swift

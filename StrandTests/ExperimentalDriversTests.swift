@@ -102,9 +102,10 @@ final class ExperimentalDriversTests: XCTestCase {
         XCTAssertNil(ExperimentalBrand.recognise(name: "Some Random Speaker"))
     }
 
-    /// Every experimental brand can stream live HR.
-    func testAllExperimentalBrandsCanStreamLive() {
-        XCTAssertTrue(ExperimentalBrand.oura.canStreamLiveHR)
+    /// Oura is the only experimental brand with NO live HR — it must route to file import, not a fake live
+    /// connect. The others can attempt live HR.
+    func testOnlyOuraCannotStreamLive() {
+        XCTAssertFalse(ExperimentalBrand.oura.canStreamLiveHR)
         XCTAssertTrue(ExperimentalBrand.amazfit.canStreamLiveHR)
         XCTAssertTrue(ExperimentalBrand.miBand.canStreamLiveHR)
         XCTAssertTrue(ExperimentalBrand.garmin.canStreamLiveHR)
