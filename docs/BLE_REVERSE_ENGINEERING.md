@@ -306,8 +306,9 @@ send(.sendR10R11Realtime, payload: [0x00])   // stop the type-43 realtime flood 
 ```
 
 Because the flood can resume, the backfill idle-watchdog deliberately ignores type-43/40 frames and
-only re-arms on genuine offload frames (`BLEManager.isOffloadFrame` → types 47/48/49/50). With the raw
-stream off, NOOP's primary metric source becomes the **historical offload** (next section).
+only re-arms on genuine offload frames (`BLEManager.isOffloadFrame` → types 47/48/49/50, plus WHOOP
+5/MG type-52 historical IMU and type-56 puffin metadata). With the raw stream off, NOOP's primary metric
+source becomes the **historical offload** (next section).
 
 ### On-demand raw capture
 
@@ -432,15 +433,15 @@ garbage (HR `0`, gravity overflow). The fields below were read off real frames a
 | 33 / 38 / 40 | raw bytes near the HR / R-R fields | carried **raw** (meaning not pinned from observation): `@33` a flag-ish byte, `@38` a u16 beside the R-R fields, `@40` a status-like byte. |
 | 45 / 49 / 53 | `gravity_x/y/z` (f32, g) | \|g\| ≈ 1.0 for 100 % of 500 records; v18 has **one** triplet (not v24's two) |
 | 57–58 | `step_motion_counter` (u16 LE @[57:59]) | a **cumulative** counter: climbs while moving, flat when still, low byte wraps at 256. **Steps = Σ wrap-aware diffs** `(cur-prev)&0xFFFF` — *not* the value summed per record (that over-counts massively — the WHOOP 5/MG step over-report). No per-record step count is in the record. |
-| 59 | `step_cadence` (u8) | a **cadence-like** byte between the counter and `@63`: never `0`, and lower when moving faster (still > walk > run in the data). Raw — no unit asserted. |
-| 63 | `motion_wear_quality` (u8) {0,1,2} | a 3-valued byte; kept **raw** (semantics not pinned from observation). |
+| 59 | `motion_byte_59` (u8) | raw motion-correlated byte between the counter and `@63`. A controlled capture found the same directional shift during steady walking and arm-only movement, so the former `step_cadence` name was withdrawn; no unit or gait meaning is asserted. |
+| 63 | `activity_class` (u8) {0,1,2} | `0` is hardware-backed still. `1` appeared during both walking and arm-only movement; `2` also appeared during arm-only movement, disproving the former `1=walk / 2=run` labels. Classes 1/2 remain neutral motion classes. |
 | 69 | `temp_aux_1_raw` (i16 LE); °C = value/10 | a **secondary temperature channel**: tracks `skin_temp@73` (corr **0.92** on two straps) with the same on-wrist diurnal curve; deci-°C resolution. |
 | 71 | `temp_aux_2_raw` (i16 LE); °C = value/10 | a second **temperature channel**: tracks `skin_temp@73` (corr **0.97**), same diurnal behaviour. |
 | 73 | `skin_temp_raw` (u16); °C = raw / 100 | A **digital skin-temperature sensor**, identified **purely from the data**: the on-wrist warming/diurnal curve is a thermal signature nothing else in the record has. **Scale = `/100`** — the only divisor that yields a physiological worn skin temperature (median ≈ **34 °C** across two straps; `/128` reads a non-physiological ≈ 27 °C). Decoded in `decodeWhoop5Historical` (`Interpreter.swift`); flows to the decode-features store as `skin_temp_raw` + derived `skin_temp_c`. |
 | 75 | `status_word` (u16 LE) | a packed status word; **NOT a deep-sleep marker** — its low nibble is `0` across ~258k records and it occurs as often awake as asleep (the community "`80`=deep" reading is a misread). Raw. |
 | 77 | `status_word_1` (u16 LE) | raw; a near-static sibling of `status_word@75` (low nibble = channel index `1`). |
 | 79 | `status_word_2` (u16 LE) | raw; sibling of `@75`/`@77` (low nibble = `2`). |
-| 81 | `sleep_state` = `(byte >> 4) & 3` (+ low-nibble sub-flags) | bits 4-5 = the band sleep state: `0` wake / `1` still / `2` asleep / `3` up (deep/REM/light are off-band). Low-nibble sub-flags, observation-framed: **b0-1 `onwrist`** (on-wrist/validity flag) and **b2-3 `wake_quality`** (a 2-bit code observed nonzero **only in wake**); **b6-7 reserved** (`0` across all records). (Hypothesised from captures + a scored night on #132.) |
+| 81 | `sleep_state` = `(byte >> 4) & 3`; `state_bits_0_1`; `state_bits_2_3` | bits 4-5 = the band sleep state: `0` wake / `1` still / `2` asleep / `3` up (deep/REM/light are off-band). The two low bit-pairs are preserved structurally only: both varied during labelled motion while the device remained worn, disproving the former `onwrist` / `wake_quality` labels. **b6-7 reserved** (`0` across observed records). |
 | 82 | `aux_byte_82` (u8) | raw; observed **nonzero only while `sleep_state` = asleep** (meaning not pinned from observation). |
 | 83–103 | reserved | observed **constant `0`** on two straps (zero-filled). |
 | 104 | (const) | observed **constant `1`** on two straps; carried raw, no metric. |
@@ -478,35 +479,29 @@ reference or app export needed:
   (`corr(amplitude, |Δgravity|) = +0.35` — mild motion artifact, not the signal) — so it is optical,
   not a ballistocardiographic IMU reading.
 
-**Time-multiplexed optical channels.** Byte `frame[21]` is the channel index: the strap sweeps **26
-optical channels (values 1…26)**, one per ~40-frame (~39 s) block, revisiting a given channel only
-~20 min later — so a full 1→26 sweep is spread over hours and **no two channels are ever sampled
-simultaneously**. Each channel's waveform autocorrelates to the heart rate (lag 14 ≈ 103 bpm) with its
-own DC baseline. Which physical LED each index maps to is **not** verifiable from the data, so the raw
-index is surfaced (`ppg_channel`, gated to 1…26) with no colour claim. *(An earlier read at `frame[12]`
-— the "two channels `0x41`/`0x46`" — was a high-entropy counter byte mistaken for the channel during a
-short 2-burst capture; verified against a 22 h overnight corpus, `frame[12]` takes 67 distinct values
-while `frame[21]` takes exactly 26. The PPG **sample** decode (LE i16 @[27:75]) is unaffected and
-correct.) This 26-way time-multiplex is also why **SpO₂ is not recoverable offline** — it needs
-*simultaneous* red+IR, and no two channels are ever co-sampled.
+**Optical channel identity is not mapped.** Byte `frame[21]` was previously labelled as a 1…26 channel
+index after two short captures happened to read small values. A later capture reached `65`, disproving
+that interpretation; the decoder now exposes it only as the neutral raw `burst_index`. Byte `frame[12]`
+is part of the monotonic `record_index`, not an optical channel either. The PPG **sample** decode (LE i16
+@[27:75]) is unaffected and remains hardware-backed. No LED colour or red/IR pairing is asserted, and the
+old claim that offline SpO₂ is impossible because of a proven 26-way time-multiplex is withdrawn. Current
+captures do not establish a stable simultaneous red/IR pair, so SpO₂ remains unmapped rather than ruled out.
 
 The full v26 byte map (88 bytes; CRC32 @84):
 
 | Bytes | Field | Status |
 |---|---|---|
 | 8 / 9 | type 47 / version 26 | — |
-| 10, 13, 14 | `0x80` / `0x84` / `0x01` | constant header |
-| 11 | per-record counter (+1/s) | sequence |
-| **12** | **`ppg_channel`** (`0x41` / `0x46`) | **mapped** — optical channel id |
+| 10 | `0x80` | observed layout marker |
+| 11–14 | `record_index` u32 LE | mapped — monotonic lifetime record index |
 | **15** | **`unix`** u32 LE | **mapped** — real seconds (v18's slot) |
-| 19 | `0x000147AE` constant | config param |
-| 23–26 | high-entropy (DC / checksum?) | raw — no ground truth |
+| 19 / 21 / 23 / 25 | neutral raw bytes; `@21` exposed as `burst_index` | raw — no channel/LED meaning |
 | **27–74** | **`ppg_waveform`** 24× LE-i16 | **mapped** — 24 Hz PPG, HR-locked |
-| 75–83 | footer (random + `0x50`,`0x08` const) | raw — no ground truth |
+| 75 / 79 / 81 / 82 | neutral footer bytes | raw — no ground truth |
 
-`decodeWhoop5HistoricalV26` exposes `ppg_waveform` (+ `ppg_sample_count`), `ppg_channel`, and `unix`. The
-samples are raw AC-coupled ADC counts — PPG has no absolute unit — so no scale is invented; the
-high-entropy `23–26` and the footer are left raw (no internal ground truth). Reproduce the proof with
+`decodeWhoop5HistoricalV26` exposes `record_index`, `unix`, `burst_index`, the neutral raw bytes, and
+`ppg_waveform` (+ `ppg_sample_count`). The samples are raw AC-coupled ADC counts — PPG has no absolute
+unit — so no scale is invented and no optical-channel identity is claimed. Reproduce the proof with
 `tools/linux-capture/analyze_v26_waveform.py`; parity tests `Whoop5PpgWaveformTests.swift`.
 
 ### The WHOOP 5.0 / MG type-47 records (versions 20 & 21) — bulk multi-channel sensor stream

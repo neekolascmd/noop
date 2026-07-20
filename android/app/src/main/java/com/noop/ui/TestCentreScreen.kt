@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Autorenew
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Upload
@@ -33,12 +34,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.noop.BuildConfig
+import com.noop.analytics.Baselines
+import com.noop.ble.PuffinExperiment
 import com.noop.ble.WhoopModel
-import com.noop.ble.SourceCoordinator
-import com.noop.data.DeviceStatus
-import com.noop.data.Metric
-import com.noop.data.PairedDeviceRow
-import com.noop.data.SourceKind
 import com.noop.testcentre.CaptureAccumulator
 import com.noop.testcentre.CaptureKind
 import com.noop.testcentre.DisplayPerformanceMonitor
@@ -54,9 +52,11 @@ import com.noop.testcentre.TestReportLink
 import kotlinx.coroutines.launch
 
 /**
- * Diagnostics & Support, the Android twin of TestCentreView. Keeps focused capture modes, the redacted
- * report flow, and an optional device-log share while leaving calibration, scheduled exports, and
- * experimental preferences in Settings. No em-dash.
+ * Settings -> Test Centre (spec section 7), the Android twin of TestCentreView. Four sections: domain
+ * test modes (rendered from the registry projection), diagnostic tools, export and auto-export, and
+ * advanced/experimental. A NEW file because SettingsScreen.kt (132 KB) cannot grow. Section 1 renders
+ * from TestCentreLayout.visibleModes; sections 2 to 4 re-host the same strap-log / recalibrate /
+ * scheduled-export / experimental controls on the same bindings the Settings cards use. No em-dash.
  */
 @Composable
 fun TestCentreScreen(vm: AppViewModel) {
@@ -66,25 +66,14 @@ fun TestCentreScreen(vm: AppViewModel) {
     // run inline in the non-suspend onToggle).
     val scope = rememberCoroutineScope()
 
+    // The strap model the Settings #22 gate reads, mirrored here so the 5/MG block shows for a 5/MG only.
     val live by vm.live.collectAsStateWithLifecycle()
-    val activeDeviceName by vm.activeDeviceName.collectAsStateWithLifecycle()
-    var activeDevice by remember { mutableStateOf<PairedDeviceRow?>(null) }
-    LaunchedEffect(activeDeviceName) {
-        activeDevice = vm.pairedDevices().firstOrNull { it.status == DeviceStatus.active.name }
-    }
-
-    // The strap model the Settings #22 gate reads, mirrored here so the 5/MG block shows for a WHOOP
-    // 5/MG only. A stale WHOOP preference must not leak WHOOP-only captures onto another active source.
     val selectedModelName = remember {
         NoopPrefs.of(context).getString("noop.selectedWhoopModel", null)
     }
-    val activeDeviceIsWhoop = activeDevice?.let(SourceCoordinator::isWhoop) ?: true
-    val is5MG = activeDeviceIsWhoop &&
-        (selectedModelName == WhoopModel.WHOOP5_MG.name || live.whoop5Detected)
-    val supportedDomains = remember(activeDevice, activeDeviceIsWhoop) {
-        supportedDiagnosticDomains(activeDevice, activeDeviceIsWhoop)
-    }
-    val deviceName = activeDeviceName ?: activeDevice?.let(::displayName) ?: "your connected device"
+    // Match the Settings `showFiveMGControls` gate exactly: pref OR a live-detected 5/MG this session, so a
+    // 5/MG connected before its pref is written still sees the experimental block. (SettingsScreen.kt:346.)
+    val is5MG = selectedModelName == WhoopModel.WHOOP5_MG.name || live.whoop5Detected
 
     // A report awaiting the mandatory review-before-share gate (spec section 12). Non-null shows the
     // review dialog; confirming runs TestReportFlow.run.
@@ -113,17 +102,17 @@ fun TestCentreScreen(vm: AppViewModel) {
     }
 
     ScreenScaffold(
-        title = "Diagnostics & Support",
-        subtitle = "Capture a problem with $deviceName, then create a redacted report. Nothing leaves this phone until you share it.",
+        title = "Test Centre",
+        subtitle = "Turn on a test for the thing that's wrong, wear the strap, then tap Report. Everything stays on this phone.",
     ) {
-        // --- Focused capture modes ---
+        // --- Section 1: Domain test modes ---
         SettingsSectionTC(
             icon = Icons.Filled.BugReport,
-            title = "Capture a problem",
-            blurb = "Each mode logs extra detail while you use $deviceName. Only captures this device can produce are shown.",
+            title = "Test modes",
+            blurb = "Each test logs extra detail for one part of the app while you wear the strap, then bundles it for a bug report.",
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                TestCentreLayout.visibleModes(is5MG, supportedDomains).forEach { mode ->
+                TestCentreLayout.visibleModes(is5MG).forEach { mode ->
                     TestModeRow(
                         mode = mode,
                         active = testCentre.active(mode.domain),
@@ -162,16 +151,20 @@ fun TestCentreScreen(vm: AppViewModel) {
             }
         }
 
-        // --- Manual redacted report ---
+        // --- Section 2: Diagnostic tools ---
+        DiagnosticToolsCard(vm)
+
+        // --- Section 3: Export and auto-export ---
         ExportCard(
+            vm = vm,
             onReport = {
                 // Launched (#1002): buildPending is now suspend (storage probe reads the store).
                 scope.launch { pendingReport = buildPending(context, MASTER_REPORT_MODE, vm.ble.exportLogText(), vm) }
             },
         )
 
-        // --- Optional standalone support file ---
-        DiagnosticToolsCard(vm)
+        // --- Section 4: Advanced / experimental ---
+        AdvancedCard(vm, is5MG)
     }
 
     pendingReport?.let { p ->
@@ -195,39 +188,6 @@ fun TestCentreScreen(vm: AppViewModel) {
             },
         )
     }
-}
-
-/**
- * Diagnostics that can produce a meaningful trace for the active device. WHOOP retains the complete
- * registry. Other sources keep app-level modes plus only the measurements they expose. Connection &
- * Sync remains WHOOP-only because its deep trace currently comes from WhoopBleClient; every redacted
- * report still includes the active source's normal lifecycle log.
- */
-private fun supportedDiagnosticDomains(
-    device: PairedDeviceRow?,
-    isWhoop: Boolean,
-): Set<TestDomain> {
-    if (device == null || isWhoop) return TestModeRegistry.all.mapTo(mutableSetOf()) { it.domain }
-
-    val capabilities = device.capabilities.split(',')
-        .mapTo(mutableSetOf()) { it.trim() }
-    val domains = mutableSetOf(TestDomain.WORKOUTS, TestDomain.DISPLAY, TestDomain.IMPORT)
-    if (Metric.sleep.name in capabilities) domains += TestDomain.SLEEP
-    if (Metric.steps.name in capabilities) domains += TestDomain.STEPS
-    if (Metric.hrv.name in capabilities) {
-        domains += TestDomain.RECOVERY
-        domains += TestDomain.HRV
-    }
-    if (device.sourceKind in setOf(
-            SourceKind.liveBLE.name,
-            SourceKind.historyBLE.name,
-            SourceKind.huami.name,
-            SourceKind.oura.name,
-        )
-    ) {
-        domains += TestDomain.BATTERY
-    }
-    return domains
 }
 
 /** A report staged for the mandatory review gate: the profile, its title, the already-redacted entries
@@ -341,7 +301,7 @@ private fun TestModeRow(
                 colors = settingsSwitchColors(),
             )
         }
-        Text(deviceAwareBlurb(mode), style = NoopType.footnote, color = Palette.textTertiary)
+        Text(mode.blurb, style = NoopType.footnote, color = Palette.textTertiary)
         Row {
             Spacer(Modifier.weight(1f))
             TextButton(onClick = onReport) {
@@ -351,48 +311,171 @@ private fun TestModeRow(
     }
 }
 
-private fun deviceAwareBlurb(mode: TestMode): String = when (mode.domain) {
-    TestDomain.SLEEP ->
-        "Use your connected device for a few nights so we can see which gate kept or dropped each sleep run."
-    TestDomain.BATTERY ->
-        "Use your connected device for a few days so we can fit its real discharge slope."
-    TestDomain.CONNECTION ->
-        "Turn this on if your connected device keeps dropping or will not finish a sync."
-    else -> mode.blurb
-}
-
 @Composable
 private fun DiagnosticToolsCard(vm: AppViewModel) {
     val context = LocalContext.current
+    var showRecalibrate by remember { mutableStateOf(false) }
     SettingsSectionTC(
         icon = Icons.Filled.Info,
-        title = "Support files",
-        blurb = "The redacted report already includes the device log. Share it separately only if support asks for the text by itself.",
+        title = "Diagnostic tools",
+        blurb = "Your strap log, a Charge recalibrate, and the device environment. Nothing leaves the phone unless you share it.",
     ) {
-        NoopButton(
-            text = "Share device log",
-            leadingIcon = Icons.Filled.Upload,
-            kind = NoopButtonKind.Secondary,
-            fullWidth = true,
-            onClick = { LogExport.shareStrapLog(context, vm.ble.exportLogText()) },
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            // Strap log, the same exportLogText share the Settings Diagnostics button uses.
+            NoopButton(
+                text = "Share strap log (for bug reports)",
+                leadingIcon = Icons.Filled.Upload,
+                kind = NoopButtonKind.Secondary,
+                fullWidth = true,
+                onClick = { LogExport.shareStrapLog(context, vm.ble.exportLogText()) },
+            )
+            // Recalibrate Charge baseline, the same Baselines.recalibrateRecoveryBaselines call.
+            NoopButton(
+                text = "Recalibrate Charge baseline",
+                leadingIcon = Icons.Filled.Autorenew,
+                kind = NoopButtonKind.Secondary,
+                fullWidth = true,
+                onClick = { showRecalibrate = true },
+            )
+            // Environment dump: the strap log already carries the AndroidDiagnostics header (spec 3.4).
+            NoopButton(
+                text = "Copy environment dump",
+                leadingIcon = Icons.Filled.Info,
+                kind = NoopButtonKind.Secondary,
+                fullWidth = true,
+                onClick = { LogExport.shareStrapLog(context, vm.ble.exportLogText()) },
+            )
+        }
+    }
+    if (showRecalibrate) {
+        AlertDialog(
+            onDismissRequest = { showRecalibrate = false },
+            containerColor = Palette.surfaceOverlay,
+            title = { Text("Recalibrate your Charge baseline?", style = NoopType.title2, color = Palette.textPrimary) },
+            text = {
+                Text(
+                    "This restarts the roughly 4-night build-up for Charge and your HRV baseline. Your history stays.",
+                    style = NoopType.subhead, color = Palette.textSecondary,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val nowSeconds = System.currentTimeMillis() / 1000L
+                    val editor = NoopPrefs.of(context).edit()
+                    Baselines.recalibrateRecoveryBaselines(editor, nowSeconds)
+                    editor.apply()
+                    showRecalibrate = false
+                    vm.syncNow()
+                }) { Text("Recalibrate", style = NoopType.body, color = Palette.accent) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRecalibrate = false }) {
+                    Text("Cancel", style = NoopType.body, color = Palette.textSecondary)
+                }
+            },
         )
     }
 }
 
 @Composable
-private fun ExportCard(onReport: () -> Unit) {
+private fun ExportCard(vm: AppViewModel, onReport: () -> Unit) {
+    val context = LocalContext.current
+    val settings = remember { DebugExportSettings.from(context) }
+    var enabled by remember { mutableStateOf(settings.enabled) }
+    var minutes by remember { mutableStateOf(settings.timeMinutes) }
     SettingsSectionTC(
         icon = Icons.Filled.Upload,
-        title = "Create a report",
-        blurb = "Build a redacted bundle, review exactly what it contains, then choose whether to share it.",
+        title = "Export",
+        blurb = "Report a bug with your log, or have NOOP drop a daily copy into its export folder.",
     ) {
-        NoopButton(
-            text = "Create redacted bug report",
-            leadingIcon = Icons.Filled.BugReport,
-            kind = NoopButtonKind.Primary,
-            fullWidth = true,
-            onClick = onReport,
-        )
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            NoopButton(
+                text = "Report a bug with my log",
+                leadingIcon = Icons.Filled.BugReport,
+                kind = NoopButtonKind.Primary,
+                fullWidth = true,
+                onClick = onReport,
+            )
+            // Daily auto-export, the same DebugExportSettings writes the Settings card uses.
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Daily auto-export", style = NoopType.subhead, color = Palette.textPrimary)
+                    Text(
+                        "Android runs this via WorkManager (Doze may delay it).",
+                        style = NoopType.footnote, color = Palette.textTertiary,
+                    )
+                }
+                Switch(
+                    checked = enabled,
+                    onCheckedChange = {
+                        enabled = it
+                        settings.enabled = it
+                        DebugExportScheduler.reschedule(context)
+                    },
+                    colors = settingsSwitchColors(),
+                )
+            }
+            if (enabled) {
+                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Export time", style = NoopType.subhead, color = Palette.textPrimary)
+                    }
+                    TimeChip(
+                        minutes = minutes,
+                        accessibilityLabel = "Daily export time",
+                        onPicked = {
+                            minutes = it
+                            settings.timeMinutes = it
+                            DebugExportScheduler.applyTimeChange(context)
+                        },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AdvancedCard(vm: AppViewModel, is5MG: Boolean) {
+    val context = LocalContext.current
+    val puffin = remember { PuffinExperiment.from(context) }
+    var v2 by remember { mutableStateOf(puffin.experimentalSleepV2) }
+    // Re-hosted Continuous-HRV toggle, bound to the SAME NoopPrefs key (noop.continuousHrv) the Settings
+    // card uses, so flipping it here or there is one and the same setting (mirrors the iOS Test Centre).
+    var continuousHrv by remember { mutableStateOf(NoopPrefs.continuousHrv(context)) }
+    var probes by remember { mutableStateOf(puffin.isEnabled) }
+    var deepData by remember { mutableStateOf(puffin.isDeepDataEnabled) }
+    var broadcast by remember { mutableStateOf(puffin.broadcastHr) }
+    var capture by remember { mutableStateOf(puffin.isCaptureEnabled) }
+    SettingsSectionTC(
+        icon = Icons.Filled.Info,
+        title = "Advanced",
+        blurb = "Experimental probes, off by default. The fuller WHOOP 5/MG controls and the raw-sensor CSV export still live in Settings under Diagnostics.",
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            ToggleRowTC("Experimental sleep staging (V2)", v2) {
+                v2 = it; puffin.experimentalSleepV2 = it
+            }
+            // Same write path as Settings: vm.setContinuousHrv persists noop.continuousHrv and re-applies
+            // keep-stream-for-data, so the live capture follows the toggle from either screen.
+            ToggleRowTC("Continuous HRV capture", continuousHrv) {
+                continuousHrv = it; vm.setContinuousHrv(it)
+            }
+            if (is5MG) {
+                ToggleRowTC("Try WHOOP 5/MG protocol probes", probes) {
+                    probes = it; puffin.isEnabled = it
+                }
+                ToggleRowTC("Allow persistent WHOOP 5/MG R22 writes", deepData) {
+                    deepData = it; puffin.isDeepDataEnabled = it
+                }
+                ToggleRowTC("Broadcast heart rate (Garmin/ANT)", broadcast) {
+                    broadcast = it; puffin.broadcastHr = it; vm.ble.setBroadcastHr(it)
+                }
+                ToggleRowTC("Record puffin frames to a file", capture) {
+                    capture = it; puffin.isCaptureEnabled = it
+                }
+            }
+        }
     }
 }
 
@@ -415,8 +498,8 @@ private fun ReportReviewDialog(
                     // ships a report a maintainer can't act on. Twin of the Swift review-sheet warning.
                     Text(
                         "Heads up: this test mode is off, so the report has no capture for it. For a " +
-                            "useful report, turn the mode on, reproduce the problem with the connected " +
-                            "device, then report again.",
+                            "useful report, turn the mode on, reproduce the problem while wearing the " +
+                            "strap, then report again.",
                         style = NoopType.footnote, color = Palette.statusWarning,
                         modifier = Modifier.padding(bottom = 8.dp),
                     )
@@ -445,7 +528,8 @@ private fun ReportReviewDialog(
     )
 }
 
-// MARK: - Local section wrapper (keeps this screen independent of SettingsScreen's private helpers).
+// MARK: - Local section + toggle wrappers (Test Centre owns its own so it never reaches into the private
+// SettingsScreen.kt helpers; same NoopCard idiom).
 
 @Composable
 private fun SettingsSectionTC(
@@ -457,7 +541,7 @@ private fun SettingsSectionTC(
     NoopCard(padding = 20.dp, tint = Palette.accent) {
         Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Overline("Diagnostics & Support")
+                Overline("Test Centre")
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -472,6 +556,18 @@ private fun SettingsSectionTC(
             Text(blurb, style = NoopType.subhead, color = Palette.textSecondary)
             content()
         }
+    }
+}
+
+@Composable
+private fun ToggleRowTC(title: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Text(title, style = NoopType.subhead, color = Palette.textPrimary, modifier = Modifier.weight(1f))
+        Switch(checked = checked, onCheckedChange = onCheckedChange, colors = settingsSwitchColors())
     }
 }
 

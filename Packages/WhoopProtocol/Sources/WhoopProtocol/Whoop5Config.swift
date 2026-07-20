@@ -1,10 +1,10 @@
 import Foundation
 
-// MARK: - WHOOP 5.0 / MG "R22" feature-flag config (deep-stream unlock)
+// MARK: - WHOOP 5.0 / MG persistent "R22" feature-flag experiment
 //
-// WHOOP 5.0/MG straps withhold their deep biometric streams (the high-rate "R22" optical/HR/motion
-// packets, type 0x2F) from a freshly-connected client. The official app switches them on by writing a
-// short burst of persistent feature-flag config values right after the hello handshake — a sequence
+// The official app writes a short burst of persistent feature-flag config values after the hello
+// handshake. Hardware evidence does not show those values opening a separate live stream; they may
+// change which type-0x2F history products firmware banks/returns. The enable sequence was
 // independently documented by two third parties:
 //   • judes.club, "Cracking the WHOOP 5 Bluetooth Protocol" (decrypted HCI capture of the official app),
 //     whose interactive frame-builder is the byte-level ground truth this file is validated against.
@@ -38,8 +38,9 @@ public enum Whoop5Config {
     }
 
     /// The exact ordered enable sequence the official app sends, transcribed verbatim from judes.club's
-    /// frame-builder `FLAGS` array (values are ASCII '1'/'2'). `enable_r22_packets` is what opens the
-    /// type-0x2F biometric stream; the rest tune channel selection, wear detection and sleep behaviour.
+    /// frame-builder `FLAGS` array (values are ASCII '1'/'2'). These persistent flags may change which
+    /// record families firmware banks/returns; hardware evidence does not show a separate live stream.
+    /// NOOP has no captured restore sequence.
     public static let enableR22Sequence: [Flag] = [
         Flag("enable_r22_packets", 0x32),
         Flag("enable_r22_v2_packets", 0x32),
@@ -90,7 +91,7 @@ public enum Whoop5Config {
 
     /// Every frame in the enable sequence, sequence-numbered from `firstSeq`. The caller writes these in
     /// order, WITH RESPONSE, spacing them out (the official app pauses ~tens of ms between writes), and
-    /// only while the strap is on-wrist — the R22 stream is on-wrist gated.
+    /// only while the strap is on-wrist — the configuration write is wear-gated.
     public static func enableSequenceFrames(firstSeq: UInt8 = 1) -> [[UInt8]] {
         enableR22Sequence.enumerated().map { idx, flag in
             frame(flag: flag, seq: UInt8((Int(firstSeq) + idx) & 0xFF))
