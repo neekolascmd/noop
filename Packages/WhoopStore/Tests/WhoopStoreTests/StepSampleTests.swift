@@ -39,7 +39,7 @@ final class StepSampleTests: XCTestCase {
         XCTAssertTrue(cols.contains("activityClass"))
     }
 
-    /// #316, a step sample's `activityClass` (0=still / 1=walk / 2=run) survives a write+read round-trip,
+    /// #316, a step sample's `activityClass` (0=still; 1/2 neutral motion classes) survives a round-trip,
     /// and a nil class (the @63 byte was 0xFF/invalid/absent) round-trips back as nil (an absent class stays
     /// absent, never a fabricated 0/"still"). This is the chain the tigercraft4 PR #901 botched on Apple:
     /// it SELECTed a column that didn't exist. Here the v19 migration + INSERT + SELECT carry it end to end.
@@ -47,8 +47,8 @@ final class StepSampleTests: XCTestCase {
         let store = try await WhoopStore.inMemory()
         let streams = Streams(steps: [
             StepSample(ts: 1_780_916_200, counter: 60, activityClass: 0),   // still
-            StepSample(ts: 1_780_916_201, counter: 61, activityClass: 1),   // walk
-            StepSample(ts: 1_780_916_202, counter: 62, activityClass: 2),   // run
+            StepSample(ts: 1_780_916_201, counter: 61, activityClass: 1),   // motion class 1
+            StepSample(ts: 1_780_916_202, counter: 62, activityClass: 2),   // motion class 2
             StepSample(ts: 1_780_916_203, counter: 63, activityClass: nil), // no class (0xFF/invalid/absent)
         ])
         _ = try await store.insert(streams, deviceId: "my-whoop")

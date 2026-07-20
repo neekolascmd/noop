@@ -89,6 +89,9 @@ private fun ByteArray.histU32(off: Int): Long? {
         ((this[off + 3].toLong() and 0xFFL) shl 24)
 }
 
+/** Signed little-endian i32 (two's complement) -> Int. */
+private fun ByteArray.histI32(off: Int): Int? = histU32(off)?.toInt()
+
 /**
  * IEEE-754 float32 LE -> Double (exact, NO rounding). null when out of range.
  * Port of PostHooks.swift `f32`: read the 4 bytes as a u32 bit-pattern, reinterpret as Float,
@@ -266,12 +269,13 @@ fun decodeHistorical(frame: ByteArray, family: DeviceFamily = DeviceFamily.WHOOP
  * to a physical range so a wrong offset on unmapped firmware stores nothing; further fields (aux thermal
  * @69/71, status words @75/77/79, the @81 band-flag nibbles, aux byte @82) are read off the same real
  * frames. Mirrors Swift `decodeWhoop5Historical`, and emits the same keys [extractHistoricalStreams] reads.
- * v26 (PPG) and other
- * versions aren't stored, so they return null here (skipped), matching the Swift raw-region treatment.
+ * v20/v21 bulk channels are decoded separately below. v26 PPG is handled by its dedicated waveform path;
+ * other versions return null and are preserved by the reject archive.
  */
 private fun decodeWhoop5Historical(frame: ByteArray): Map<String, Any?>? {
     if (frame.histU8(8) != PacketType.HISTORICAL_DATA.rawValue) return null
     val version = frame.histU8(9) ?: return null
+    if (version == 20 || version == 21) return decodeWhoop5HistoricalV2021(frame, version)
     if (version != 18) return null
 
     val out = LinkedHashMap<String, Any?>()
@@ -303,13 +307,11 @@ private fun decodeWhoop5Historical(frame: ByteArray): Map<String, Any?>? {
     // worn vs off-wrist). Optical/perfusion @69/71 still doesn't decode consistently and is left raw.
     frame.histF32(41)?.let { if (it.isFinite() && it in 0.0..8.0) out["dynamic_acceleration"] = it }
     frame.histU16(57)?.let { out["step_motion_counter"] = it }
-    // @59 a per-step cadence-like byte (never 0; lower when moving faster). Raw — no unit asserted.
-    frame.histU8(59)?.let { out["step_cadence"] = it }
-    frame.histU8(63)?.let { if (it in 0..2) out["motion_wear_quality"] = it }
-    // @63 also reads as a small validated ACTIVITY-CLASS enum (community finding, #316): 0=still, 1=walk,
-    // 2=run, 0xFF=invalid. A lightweight, no-cloud per-record activity readout that rides alongside the
-    // step counter. Only the four known codes are surfaced — anything else (incl. 0xFF) stores nothing so
-    // an unmapped firmware can't inject garbage.
+    // @59 is motion-correlated but a labelled capture found the same response during walking and arm-only
+    // movement, so it is not safe to label as gait cadence or assign a unit. Preserve it neutrally.
+    frame.histU8(59)?.let { out["motion_byte_59"] = it }
+    // @63 is a motion class. 0 is pinned to still; 1 appeared during walking AND arm-only movement, and 2
+    // also appeared during arm-only movement, disproving the old 1=walk / 2=run labels.
     frame.histU8(63)?.let { if (it == 0 || it == 1 || it == 2) out["activity_class"] = it }
     // Auxiliary thermal readings adjacent to the main skin-temperature register, read off a digital
     // skin-temperature sensor. Carried raw; °C = raw/10. Signed i16, gated to a plausible thermal range
@@ -328,12 +330,13 @@ private fun decodeWhoop5Historical(frame: ByteArray): Map<String, Any?>? {
     frame.histU16(77)?.let { out["status_word_1"] = it }
     frame.histU16(79)?.let { out["status_word_2"] = it }
     // @81 packs several band flags into one byte. High nibble (bits 4-5) tracks a scored night:
-    // 0 wake / 1 still / 2 asleep / 3 up. bits 2-3 a wake-quality field; bits 0-1 an on-wrist flag.
-    // Deep/REM/light are computed off-band, not here.
+    // 0 wake / 1 still / 2 asleep / 3 up. Preserve the low bit-pairs structurally: a labelled daytime
+    // capture showed both varying with motion while the device stayed worn, disproving the former
+    // on-wrist / wake-quality labels. Deep/REM/light are computed off-band, not here.
     frame.histU8(81)?.let {
         out["sleep_state"] = (it shr 4) and 3
-        out["wake_quality"] = (it shr 2) and 3
-        out["onwrist"] = it and 3
+        out["state_bits_2_3"] = (it shr 2) and 3
+        out["state_bits_0_1"] = it and 3
     }
     // @82 a single raw byte adjacent to the flag byte; carried raw, meaning not pinned.
     frame.histU8(82)?.let { out["aux_byte_82"] = it }
@@ -347,6 +350,51 @@ private fun decodeWhoop5Historical(frame: ByteArray): Map<String, Any?>? {
     // this function, so a caller that retains it keeps the full record. VERIFIED fields (physiologically
     // cross-checked vs the strap's live 2A37 HR / |gravity|~1g): unix, heart_rate, rr, gravity, skin_temp.
     // EMPIRICAL / not-pinned: status words, aux bytes, unknown_f32_113.
+    return out
+}
+
+/**
+ * WHOOP 5/MG type-47 v20/v21 bulk sensor records. Port of Swift
+ * `decodeWhoop5HistoricalV2021`: expose the captured channel arrays losslessly, without inventing a
+ * sensor identity or unit. They remain reject-archived until labelled captures identify the channels.
+ */
+private fun decodeWhoop5HistoricalV2021(frame: ByteArray, version: Int): Map<String, Any?> {
+    val out = LinkedHashMap<String, Any?>()
+    out["hist_version"] = version
+    frame.histU8(10)?.let { out["layout_marker"] = it }
+    frame.histU32(11)?.let { out["record_index"] = it.toInt() }
+    frame.histU32(15)?.let { out["unix"] = it.toInt() }
+
+    if (version == 21) {
+        for ((channel, start) in listOf(0 to 28, 1 to 228, 2 to 428)) {
+            val samples = ArrayList<Int>(100)
+            for (i in 0 until 100) frame.histI16(start + i * 2)?.let(samples::add)
+            if (samples.size == 100) out["optical_ch$channel"] = samples
+        }
+        out["sensor_channel_samples"] = 100
+        return out
+    }
+
+    val blocks = listOf(
+        Triple(0x1a, 0x2f, 0xf7), Triple(0x1c0, 0x1d5, 0x29d),
+        Triple(0x366, 0x37b, 0x443), Triple(0x50c, 0x521, 0x5e9),
+        Triple(0x6b2, 0x6c7, 0x78f),
+    )
+    var present = 0
+    for ((block, offsets) in blocks.withIndex()) {
+        val (presence, first, second) = offsets
+        if (frame.histU8(presence) == 0 || frame.histU8(presence) == null) continue
+        for ((half, start) in listOf(0 to first, 1 to second)) {
+            val samples = ArrayList<Int>(50)
+            for (i in 0 until 50) frame.histI32(start + i * 4)?.let(samples::add)
+            if (samples.size == 50) {
+                out["channel_b${block}_$half"] = samples
+                present++
+            }
+        }
+    }
+    out["sensor_channel_samples"] = 50
+    out["sensor_channels_present"] = present
     return out
 }
 
@@ -380,10 +428,10 @@ private fun decodeWhoop5HistoricalV26(frame: ByteArray): V26Record? {
 }
 
 /**
- * The HISTORICAL_DATA (type-47) record frames in [rawFrames] that genuinely FAIL to decode — a CRC
- * failure, or an unmapped firmware layout whose v24 plausibility gate (see [decodeHistorical]) also
- * rejects it. These are exactly the record frames [extractHistoricalStreams] silently drops: their
- * biometric payload would otherwise be lost forever once the strap trims the acked history.
+ * Historical sensor record frames in [rawFrames] that cannot yet become durable rows. This includes a
+ * type-47 record that genuinely fails decode and WHOOP 5/MG type-52 HISTORICAL_IMU_DATA_STREAM records,
+ * whose layout is not mapped yet. These are exactly the payloads that would otherwise be lost forever
+ * once the strap trims the acknowledged history.
  *
  * EXCLUDED (decode to zero rows BY DESIGN, never "lost" data — must NOT be counted):
  *   - CONSOLE_LOGS (type-50) frames — the strap's own diagnostics text channel. On WHOOP 4.0 the
@@ -391,7 +439,7 @@ private fun decodeWhoop5HistoricalV26(frame: ByteArray): V26Record? {
  *     already skips it. On WHOOP 5/MG the inner type byte is at frame[8].
  *   - WHOOP 5/MG v26 (raw PPG) records — deliberately unstored (see [decodeWhoop5Historical]), known
  *     and skipped by design, not lost.
- *   - Non-record frames (METADATA, EVENT, etc.) — not type-47, so never returned.
+ *   - Non-record frames (METADATA, EVENT, etc.) — neither type-47 nor type-52, so never returned.
  *
  * The Backfiller archives these raw bytes BEFORE acking the trim, so a user on an unmapped firmware
  * keeps their only copy (for a later release that maps the layout, and as the corpus that mapping
@@ -407,7 +455,15 @@ fun rejectedHistoricalRecords(
     val typeIndex = if (family == DeviceFamily.WHOOP5) 8 else 4
     return rawFrames.filter { frame ->
         val t = frame.histU8(typeIndex) ?: return@filter false
-        if (t != PacketType.HISTORICAL_DATA.rawValue) return@filter false // type-50 console / metadata / etc.
+        // WHOOP 5 type-52 is accepted by the offload state machine but has no stream decoder yet. Preserve
+        // every frame before acking; treating it like harmless console traffic permanently destroyed the
+        // only corpus capable of mapping the IMU layout.
+        if (family == DeviceFamily.WHOOP5 &&
+            t == PacketType.HISTORICAL_IMU_DATA_STREAM.rawValue) return@filter true
+        if (t != PacketType.HISTORICAL_DATA.rawValue) return@filter false // console / metadata / event
+        // v20/v21 channel arrays are structurally decoded for inspection but not yet mapped to durable
+        // sensor rows. Keep the verbatim record until labelled captures pin channel identity and scale.
+        if (family == DeviceFamily.WHOOP5 && frame.histU8(9) in setOf(20, 21)) return@filter true
         // WHOOP 5/MG v26 = raw PPG block, deliberately not stored — known-skipped, not lost data.
         if (family == DeviceFamily.WHOOP5 && frame.histU8(9) == 26) return@filter false
         // A type-47 record that [decodeHistorical] cannot turn into usable biometrics — CRC failure or
@@ -615,7 +671,7 @@ fun extractHistoricalStreams(
                 // step_motion_counter@57 is the WHOOP5 CUMULATIVE u16 counter (decoded but, until now,
                 // dropped). Stored raw; AnalyticsEngine derives the daily step total from counter deltas.
                 // APPROXIMATE — @57 semantics unverified vs the official app (see decodeWhoop5Historical). (#78)
-                // activity_class@63 (0=still/1=walk/2=run) rides on the same record — null when invalid/absent.
+                // activity_class@63 (0=still; 1/2 neutral motion classes) rides on the same record.
                 p.intOrNull("step_motion_counter")?.let { c ->
                     steps.add(StepRow(ts, c, activityClass = p.intOrNull("activity_class")))
                 }

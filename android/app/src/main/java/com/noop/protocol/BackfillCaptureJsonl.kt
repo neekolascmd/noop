@@ -10,12 +10,20 @@ data class BackfillCaptureRecord(
     val size: Int,
     val parsed: Map<String, Any?>,
     val hex: String,
+    val direction: String = "strap_to_app",
+    val schemaVersion: Int = 2,
+    val firmware: String? = null,
+    val worn: Boolean? = null,
+    val batteryPct: Double? = null,
+    val hr: Int? = null,
 )
 
 object BackfillCaptureJsonl {
     fun encode(record: BackfillCaptureRecord): String =
         buildString {
             append('{')
+            appendField("schema_version", record.schemaVersion)
+            append(',')
             appendField("captured_at_ms", record.capturedAtMs)
             append(',')
             appendField("session_id", record.sessionId)
@@ -28,6 +36,12 @@ object BackfillCaptureJsonl {
             append(',')
             appendField("offload", record.offload)
             append(',')
+            appendField("direction", record.direction)
+            append(',')
+            record.firmware?.let { appendField("firmware", it); append(',') }
+            record.worn?.let { appendField("worn", it); append(',') }
+            record.batteryPct?.let { appendField("battery_pct", it); append(',') }
+            record.hr?.let { appendField("hr", it); append(',') }
             appendField("size", record.size)
             append(',')
             appendQuoted("parsed")

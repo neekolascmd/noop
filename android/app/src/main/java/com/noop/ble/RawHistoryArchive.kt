@@ -177,11 +177,15 @@ class RawHistoryArchive(
         const val PER_VERSION_FLOOR = 64
 
         /**
-         * The hist_version byte distinguishing one historical layout from another: `frame[5]` on WHOOP
-         * 4, `frame[9]` on WHOOP 5/MG (the puffin envelope is 4 bytes longer). Same indices the reject
-         * filter uses. Frames too short to carry it fall back to a sentinel so they still form a bucket.
+         * The retention-layout key distinguishing one historical layout from another: `frame[5]` on
+         * WHOOP 4 type-47, `frame[9]` on WHOOP 5/MG type-47 (the puffin envelope is 4 bytes longer).
+         * WHOOP 5 type-52 has no mapped version byte, so all of its records deliberately share one
+         * neutral sentinel bucket instead of treating arbitrary payload byte 9 as a version and
+         * multiplying floors. Frames too short to classify use a separate sentinel bucket.
          */
         fun versionByte(frame: ByteArray, family: DeviceFamily): Int {
+            if (family == DeviceFamily.WHOOP5 && frame.size > 8 &&
+                (frame[8].toInt() and 0xFF) == 52) return -52
             val idx = if (family == DeviceFamily.WHOOP5) 9 else 5
             return if (frame.size > idx) frame[idx].toInt() and 0xFF else -1
         }

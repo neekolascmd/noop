@@ -277,7 +277,7 @@ struct TodayView: View {
     @State private var stepsEstByDay: [String: Int] = [:]
 
     // The SELECTED day's representative activity class (#316 / @63): the most-recent non-nil step-sample
-    // activityClass (0=still, 1=walk, 2=run) over the day's window. nil when the day has no classed step
+    // activityClass (0=still; 1/2 neutral motion classes) over the day's window. nil when there is no class
     // sample (a 4.0 strap, a pre-v19 row, or every record's @63 byte was invalid), then the steps tile
     // shows NO activity icon. A lightweight on-device readout that rides alongside the @57 step counter.
     @State private var stepActivityClassToday: Int?
@@ -3307,8 +3307,8 @@ struct TodayView: View {
                 // H6, an estimated (or awaiting-calibration) steps tile carries a small ⚙︎ that opens the
                 // steps-calibration sheet (the SAME one Settings hosts), so a WHOOP 4.0 user can tune or
                 // hand-set the estimate from here even before enough auto-fit days exist (#589).
-                // #316, a day with a REAL measured count (not an estimate) and a known @63 activity class
-                // instead shows a small still/walk/run glyph, so the tile quietly says what the wrist was
+                // #316, a day with a REAL measured count (not an estimate) and a known @63 motion class
+                // instead shows a small neutral motion glyph, so the tile quietly says what the wrist was
                 // doing. The two are mutually exclusive (the gear is only for estimated/blank days), so they
                 // never collide in the single accessory slot.
                 accessory: {
@@ -3525,17 +3525,16 @@ struct TodayView: View {
         .help("Calibrate the steps estimate")
     }
 
-    /// #316 / @63, the small still/walk/run glyph on a REAL (measured) Steps tile. Maps the decoded
-    /// activity-class enum (0=still, 1=walk, 2=run) to an SF Symbol, tinted with the tile's own metric
-    /// colour so it reads as part of the tile rather than an alert. Mirrors the Android DirectionsWalk/Run
-    /// + AccessibilityNew icon set + semantics exactly (cross-platform parity). Subtle and optional-feeling:
+    /// #316 / @63, the motion glyph on a REAL (measured) Steps tile. Only class 0 is pinned to still;
+    /// classes 1/2 deliberately share a generic figure because a labelled arm-only capture disproved the
+    /// former walk/run names. Mirrors Android's neutral semantics. Subtle and optional-feeling:
     /// a day with no known class shows nothing (the caller only invokes this for a non-nil 0/1/2).
     private func stepActivityIcon(_ activityClass: Int) -> some View {
         let symbol: String
         let label: String
         switch activityClass {
-        case 1:  symbol = "figure.walk"; label = String(localized: "Walking")
-        case 2:  symbol = "figure.run";  label = String(localized: "Running")
+        case 1:  symbol = "figure"; label = String(localized: "Movement class 1")
+        case 2:  symbol = "figure"; label = String(localized: "Movement class 2")
         default: symbol = "figure.stand"; label = String(localized: "Still")   // 0 = still
         }
         return Image(systemName: symbol)

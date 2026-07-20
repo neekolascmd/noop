@@ -48,10 +48,9 @@ public func isPlausibleHistoricalUnix(_ ts: Int, wallNow: Int,
     return ts >= oldest - SESSION_RANGE_MARGIN && ts <= newest + SESSION_RANGE_MARGIN
 }
 
-/// The HISTORICAL_DATA record frames in `rawFrames` that FAIL decode — a genuine CRC failure, or an
-/// unmapped firmware layout whose envelope parsed but yielded no usable biometrics. These are the
-/// records the strap is about to free once we ack the trim, so without an archive they are lost
-/// forever while the UI reports a clean sync (#77 / #91).
+/// Historical sensor record frames in `rawFrames` that cannot yet become durable rows: a type-47 record
+/// that fails decode, or a WHOOP 5/MG type-52 HISTORICAL_IMU_DATA_STREAM whose layout is not mapped yet.
+/// The strap is about to free these once we ack the trim, so without an archive they are lost forever.
 ///
 /// Console (type-50, `frame[typeIndex] == 0x32`) frames are strap-side debug-log text that decode to
 /// zero rows BY DESIGN and are never returned. 5/MG v26 (raw PPG block, hist_version 26) is also
@@ -61,26 +60,37 @@ public func isPlausibleHistoricalUnix(_ ts: Int, wallNow: Int,
 /// Used by the Backfiller/BLEManager to archive undecodable history BEFORE acking the trim. Mirrors
 /// the Android rejectedHistoricalRecords so one mapping toolchain re-ingests both archives.
 public func rejectedHistoricalRecords(_ rawFrames: [[UInt8]], family: DeviceFamily) -> [[UInt8]] {
+    let parsed = rawFrames.map { parseFrame($0, family: family) }
+    return zip(rawFrames, parsed).compactMap { frame, parsed in
+        isRejectedHistoricalRecord(frame, parsed: parsed, family: family) ? frame : nil
+    }
+}
+
+/// Single-frame form used by the offload pipeline after it has already parsed the chunk. Keeping the
+/// predicate public prevents a second expensive parse of every multi-kilobyte v20/v21 record.
+public func isRejectedHistoricalRecord(_ f: [UInt8], parsed p: ParsedFrame,
+                                       family: DeviceFamily) -> Bool {
     // The type byte sits at the inner-record start: frame[4] on WHOOP 4.0, frame[8] on WHOOP 5/MG
     // (the puffin envelope is 4 bytes longer). hist_version sits one byte past the type+seq+cmd
     // header — frame[5] (4.0) / frame[9] (5/MG) — same shift.
     let typeIndex = family == .whoop5 ? 8 : 4
     let versionIndex = family == .whoop5 ? 9 : 5
-    return rawFrames.filter { f in
-        // Only genuine HISTORICAL_DATA records (47). Console (50) and METADATA frames have a
-        // different type byte, so they never pass this gate — they are excluded by construction.
-        guard f.count > typeIndex, Int(f[typeIndex]) == 47 else { return false }
-        if family == .whoop5, f.count > versionIndex, Int(f[versionIndex]) == 26 { return false }  // v26 PPG: skipped by design
-        let p = parseFrame(f, family: family)
-        // Envelope/CRC reject: parse failed outright or the CRC32 trailer mismatched.
-        if !p.ok || p.crcOK == false { return true }
-        // Unmapped layout: the envelope parsed but no usable biometrics decoded. A record is genuinely
-        // undecodable only if it has no timestamp, or NEITHER heart rate NOR motion. v25 (issue #30)
-        // carries gravity but no per-second HR (PPG-derived), so a gravity-bearing record is real data
-        // the sleep stager uses — keep it. Only HR-less AND gravity-less type-47 records are rejected.
-        return p.parsed["unix"]?.intValue == nil
-            || (p.parsed["heart_rate"]?.intValue == nil && p.parsed["gravity_x"]?.doubleValue == nil)
-    }
+    guard f.count > typeIndex else { return false }
+    let type = Int(f[typeIndex])
+    // Type 52 participates in WHOOP 5 history offload but has no durable decoder yet. Preserve it
+    // unconditionally before trim acknowledgement; this is the corpus required to map the IMU layout.
+    if family == .whoop5, type == 52 { return true }
+    // Console (50), metadata and events decode to no sensor rows by design and are excluded.
+    guard type == 47 else { return false }
+    if family == .whoop5, f.count > versionIndex, Int(f[versionIndex]) == 26 { return false }  // v26 PPG: skipped by design
+    // Envelope/CRC reject: parse failed outright or the CRC32 trailer mismatched.
+    if !p.ok || p.crcOK == false { return true }
+    // Unmapped layout: the envelope parsed but no usable biometrics decoded. A record is genuinely
+    // undecodable only if it has no timestamp, or NEITHER heart rate NOR motion. v25 (issue #30)
+    // carries gravity but no per-second HR (PPG-derived), so a gravity-bearing record is real data
+    // the sleep stager uses — keep it. Only HR-less AND gravity-less type-47 records are rejected.
+    return p.parsed["unix"]?.intValue == nil
+        || (p.parsed["heart_rate"]?.intValue == nil && p.parsed["gravity_x"]?.doubleValue == nil)
 }
 
 /// Turn historical (offload) parsed frames into datastore rows. Port of
@@ -194,7 +204,7 @@ public func extractHistoricalStreams(_ parsed: [ParsedFrame],
             // step_motion_counter@57 is the WHOOP5 cumulative u16 counter — decoded but, until now,
             // dropped on macOS (Android persists it). APPROXIMATE; semantics unverified vs the app (#78).
             if let c = p["step_motion_counter"]?.intValue {
-                // activity_class@63 (0=still/1=walk/2=run) rides on the same record — nil when invalid/absent.
+                // activity_class@63 (0=still; 1/2 neutral motion classes) rides on the same record.
                 out.steps.append(StepSample(ts: ts, counter: c, activityClass: p["activity_class"]?.intValue))
             }
             // Band sleep_state (#175): the strap's OWN @81 high-nibble state (0 wake/1 still/2 asleep/3 up),

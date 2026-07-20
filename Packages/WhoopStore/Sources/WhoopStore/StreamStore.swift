@@ -128,7 +128,7 @@ extension WhoopStore {
             }
             // WHOOP5 step counter (#78). Persist-only, the count is not surfaced in the return tuple
             // (no consumer reads it; keeping the 8-field tuple avoids touching any caller/test).
-            // `activityClass` (#316, v19 column) is the @63 activity-class enum (0=still/1=walk/2=run) the
+            // `activityClass` (#316, v19 column) is the @63 motion-class enum (0=still; 1/2 neutral) the
             // decoder already carries on each StepSample; it was dropped here before v19. Bound as `s.activityClass`
             //, nil (the byte was 0xFF/invalid/absent) stores SQL NULL, so an absent class stays absent.
             if !streams.steps.isEmpty {
