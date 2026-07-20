@@ -43,6 +43,7 @@ enum class OuraEventTag(val raw: Int) {
     SPO2_PER_SAMPLE(0x6F),    // spo2_event per-second, OURA_PROTOCOL.md s6.5
     SPO2_STABLE(0x7B),        // spo2_stable_event (uint16 BIG-endian), OURA_PROTOCOL.md s6.6
     SPO2_DC(0x77),            // spo2_dc_event (sign-magnitude deltas), OURA_PROTOCOL.md s6.7
+    SPO2_R_PI(0x8B),          // raw R-ratio + perfusion index, OURA_PROTOCOL.md s6.7a (Tier B)
 
     // --- Temperature (Tier A) ---
     TEMP(0x46),               // temp_event (int16 LE / 100), OURA_PROTOCOL.md s6.8
@@ -89,7 +90,7 @@ enum class OuraEventTag(val raw: Int) {
         get() = when (this) {
             SLEEP_SUMMARY_1, SLEEP_SUMMARY_B, SLEEP_SUMMARY_C, SLEEP_SUMMARY_D, SLEEP_SUMMARY_E,
             SLEEP_SUMMARY_F, ACTIVITY_INFO, ACTIVITY_SUMMARY_1, ACTIVITY_SUMMARY_2,
-            REAL_STEPS_1, REAL_STEPS_2, SPO2_SMOOTHED -> TrustTier.TIER_B
+            REAL_STEPS_1, REAL_STEPS_2, SPO2_SMOOTHED, SPO2_R_PI -> TrustTier.TIER_B
             else -> TrustTier.TIER_A
         }
 
@@ -111,6 +112,7 @@ enum class OuraEventTag(val raw: Int) {
             SPO2_PER_SAMPLE -> "SPO2_PER_SAMPLE"
             SPO2_STABLE -> "SPO2_STABLE"
             SPO2_DC -> "SPO2_DC"
+            SPO2_R_PI -> "SPO2_R_PI"
             TEMP -> "TEMP"
             TEMP_PERIOD -> "TEMP_PERIOD"
             SLEEP_TEMP -> "SLEEP_TEMP"

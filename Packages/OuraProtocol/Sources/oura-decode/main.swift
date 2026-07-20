@@ -142,6 +142,9 @@ func describe(_ e: OuraEvent) -> String {
     case .ibi(let v): return "IBI \(v.ibiMs)ms amp=\(v.amplitude.map(String.init) ?? "-") rt=\(v.ringTimestamp)"
     case .hrv(let v): return "HRV t=\(v.timeMs) b1=\(v.b1) b2=\(v.b2) rt=\(v.ringTimestamp)"
     case .spo2(let v): return "SPO2 \(v.value) (\(v.unit)) rt=\(v.ringTimestamp)"
+    case .spo2RPI(let v):
+        let tenths = v.samples.compactMap(\.ring4CalibratedTenthsPercent)
+        return "SPO2_R_PI[TIER-B,EXPERIMENTAL] samples=\(v.samples.count) ring4_tenths=\(tenths) rt=\(v.ringTimestamp)"
     case .temp(let v): return "TEMP \(v.celsius)C rt=\(v.ringTimestamp)"
     case .battery(let v): return "BATTERY \(v.percent)% mv=\(v.voltageMv.map(String.init) ?? "-")"
     case .sleepPhase(let v): return "SLEEP_PHASE [\(v.index)]=\(v.stage) rt=\(v.ringTimestamp)"

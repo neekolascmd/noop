@@ -11,10 +11,10 @@ import org.junit.Test
  *
  * PARITY NOTE: every fixture hex string below is byte-for-byte identical to the Swift
  * DecoderGoldenTests fixtures, so the SAME raw record bytes must decode to the SAME values across the
- * Swift and Kotlin ports (that is the whole point of the twin). Vectors are SYNTHETIC, built from the
- * byte layouts in docs/OURA_PROTOCOL.md s6 (no real biometric capture is embedded). The full record is
- * `type len rt(4 LE) payload` with rt = 0x00010002 (counter 2, session 1) throughout, so every
- * assertion pins ringTimestamp == 65538.
+ * Swift and Kotlin ports (that is the whole point of the twin). Vectors are synthetic unless a test
+ * explicitly identifies a published, privacy-safe real fixture. The full record is `type len rt(4 LE)
+ * payload` with rt = 0x00010002 (counter 2, session 1) throughout, so every assertion pins
+ * ringTimestamp == 65538.
  */
 class DecoderGoldenTest {
     private val rt: Long = 0x0001_0002   // 65538
@@ -103,6 +103,37 @@ class DecoderGoldenTest {
         val rec = record("7b060200010003ca")
         val s = OuraDecoders.decodeSpO2Stable(rec)
         assertEquals(OuraSpO2(ringTimestamp = rt, value = 970, unit = "tenths_percent"), s)
+    }
+
+    // MARK: - 0x8B SpO2 R-ratio + perfusion index (Open Oura Ring 5 fixture; Tier B on Ring 4)
+
+    @Test
+    fun testSpO2RPI0x8BPreservesRawFixtureAndCalibratesRing4() {
+        // Open Oura's published real Ring 5 bytes; values below are independently recomputed.
+        val rec = record("8b110200010000321f8c323795328b9532bb95")
+        val value = OuraDecoders.decodeSpO2RPI(rec)!!
+        assertEquals(0, value.header)
+        assertEquals(listOf(0x321F, 0x3237, 0x328B, 0x32BB), value.samples.map { it.ratioQ14 })
+        assertEquals(listOf(0x8C, 0x95, 0x95, 0x95), value.samples.map { it.perfusionIndexRaw })
+        assertEquals(listOf(0, 1, 2, 3), value.samples.map { it.sampleIndex })
+        assertEquals(12_831.0 / 16_384.0, value.samples[0].ratio, 1e-12)
+        assertEquals(140.0 / 255.0 * 0.05, value.samples[0].perfusionIndex, 1e-12)
+        assertEquals(listOf(930, 929, 928, 927), value.samples.mapNotNull { it.ring4CalibratedTenthsPercent })
+    }
+
+    @Test
+    fun testSpO2RPI0x8BRejectsMalformedShapes() {
+        assertNull(OuraDecoders.decodeSpO2RPI(OuraRecord(0x8B, rt, intArrayOf(0x00))))
+        assertNull(OuraDecoders.decodeSpO2RPI(
+            OuraRecord(0x8B, rt, intArrayOf(0x00, 0x32, 0x1F, 0x8C, 0xFF)),
+        ))
+    }
+
+    @Test
+    fun testRing4SpO2CalibrationRejectsZeroAndClampsDocumentedRange() {
+        assertNull(OuraSpO2Calibration.ring4OreoTenthsPercent(0))
+        assertEquals(1000, OuraSpO2Calibration.ring4OreoTenthsPercent(1))
+        assertEquals(850, OuraSpO2Calibration.ring4OreoTenthsPercent(0xFFFF))
     }
 
     @Test

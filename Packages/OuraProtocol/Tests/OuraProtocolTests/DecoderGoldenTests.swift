@@ -2,9 +2,9 @@ import XCTest
 @testable import OuraProtocol
 
 /// Golden per-tag fixture tests: raw TLV record bytes -> expected decoded event(s). Vectors are
-/// SYNTHETIC, built from the byte layouts in docs/OURA_PROTOCOL.md s6 (no real biometric capture is
-/// embedded). The full record is `type len rt(4 LE) payload` with rt = 0x00010002 (counter 2, session
-/// 1) throughout, so every assertion pins ringTimestamp == 65538.
+/// synthetic unless a test explicitly identifies a published, privacy-safe real fixture. The full
+/// record is `type len rt(4 LE) payload` with rt = 0x00010002 (counter 2, session 1) throughout, so
+/// every assertion pins ringTimestamp == 65538.
 final class DecoderGoldenTests: XCTestCase {
     private let rt: UInt32 = 0x0001_0002   // 65538
 
@@ -91,6 +91,35 @@ final class DecoderGoldenTests: XCTestCase {
         let rec = record("7b060200010003ca")
         let s = OuraDecoders.decodeSpO2Stable(rec)
         XCTAssertEqual(s, OuraSpO2(ringTimestamp: rt, value: 970, unit: "tenths_percent"))
+    }
+
+    // MARK: - 0x8B SpO2 R-ratio + perfusion index (Open Oura Ring 5 fixture; Tier B on Ring 4)
+
+    func testSpO2RPI0x8BPreservesRawFixtureAndCalibratesRing4() throws {
+        // Open Oura's published real Ring 5 bytes: header 00 plus four
+        // (R Q14 big-endian, PI raw) triplets. NOOP independently recomputes every value.
+        let rec = record("8b110200010000321f8c323795328b9532bb95")
+        let value = try XCTUnwrap(OuraDecoders.decodeSpO2RPI(rec))
+        XCTAssertEqual(value.header, 0)
+        XCTAssertEqual(value.samples.map(\.ratioQ14), [0x321F, 0x3237, 0x328B, 0x32BB])
+        XCTAssertEqual(value.samples.map(\.perfusionIndexRaw), [0x8C, 0x95, 0x95, 0x95])
+        XCTAssertEqual(value.samples.map(\.sampleIndex), [0, 1, 2, 3])
+        XCTAssertEqual(value.samples[0].ratio, 12_831.0 / 16_384.0, accuracy: 1e-12)
+        XCTAssertEqual(value.samples[0].perfusionIndex, 140.0 / 255.0 * 0.05, accuracy: 1e-12)
+        XCTAssertEqual(value.samples.compactMap(\.ring4CalibratedTenthsPercent), [930, 929, 928, 927])
+    }
+
+    func testSpO2RPI0x8BRejectsMalformedShapes() {
+        XCTAssertNil(OuraDecoders.decodeSpO2RPI(
+            OuraRecord(type: 0x8B, ringTimestamp: rt, payload: [0x00])))
+        XCTAssertNil(OuraDecoders.decodeSpO2RPI(
+            OuraRecord(type: 0x8B, ringTimestamp: rt, payload: [0x00, 0x32, 0x1F, 0x8C, 0xFF])))
+    }
+
+    func testRing4SpO2CalibrationRejectsZeroAndClampsDocumentedRange() {
+        XCTAssertNil(OuraSpO2Calibration.ring4OreoTenthsPercent(ratioQ14: 0))
+        XCTAssertEqual(OuraSpO2Calibration.ring4OreoTenthsPercent(ratioQ14: 1), 1000)
+        XCTAssertEqual(OuraSpO2Calibration.ring4OreoTenthsPercent(ratioQ14: 0xFFFF), 850)
     }
 
     func testSleepPeriod0x6AAndBedtimeBounds0x76() {
