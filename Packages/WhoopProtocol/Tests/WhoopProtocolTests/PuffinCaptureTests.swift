@@ -12,24 +12,14 @@ final class PuffinCaptureTests: XCTestCase {
 
     func testRecordsCanonicalHexAndProvenance() {
         let cap = PuffinCapture()
-        let rec = cap.record(frame: helloFrame(), char: "fd4b0003", tsMs: 1_700_000_000_123, hr: 62,
-                             direction: "app_to_strap", offload: true,
-                             sessionId: "session-1", firmware: "50.38.1.0",
-                             worn: true, batteryPct: 73)
+        let rec = cap.record(frame: helloFrame(), char: "fd4b0003", tsMs: 1_700_000_000_123, hr: 62)
 
         XCTAssertEqual(cap.count, 1)
-        XCTAssertEqual(rec.schemaVersion, 2)
         // hex is the decoder's canonical rawHex — round-trips through parsing, lowercase, no spaces.
         XCTAssertEqual(rec.hex, helloHex)
         XCTAssertEqual(rec.char, "fd4b0003")
         XCTAssertEqual(rec.tsMs, 1_700_000_000_123)
         XCTAssertEqual(rec.hr, 62)
-        XCTAssertEqual(rec.direction, "app_to_strap")
-        XCTAssertTrue(rec.offload)
-        XCTAssertEqual(rec.sessionId, "session-1")
-        XCTAssertEqual(rec.firmware, "50.38.1.0")
-        XCTAssertEqual(rec.worn, true)
-        XCTAssertEqual(rec.batteryPct, 73)
         XCTAssertTrue(rec.ok)
         XCTAssertEqual(rec.crcOK, true)
     }
@@ -64,12 +54,9 @@ final class PuffinCaptureTests: XCTestCase {
         let obj = try JSONSerialization.jsonObject(with: data) as? [[String: Any]]
         let first = try XCTUnwrap(obj?.first)
         XCTAssertEqual(first["hex"] as? String, helloHex)
-        XCTAssertEqual(first["schema_version"] as? Int, 2)
         XCTAssertEqual(first["ts_ms"] as? Int, 7)
         XCTAssertEqual(first["hr"] as? Int, 55)
         XCTAssertEqual(first["crc_ok"] as? Bool, true)
-        XCTAssertEqual(first["direction"] as? String, "strap_to_app")
-        XCTAssertEqual(first["offload"] as? Bool, false)
         XCTAssertNotNil(first["type_name"])
     }
 

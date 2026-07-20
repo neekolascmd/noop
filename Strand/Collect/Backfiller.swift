@@ -120,9 +120,6 @@ final class Backfiller {
     /// shared strap log always reveals what the strap emits (v18/v24/v25/v26). Mirrors the Android
     /// Backfiller (PR #241, ryanbr); reset per session in `begin`.
     private var loggedLayoutVersions: Set<Int> = []
-    /// Bounded safety corpus for mapped-but-not-yet-stored WHOOP 5 layouts. Complete corpora belong in
-    /// the opt-in puffin capture; the reject archive retains one CRC-valid sample per layout/session.
-    private var preservedLayoutSamples: Set<String> = []
 
     /// SpO2 RE dump (PR #945, reimplemented): how many full-record dumps this session emitted, bounded by
     /// `Spo2ReTrace.maxSamples`. Session-scoped so the cap spans chunks; reset per session in `begin`.
@@ -200,7 +197,6 @@ final class Backfiller {
         loggedFutureRtc = false
         sessionDroppedImplausible = 0
         loggedLayoutVersions.removeAll(keepingCapacity: true)
-        preservedLayoutSamples.removeAll(keepingCapacity: true)
         spo2Dumped = 0
         // #547: the range markers belong to a connection's GET_DATA_RANGE, which BLEManager re-sets per
         // connect; clear them here so a fresh session never reuses a previous strap's window. BLEManager
@@ -308,7 +304,7 @@ final class Backfiller {
     private struct DecodedChunk {
         let parsed: [ParsedFrame]
         let decoded: Streams
-        let rejectedIndices: [Int]
+        let rejected: [[UInt8]]
     }
 
     private func finishChunk(unix: UInt32, trim: UInt32, endFrame: [UInt8]) async {
@@ -351,28 +347,15 @@ final class Backfiller {
             let d = await Task.detached(priority: .utility) { () -> DecodedChunk in
                 let parsed = frames.map { parseFrame($0, family: fam) }
                 let decoded = extractFn(parsed, dev, wall, oldest, newest)
-                let rejectedIndices = frames.indices.filter {
-                    isRejectedHistoricalRecord(frames[$0], parsed: parsed[$0], family: fam)
-                }
-                return DecodedChunk(parsed: parsed, decoded: decoded, rejectedIndices: rejectedIndices)
+                let rejected = rejectedHistoricalRecords(frames, family: fam)
+                return DecodedChunk(parsed: parsed, decoded: decoded, rejected: rejected)
             }.value
             let parsed = d.parsed
-            var newSampleKeys: Set<String> = []
-            let rejected = d.rejectedIndices.compactMap { index -> [UInt8]? in
-                let frame = frames[index]
-                guard let key = mappedUnstoredSampleKey(frame: frame, parsed: parsed[index]) else {
-                    return frame   // corrupt or genuinely unknown records are never sampled away
-                }
-                guard !preservedLayoutSamples.contains(key), newSampleKeys.insert(key).inserted else {
-                    return nil
-                }
-                return frame
-            }
             // Observability (PR #241): log which layout this strap emits on a HEALTHY sync too — the
             // unmapped-version path below only fires for layouts NOOP can't decode, so a normal log
             // never revealed v18/v24/v25/v26. Once per distinct layout this session.
-            let versions = Set(parsed.compactMap { $0.parsed["hist_version"]?.intValue })
-            for v in versions.sorted() where loggedLayoutVersions.insert(v).inserted {
+            if let v = parsed.lazy.compactMap({ $0.parsed["hist_version"]?.intValue }).first,
+               loggedLayoutVersions.insert(v).inserted {
                 log?("Backfill: historical records use layout v\(v)")
                 // UNIVERSAL clock-drift: bank the layout so the export's universal clock-drift line is
                 // firmware-aware on every export (not only Connection mode). Unconditional observability.
@@ -382,9 +365,8 @@ final class Backfiller {
                 // unmapped-version path below fires too. Gated zero-cost.
                 emitConnection({
                     let decodable = parsed.contains {
-                        $0.parsed["hist_version"]?.intValue == v
-                            && ($0.parsed["heart_rate"] != nil || $0.parsed["gravity_x"] != nil
-                                || $0.parsed["ppg_waveform"] != nil)
+                        $0.parsed["heart_rate"] != nil || $0.parsed["gravity_x"] != nil
+                            || $0.parsed["ppg_waveform"] != nil
                     }
                     return ConnectionTrace.firmwareLine(version: v, decodable: decodable)
                 }())
@@ -449,13 +431,13 @@ final class Backfiller {
             // type-50 console/diagnostic frames, which decode to 0 rows by design and are NOT a loss
             // (the "rejected frames" red herring users kept reporting — #77/#120). Drives both the
             // log wording below and the archive guard further down.
+            let rejected = d.rejected
             // Tally this chunk's outcome so a completed-but-empty session is distinguishable from a
             // caught-up one (#77 family): did it decode sensor rows, and was it console-only?
-            let hadRejectedCandidates = !d.rejectedIndices.isEmpty
-            onChunk?(!decoded.isEmpty, decoded.isEmpty && !hadRejectedCandidates)
+            onChunk?(!decoded.isEmpty, decoded.isEmpty && rejected.isEmpty)
             // A chunk that produced no rows AND held no genuine rejects was pure console output — say
             // so calmly so it doesn't read as data loss (the "rejected frames" red herring, #77/#120).
-            if decoded.isEmpty && !hadRejectedCandidates {
+            if decoded.isEmpty && rejected.isEmpty {
                 log?("Backfill: \(frames.count) frame(s) this chunk carried no sensor records (strap console/diagnostic output) — normal, nothing to persist (trim=\(trim)).")
             }
             // Log + hex-sample the GENUINE rejects whenever there are any — INCLUDING a partially-decoded
@@ -508,7 +490,6 @@ final class Backfiller {
                     return
                 }
             }
-            preservedLayoutSamples.formUnion(newSampleKeys)
 
             // RAW: only persisted when the research toggle is ON. Default OFF → decoded-only; the
             // chunk is still durably committed (decoded) so the trim is safe to advance + ack.
@@ -563,20 +544,6 @@ final class Backfiller {
 
         ackTrim(trim, endData)
         lastAckedTrim = trim   // #364: record the advanced cursor for the auto-continue spin-detector
-    }
-
-    /// Return a sample key only for CRC-valid, high-volume WHOOP 5 layouts that are structurally decoded
-    /// but not yet durable. Byte 9 is a layout version only for type-47; type-52 uses one neutral key.
-    private func mappedUnstoredSampleKey(frame: [UInt8], parsed: ParsedFrame) -> String? {
-        guard family == .whoop5, frame.count > 9, parsed.ok, parsed.crcOK == true else { return nil }
-        switch Int(frame[8]) {
-        case 47 where frame[9] == 20 || frame[9] == 21:
-            return "type47-v\(frame[9])"
-        case 52:
-            return "type52"
-        default:
-            return nil
-        }
     }
 
     /// Called when a backfill watchdog timer fires (strap went silent mid-offload).

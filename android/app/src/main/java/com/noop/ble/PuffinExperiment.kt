@@ -30,10 +30,9 @@ class PuffinExperiment(private val prefs: SharedPreferences) {
         get() = prefs.getBoolean(KEY_CAPTURE, false)
         set(v) = prefs.edit().putBoolean(KEY_CAPTURE, v).apply()
 
-    /** True if the user opted in to the WHOOP 5/MG persistent R22 experiment — the one probe that WRITES
+    /** True if the user opted in to the WHOOP 5/MG "R22" deep-data unlock — the one probe that WRITES
      *  a persistent feature flag to the strap (the `enable_r22_*` SET_CONFIG sequence). Kept distinct
-     *  from [isEnabled] because it changes strap state; NOOP has no restore sequence. Default false.
-     *  Mirrors the macOS
+     *  from [isEnabled] because it changes strap state; reversible, default false. Mirrors the macOS
      *  `PuffinExperiment.deepDataKey`. Driven only from `WhoopBleClient.enableWhoop5DeepData()`. (#174) */
     var isDeepDataEnabled: Boolean
         get() = prefs.getBoolean(KEY_DEEP_DATA, false)
@@ -67,7 +66,7 @@ class PuffinExperiment(private val prefs: SharedPreferences) {
         /** 5/MG raw backfill capture (research aid for the puffin biometric decode). */
         const val KEY_CAPTURE = "noopWhoop5Capture"
 
-        /** 5/MG persistent R22 configuration opt-in (mirrors macOS `PuffinExperiment.deepDataKey`). */
+        /** 5/MG R22 deep-data unlock opt-in (mirrors macOS `PuffinExperiment.deepDataKey`). */
         const val KEY_DEEP_DATA = "noopWhoop5DeepData"
 
         /** "Broadcast heart rate" opt-in (mirrors macOS `PuffinExperiment.broadcastHrKey`). */

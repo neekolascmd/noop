@@ -73,9 +73,10 @@ final class Whoop5HistoricalTests: XCTestCase {
         let dyn = p["dynamic_acceleration"]?.doubleValue ?? -1
         XCTAssertTrue((0.0...8.0).contains(dyn))
         XCTAssertEqual(dyn, 0.0092, accuracy: 0.001)
-        // Cumulative motion counter (full u16 at [57:59], not byte @57 alone).
+        // cumulative motion counter (full u16 at [57:59], not byte @57 alone) + wear/contact quality enum.
         XCTAssertEqual(p["step_motion_counter"]?.intValue, 50)
-        // @63 is a motion-class enum: this worn-still frame pins byte 0 to still.
+        XCTAssertEqual(p["motion_wear_quality"]?.intValue, 0)
+        // @63 also reads as the activity-class enum (#316): this worn-still frame's byte is 0 => still.
         XCTAssertEqual(p["activity_class"]?.intValue, 0)
     }
 
@@ -86,11 +87,11 @@ final class Whoop5HistoricalTests: XCTestCase {
     }
 
     func testHistoricalV18ActivityClassEnum() {
-        // @63 is a motion-class enum: 0=still; 1/2 remain neutral after both occurred during a labelled
-        // arm-only phase. The observed codes map through; 0xFF and any other value store nothing (nil).
+        // @63 is a small validated activity-class enum: 0=still, 1=walk, 2=run, 0xFF=invalid (#316).
+        // The four known codes map through; 0xFF and any other value store nothing (nil).
         XCTAssertEqual(parseFrame(mutating(63, to: 0), family: .whoop5).parsed["activity_class"]?.intValue, 0) // still
-        XCTAssertEqual(parseFrame(mutating(63, to: 1), family: .whoop5).parsed["activity_class"]?.intValue, 1) // motion class 1
-        XCTAssertEqual(parseFrame(mutating(63, to: 2), family: .whoop5).parsed["activity_class"]?.intValue, 2) // motion class 2
+        XCTAssertEqual(parseFrame(mutating(63, to: 1), family: .whoop5).parsed["activity_class"]?.intValue, 1) // walk
+        XCTAssertEqual(parseFrame(mutating(63, to: 2), family: .whoop5).parsed["activity_class"]?.intValue, 2) // run
         XCTAssertNil(parseFrame(mutating(63, to: 0xFF), family: .whoop5).parsed["activity_class"]?.intValue)   // invalid
         XCTAssertNil(parseFrame(mutating(63, to: 7), family: .whoop5).parsed["activity_class"]?.intValue)      // unknown
     }
@@ -107,7 +108,7 @@ final class Whoop5HistoricalTests: XCTestCase {
         // Fields read off this same real worn frame and justified by their observed behaviour:
         //  @11 record_index — a per-record counter (+1/record, independent of unix; seen on two straps)
         //  @36 hr_fixed_8_8 — value/256 tracks hr@22 to sub-bpm (here 25997/256 ≈ 101.55 ≈ HR 102)
-        //  @59 motion_byte_59 — raw motion-correlated byte; meaning/unit not pinned
+        //  @59 step_cadence — a cadence-like byte (never 0; lower when moving faster)
         //  @75 status_word — a 16-bit word that is NOT a deep-sleep marker
         //  @81 sleep_state — high nibble = band state (worn daytime frame = wake)
         //  @33/@38/@40 — raw bytes near the HR/R-R fields; @113 — a float of unknown purpose
@@ -115,7 +116,7 @@ final class Whoop5HistoricalTests: XCTestCase {
         XCTAssertEqual(p["record_index"]?.intValue, 25443699)
         XCTAssertEqual(p["hr_fixed_8_8"]?.intValue, 25997)
         XCTAssertEqual((p["hr_fixed_8_8"]?.intValue ?? 0) / 256, 101)   // ≈ hr@22 (102)
-        XCTAssertEqual(p["motion_byte_59"]?.intValue, 170)
+        XCTAssertEqual(p["step_cadence"]?.intValue, 170)
         XCTAssertEqual(p["status_word"]?.intValue, 1792)
         XCTAssertEqual(p["sleep_state"]?.intValue, 0)
         XCTAssertEqual(p["rr_packed"]?.intValue, 25444)
@@ -134,19 +135,20 @@ final class Whoop5HistoricalTests: XCTestCase {
         XCTAssertEqual((p["status_word_2"]?.intValue ?? 0) & 0xF, 2)
     }
 
-    func testHistoricalV18StateBitPairsRemainNeutral() {
-        // @81 packs the band state (b4-5) plus two raw two-bit fields. A labelled capture disproved the
-        // former on-wrist and wake-quality names, so these assertions pin only the structural split.
+    func testHistoricalV18OnWristAndWakeQualityBits() {
+        // @81 packs the band state (b4-5) plus an on-wrist/validity flag (b0-1) and a quality code (b2-3).
+        // On the real worn daytime fixture @81 = 0 (all sub-fields 0); override just that byte to exercise
+        // each bitfield independently — decode is not CRC-gated, so an in-memory edit is sufficient.
         let base = parseFrame(bytes(historicalHex), family: .whoop5).parsed
-        XCTAssertEqual(base["state_bits_0_1"]?.intValue, 0)
-        XCTAssertEqual(base["state_bits_2_3"]?.intValue, 0)
+        XCTAssertEqual(base["onwrist"]?.intValue, 0)
+        XCTAssertEqual(base["wake_quality"]?.intValue, 0)
         var f = bytes(historicalHex)
-        // raw 0b00_10_11_01 = 0x2D → sleep_state 2, bits 2-3 = 3, bits 0-1 = 1.
+        // raw 0b00_10_11_01 = 0x2D → sleep_state 2, wake_quality 3, onwrist 1.
         f[81] = 0x2D
         let p = parseFrame(f, family: .whoop5).parsed
         XCTAssertEqual(p["sleep_state"]?.intValue, 2)
-        XCTAssertEqual(p["state_bits_2_3"]?.intValue, 3)
-        XCTAssertEqual(p["state_bits_0_1"]?.intValue, 1)
+        XCTAssertEqual(p["wake_quality"]?.intValue, 3)
+        XCTAssertEqual(p["onwrist"]?.intValue, 1)
     }
 
     func testHistoricalV18AuxByte82() {

@@ -30,7 +30,7 @@
 		<true/>
 	</dict>
 	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>NOOP connects directly to your health device over Bluetooth to read heart rate, R-R intervals, battery, and supported sensor data locally on your Mac. Nothing leaves your device.</string>
+	<string>NOOP connects directly to your WHOOP strap over Bluetooth to read heart rate, R-R intervals, battery, and sensor data locally on your Mac. Nothing leaves your device.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>NOOP records your route during an outdoor workout to show distance, pace, and a map. The route stays on your device. Nothing leaves it.</string>
 </dict>

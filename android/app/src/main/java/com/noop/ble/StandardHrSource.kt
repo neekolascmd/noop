@@ -19,18 +19,9 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
-import com.noop.data.GravityRow
 import com.noop.data.HrRow
 import com.noop.data.RrRow
 import com.noop.data.StreamBatch
-import com.noop.polar.PolarPmdClock
-import com.noop.polar.PolarPmdControlResponseAssembler
-import com.noop.polar.PolarPmdDecoder
-import com.noop.polar.PolarPmdFeatures
-import com.noop.polar.PolarPmdGatt
-import com.noop.polar.PolarPmdMeasurement
-import com.noop.polar.PolarPmdSessionPlanner
-import com.noop.polar.PolarPmdSessionUpdate
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -115,7 +106,6 @@ class StandardHrSource(
     // MARK: - Android Bluetooth handles (OWN scanner + GATT, separate from WHOOP)
 
     private val appContext = context.applicationContext
-    private val pmdExperiment = PolarPmdExperiment.from(appContext)
     private val bluetoothManager: BluetoothManager? =
         appContext.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
     private val adapter: BluetoothAdapter? = bluetoothManager?.adapter
@@ -133,32 +123,6 @@ class StandardHrSource(
     private var retried133 = false
     /** Logs the FIRST HR sample of a connection only (not every notification); reset on stop/disconnect. */
     private var loggedFirstHr = false
-
-    // MARK: - Serial GATT setup + Polar PMD state
-
-    /** Android permits only one descriptor/read/write operation in flight. Every notification CCCD,
-     * battery read, and PMD feature read is therefore advanced by its preceding callback. */
-    private data class NotifySetup(
-        val characteristic: BluetoothGattCharacteristic,
-        val descriptorValue: ByteArray,
-        val label: String,
-    )
-    private val setupNotifyQueue = ArrayDeque<NotifySetup>()
-    private var setupBatteryRead: BluetoothGattCharacteristic? = null
-    private var setupPmdFeatureRead: BluetoothGattCharacteristic? = null
-
-    private var pmdControlCharacteristic: BluetoothGattCharacteristic? = null
-    private var pmdDataCharacteristic: BluetoothGattCharacteristic? = null
-    private var pmdControlSubscribed = false
-    private var pmdDataSubscribed = false
-    private var pmdStartAttempted = false
-    private val pmdAssembler = PolarPmdControlResponseAssembler()
-    private val pmdPlanner = PolarPmdSessionPlanner()
-    private val pmdDecoder = PolarPmdDecoder()
-    private val pmdClock = PolarPmdClock()
-    private val pmdLoggedMeasurements = mutableSetOf<PolarPmdMeasurement>()
-    private var lastStandardHrAtMs = 0L
-    private var lastPmdAccelerationSecond: Long? = null
 
     /** Derives instantaneous speed/cadence from successive CSC/CPS cumulative counters. Per-source so a
      *  reconnect starts fresh (reset on stop/disconnect). Pure value type. */
@@ -257,7 +221,6 @@ class StandardHrSource(
         _batteryPct.value = null // a stale charge must not outlive the link
         flush()
         clearSensorState()       // a stale speed/cadence/power panel must not outlive the link
-        resetPmd()
     }
 
     /** Reset the additive fitness-sensor state (rate-computer baselines + last metrics) so a reconnect /
@@ -266,24 +229,6 @@ class StandardHrSource(
         rateComputer.reset()
         lastSensorMetrics = SensorMetrics()
         handler.post { guardedCallback("sensor-clear") { sensorSink(SensorMetrics()) } }
-    }
-
-    private fun resetPmd() {
-        setupNotifyQueue.clear()
-        setupBatteryRead = null
-        setupPmdFeatureRead = null
-        pmdControlCharacteristic = null
-        pmdDataCharacteristic = null
-        pmdControlSubscribed = false
-        pmdDataSubscribed = false
-        pmdStartAttempted = false
-        pmdAssembler.reset()
-        pmdPlanner.reset()
-        pmdDecoder.reset()
-        pmdClock.reset()
-        pmdLoggedMeasurements.clear()
-        lastStandardHrAtMs = 0
-        lastPmdAccelerationSecond = null
     }
 
     // MARK: - Buffer / persistence
@@ -350,24 +295,16 @@ class StandardHrSource(
                         log("HR-strap: WARNING connected with non-success status=$status")
                     }
                     retried133 = false   // a real connection clears the one-shot 133 retry guard
-                    resetPmd()
                     log("HR-strap: connected (status=$status) — discovering services")
                     g.discoverServices()
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
-                    // A replaced/closed GATT can report its final disconnect after a new one is already
-                    // active. Never let that stale callback reset the new connection's PMD/session state.
-                    if (gatt !== g) {
-                        runCatching { g.close() }
-                        return@guardedCallback
-                    }
                     log("HR-strap: disconnected (status=$status)")
                     loggedFirstHr = false   // a reconnect should log its first sample again
                     loggedFirstSensor = false
                     _batteryPct.value = null // a stale charge must not outlive the link
                     flush()
                     clearSensorState()
-                    resetPmd()
                     if (gatt === g) { runCatching { g.close() }; gatt = null }
                     // Hardening: status 133 is Android's infamous generic GATT_ERROR on connect — almost
                     // always transient. Auto-retry ONCE before telling the user to forget+re-pair.
@@ -399,69 +336,49 @@ class StandardHrSource(
                 return@guardedCallback
             }
             log("HR-strap: 0x180D heart-rate service FOUND")
-            val hr = svc.getCharacteristic(HEART_RATE_CHAR)
-            if (hr == null) {
+            val ch = svc.getCharacteristic(HEART_RATE_CHAR)
+            if (ch == null) {
                 log("HR-strap: 0x2A37 measurement characteristic NOT FOUND — cannot read HR from this strap")
                 return@guardedCallback
             }
             log("HR-strap: 0x2A37 measurement characteristic found")
-            setupNotifyQueue.clear()
-            queueNotify(
-                g,
-                hr,
-                BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE,
-                "heart-rate 0x2A37",
-            )
+            g.setCharacteristicNotification(ch, true)
+            // Explicit CCCD write (CoreBluetooth's setNotifyValue does this implicitly).
+            val cccd = ch.getDescriptor(CCCD)
+            if (cccd == null) {
+                log("HR-strap: WARNING 0x2A37 has no CCCD (0x2902) — cannot enable notifications")
+                return@guardedCallback
+            }
+            log("HR-strap: enabling notifications on 0x2A37")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                // API 33+ returns an Int status code from the descriptor write request.
+                val rc = g.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                log("HR-strap: CCCD write requested (rc=$rc)")
+            } else {
+                @Suppress("DEPRECATION")
+                run {
+                    cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                    val ok = g.writeDescriptor(cccd)
+                    log("HR-strap: CCCD write requested (rc=$ok)")
+                }
+            }
 
             // Additively read the standard Battery Level (0x2A19) if the strap exposes 0x180F. Entirely
-            // separate from the HR path above. It is queued after CCCD writes because Android GATT accepts
-            // only one operation at a time.
-            setupBatteryRead = g.getService(BATTERY_SERVICE)?.getCharacteristic(BATTERY_CHAR)
+            // separate from the HR path above — a strap without the battery service simply yields nothing.
+            val batt = g.getService(BATTERY_SERVICE)?.getCharacteristic(BATTERY_CHAR)
+            if (batt != null) {
+                log("HR-strap: 0x180F battery service found — reading level")
+                runCatching { g.readCharacteristic(batt) }
+            }
 
             // Additively subscribe to any standard fitness-sensor measurement (RSC/CSC/CPS) this device
             // exposes — a footpod / bike speed-cadence sensor / power meter read ALONGSIDE HR. Separate
             // services from HR; a device without them yields no characteristic and the HR path is untouched.
             for ((svcUuid, charUuid) in FITNESS_SENSOR_CHARS) {
-                val sensor = g.getService(svcUuid)?.getCharacteristic(charUuid) ?: continue
+                val ch = g.getService(svcUuid)?.getCharacteristic(charUuid) ?: continue
                 log("HR-strap: fitness-sensor characteristic $charUuid found — enabling notifications")
-                queueNotify(
-                    g,
-                    sensor,
-                    BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE,
-                    "fitness sensor $charUuid",
-                )
+                enableFitnessNotify(g, ch)
             }
-
-            // Polar PMD is additive and capability-driven. The control point uses indications; its data
-            // characteristic uses notifications. We always read capabilities, but only start streams
-            // when the default-off user preference is enabled.
-            val pmd = g.getService(POLAR_PMD_SERVICE)
-            pmdControlCharacteristic = pmd?.getCharacteristic(POLAR_PMD_CONTROL)
-            pmdDataCharacteristic = pmd?.getCharacteristic(POLAR_PMD_DATA)
-            if (pmd != null) {
-                log("HR-strap: Polar PMD service found")
-                val control = pmdControlCharacteristic
-                val data = pmdDataCharacteristic
-                if (control == null || data == null) {
-                    log("HR-strap: WARNING Polar PMD service is missing control or data characteristic")
-                } else {
-                    queueNotify(
-                        g,
-                        control,
-                        BluetoothGattDescriptor.ENABLE_INDICATION_VALUE,
-                        "Polar PMD control",
-                    )
-                    queueNotify(
-                        g,
-                        data,
-                        BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE,
-                        "Polar PMD data",
-                    )
-                    setupPmdFeatureRead = control
-                }
-            }
-
-            startNextSetupOperation(g)
         }
 
         override fun onDescriptorWrite(
@@ -471,15 +388,10 @@ class StandardHrSource(
         ) {
             if (descriptor.uuid != CCCD) return
             if (status == BluetoothGatt.GATT_SUCCESS) {
-                log("HR-strap: notifications enabled for ${descriptor.characteristic.uuid}")
-                when (descriptor.characteristic.uuid) {
-                    POLAR_PMD_CONTROL -> pmdControlSubscribed = true
-                    POLAR_PMD_DATA -> pmdDataSubscribed = true
-                }
+                log("HR-strap: notifications enabled (CCCD write status=$status)")
             } else {
-                log("HR-strap: WARNING CCCD write FAILED for ${descriptor.characteristic.uuid} (status=$status)")
+                log("HR-strap: WARNING CCCD write FAILED (status=$status) — strap will send no HR data")
             }
-            startNextSetupOperation(g)
         }
 
         override fun onCharacteristicChanged(
@@ -490,8 +402,6 @@ class StandardHrSource(
             when (ch.uuid) {
                 HEART_RATE_CHAR -> handleHr(value)
                 in FITNESS_SENSOR_UUID16.keys -> handleFitnessSensor(ch.uuid, value)
-                POLAR_PMD_CONTROL -> handlePmdControl(g, value)
-                POLAR_PMD_DATA -> handlePmdData(value)
             }
         }
 
@@ -502,8 +412,6 @@ class StandardHrSource(
             when (ch.uuid) {
                 HEART_RATE_CHAR -> handleHr(ch.value ?: return)
                 in FITNESS_SENSOR_UUID16.keys -> handleFitnessSensor(ch.uuid, ch.value ?: return)
-                POLAR_PMD_CONTROL -> handlePmdControl(g, ch.value ?: return)
-                POLAR_PMD_DATA -> handlePmdData(ch.value ?: return)
             }
         }
 
@@ -514,39 +422,13 @@ class StandardHrSource(
             value: ByteArray,
             status: Int,
         ) {
-            when (ch.uuid) {
-                BATTERY_CHAR -> if (status == BluetoothGatt.GATT_SUCCESS) handleBattery(value)
-                POLAR_PMD_CONTROL -> {
-                    if (status == BluetoothGatt.GATT_SUCCESS) handlePmdControl(g, value)
-                    else log("HR-strap: WARNING Polar PMD feature read failed (status=$status)")
-                }
-            }
-            startNextSetupOperation(g)
+            if (ch.uuid == BATTERY_CHAR && status == BluetoothGatt.GATT_SUCCESS) handleBattery(value)
         }
 
         @Deprecated("Deprecated in Java")
         @Suppress("DEPRECATION")
         override fun onCharacteristicRead(g: BluetoothGatt, ch: BluetoothGattCharacteristic, status: Int) {
-            val value = ch.value
-            when (ch.uuid) {
-                BATTERY_CHAR -> if (status == BluetoothGatt.GATT_SUCCESS && value != null) handleBattery(value)
-                POLAR_PMD_CONTROL -> {
-                    if (status == BluetoothGatt.GATT_SUCCESS && value != null) handlePmdControl(g, value)
-                    else log("HR-strap: WARNING Polar PMD feature read failed (status=$status)")
-                }
-            }
-            startNextSetupOperation(g)
-        }
-
-        override fun onCharacteristicWrite(
-            g: BluetoothGatt,
-            ch: BluetoothGattCharacteristic,
-            status: Int,
-        ) {
-            if (ch.uuid == POLAR_PMD_CONTROL && status != BluetoothGatt.GATT_SUCCESS) {
-                pmdPlanner.reset()
-                log("HR-strap: WARNING Polar PMD control write failed (status=$status)")
-            }
+            if (ch.uuid == BATTERY_CHAR && status == BluetoothGatt.GATT_SUCCESS) handleBattery(ch.value ?: return)
         }
     }
 
@@ -571,59 +453,21 @@ class StandardHrSource(
         handler.post { guardedCallback("battery-sink") { onBattery(pct) } }
     }
 
-    /** Queue notification/indication setup. Android's GATT client accepts only one operation at a time,
-     * so [startNextSetupOperation] submits each CCCD after the previous callback. */
-    private fun queueNotify(
-        g: BluetoothGatt,
-        ch: BluetoothGattCharacteristic,
-        descriptorValue: ByteArray,
-        label: String,
-    ) = guardedCallback("notify-queue") {
+    /** Enable notifications on a fitness-sensor characteristic (setCharacteristicNotification + the
+     *  explicit CCCD write). Kept separate from the inline HR enablement so the HR path is untouched. */
+    private fun enableFitnessNotify(g: BluetoothGatt, ch: BluetoothGattCharacteristic) = guardedCallback("sensor-notify") {
         g.setCharacteristicNotification(ch, true)
-        if (ch.getDescriptor(CCCD) == null) {
+        val cccd = ch.getDescriptor(CCCD) ?: run {
             log("HR-strap: WARNING ${ch.uuid} has no CCCD (0x2902) — cannot enable notifications")
             return@guardedCallback
         }
-        setupNotifyQueue.addLast(NotifySetup(ch, descriptorValue.copyOf(), label))
-    }
-
-    /** Advance descriptor writes, then the optional battery read, then the PMD feature read. A failed
-     * request is skipped synchronously; successful requests return and resume from their callback. */
-    private fun startNextSetupOperation(g: BluetoothGatt) = guardedCallback("setup-queue") {
-        while (setupNotifyQueue.isNotEmpty()) {
-            val next = setupNotifyQueue.removeFirst()
-            val descriptor = next.characteristic.getDescriptor(CCCD) ?: continue
-            val requested = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                // BluetoothStatusCodes.SUCCESS is zero; avoid adding an API-31 class reference on old OSes.
-                g.writeDescriptor(descriptor, next.descriptorValue) == 0
-            } else {
-                @Suppress("DEPRECATION")
-                run {
-                    descriptor.value = next.descriptorValue
-                    g.writeDescriptor(descriptor)
-                }
-            }
-            log("HR-strap: enabling ${next.label} (requested=$requested)")
-            if (requested) return@guardedCallback
-        }
-
-        setupBatteryRead?.let { battery ->
-            setupBatteryRead = null
-            log("HR-strap: 0x180F battery service found — reading level")
-            if (runCatching { g.readCharacteristic(battery) }.getOrDefault(false)) {
-                return@guardedCallback
-            }
-        }
-
-        setupPmdFeatureRead?.let { control ->
-            setupPmdFeatureRead = null
-            if (pmdControlSubscribed && pmdDataSubscribed) {
-                log("HR-strap: Polar PMD transport ready — reading capabilities")
-                if (runCatching { g.readCharacteristic(control) }.getOrDefault(false)) {
-                    return@guardedCallback
-                }
-            } else {
-                log("HR-strap: WARNING Polar PMD notifications were not enabled — deep streams unavailable")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            g.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+        } else {
+            @Suppress("DEPRECATION")
+            run {
+                cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                g.writeDescriptor(cccd)
             }
         }
     }
@@ -655,140 +499,6 @@ class StandardHrSource(
         handler.post { guardedCallback("sensor-sink") { sensorSink(metrics) } }
     }
 
-    private fun handlePmdControl(g: BluetoothGatt, data: ByteArray) = guardedCallback("Polar-PMD-control") {
-        val features = PolarPmdFeatures.parse(data)
-        if (features != null) {
-            val names = features.measurements.sortedBy { it.wire }.joinToString { it.name.lowercase() }
-            log("HR-strap: Polar PMD capabilities: ${names.ifEmpty { "none" }}")
-            if (!pmdExperiment.enabled) {
-                log("HR-strap: Polar deep streams are off — standard HR/battery remain active")
-                return@guardedCallback
-            }
-            if (pmdStartAttempted) return@guardedCallback
-            pmdStartAttempted = true
-            applyPmdUpdate(
-                g,
-                pmdPlanner.begin(
-                    features,
-                    listOf(PolarPmdMeasurement.PPI, PolarPmdMeasurement.ACCELEROMETER),
-                ),
-            )
-            return@guardedCallback
-        }
-
-        val response = runCatching { pmdAssembler.append(data) }.getOrElse {
-            pmdAssembler.reset()
-            pmdPlanner.reset()
-            log("HR-strap: WARNING Polar PMD control response rejected — ${it.message}")
-            return@guardedCallback
-        } ?: return@guardedCallback
-        applyPmdUpdate(g, pmdPlanner.handle(response))
-    }
-
-    private fun applyPmdUpdate(g: BluetoothGatt, update: PolarPmdSessionUpdate) {
-        update.started?.let { started ->
-            pmdDecoder.configure(started.measurement, started.selection, started.startResponse)
-            log("HR-strap: Polar PMD ${started.measurement.name.lowercase()} stream started")
-        }
-        update.skipped?.let {
-            log("HR-strap: Polar PMD ${it.name.lowercase()} stream unavailable — continuing")
-        }
-        val command = update.command
-        if (command != null) {
-            writePmdControl(g, command)
-        } else if (update.finished) {
-            log("HR-strap: Polar PMD setup finished")
-        }
-    }
-
-    private fun writePmdControl(g: BluetoothGatt, value: ByteArray) {
-        val control = pmdControlCharacteristic ?: return
-        val requested = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            g.writeCharacteristic(
-                control,
-                value,
-                BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
-            ) == 0
-        } else {
-            @Suppress("DEPRECATION")
-            run {
-                control.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-                control.value = value
-                g.writeCharacteristic(control)
-            }
-        }
-        if (!requested) {
-            pmdPlanner.reset()
-            log("HR-strap: WARNING Polar PMD control write was not accepted by Android")
-        }
-    }
-
-    private fun handlePmdData(data: ByteArray) = guardedCallback("Polar-PMD-data") {
-        if (!pmdExperiment.enabled) return@guardedCallback
-        val decoded = pmdDecoder.decode(data)
-        if (pmdLoggedMeasurements.add(decoded.frame.measurement)) {
-            log("HR-strap: receiving Polar PMD ${decoded.frame.measurement.name.lowercase()} data")
-        }
-
-        val nowMs = System.currentTimeMillis()
-        val receiveNs = nowMs * 1_000_000L
-        val hrRows = mutableListOf<HrRow>()
-        val rrRows = mutableListOf<RrRow>()
-        val gravityRows = mutableListOf<GravityRow>()
-
-        // Prefer standard 0x2A37 while healthy. PMD PPI becomes a truthful fallback after three
-        // quiet seconds, preventing duplicate rows from two characteristics on the same Polar.
-        if (lastStandardHrAtMs == 0L || nowMs - lastStandardHrAtMs > 3_000L) {
-            val liveIntervals = mutableListOf<Int>()
-            var latestHr: Int? = null
-            val ppiTimes = pmdClock.unixNanoseconds(decoded.ppi, receiveNs)
-            for ((index, sample) in decoded.ppi.withIndex()) {
-                if (sample.blocker || sample.skinContact == false ||
-                    sample.heartRate !in 30..220 || sample.intervalMs !in 250..3_000
-                ) {
-                    continue
-                }
-                val second = ppiTimes[index] / 1_000_000_000L
-                hrRows += HrRow(second, sample.heartRate)
-                rrRows += RrRow(second, sample.intervalMs)
-                latestHr = sample.heartRate
-                liveIntervals += sample.intervalMs
-            }
-            if (latestHr != null && liveIntervals.isNotEmpty()) {
-                handler.post {
-                    guardedCallback("Polar-PMD-live-sink") {
-                        liveSink(latestHr, liveIntervals)
-                    }
-                }
-            }
-        }
-
-        // PMD ACC may run at 25–200 Hz. Keep one vector per Unix second for NOOP's existing
-        // sleep/activity lane instead of creating an unbounded waveform database.
-        val motionBySecond = linkedMapOf<Long, com.noop.polar.PolarPmdAccelerationSample>()
-        for (sample in decoded.acceleration) {
-            val second = pmdClock.unixNanoseconds(
-                sample.sensorTimestampNs,
-                receiveNs,
-            ) / 1_000_000_000L
-            motionBySecond[second] = sample
-        }
-        for ((second, sample) in motionBySecond.toSortedMap()) {
-            val last = lastPmdAccelerationSecond
-            if (last != null && second <= last) continue
-            gravityRows += GravityRow(
-                second,
-                sample.xMilliG / 1_000.0,
-                sample.yMilliG / 1_000.0,
-                sample.zMilliG / 1_000.0,
-            )
-            lastPmdAccelerationSecond = second
-        }
-
-        val batch = StreamBatch(hr = hrRows, rr = rrRows, gravity = gravityRows)
-        if (!batch.isEmpty) persist(batch, deviceId)
-    }
-
     private fun handleHr(data: ByteArray) = guardedCallback("hr-parse") {
         val parsed = StandardHeartRate.parse(data) ?: return@guardedCallback
         // Log the FIRST sample of a connection only — proof that data is flowing — never every sample.
@@ -798,7 +508,6 @@ class StandardHrSource(
         }
         // Surface live HR on the main looper (the UI's StateFlow expects main-thread updates).
         handler.post { guardedCallback("live-sink") { liveSink(parsed.hr, parsed.rr) } }
-        lastStandardHrAtMs = System.currentTimeMillis()
         enqueue(parsed.hr, parsed.rr)
     }
 
@@ -811,11 +520,6 @@ class StandardHrSource(
         /** Standard BLE Battery Service + Battery Level characteristic (a generic strap usually has these). */
         private val BATTERY_SERVICE: UUID = UUID.fromString("0000180f-0000-1000-8000-00805f9b34fb")
         private val BATTERY_CHAR: UUID = UUID.fromString("00002a19-0000-1000-8000-00805f9b34fb")
-
-        /** Polar Measurement Data vendor service, control point, and data characteristic. */
-        private val POLAR_PMD_SERVICE: UUID = UUID.fromString(PolarPmdGatt.SERVICE)
-        private val POLAR_PMD_CONTROL: UUID = UUID.fromString(PolarPmdGatt.CONTROL_POINT)
-        private val POLAR_PMD_DATA: UUID = UUID.fromString(PolarPmdGatt.DATA)
 
         /** Standard fitness-sensor services + measurement characteristics, read ADDITIVELY alongside HR. */
         private val RSC_SERVICE: UUID = UUID.fromString("00001814-0000-1000-8000-00805f9b34fb")

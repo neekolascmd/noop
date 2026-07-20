@@ -119,11 +119,10 @@ public enum OuraStreamMapping {
                     mv: v.voltageMv,
                     charging: v.charging))
 
-            case .spo2RPI, .bedtimePeriod, .motion, .state, .timeSync, .rtcBeacon, .debugText,
-                 .tierB, .activityInfo:
+            case .bedtimePeriod, .motion, .state, .timeSync, .rtcBeacon, .debugText, .tierB, .activityInfo:
                 // Not a durable per-device stream row (timeSync/rtcBeacon anchor the transport's clock;
-                // motion/state/debug are diagnostics; Tier-B R/PI / .activityInfo are UNVERIFIED and
-                // must never feed scoring or the steps stream).
+                // motion/state/debug are diagnostics; Tier-B / .activityInfo are UNVERIFIED and must
+                // never feed scoring or the steps stream).
                 continue
             }
         }

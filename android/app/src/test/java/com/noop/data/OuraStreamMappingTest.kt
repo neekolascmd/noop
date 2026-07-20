@@ -153,19 +153,6 @@ class OuraStreamMappingTest {
                 OuraEvent.ActivityInfo(
                     com.noop.oura.OuraActivityInfo(ringTimestamp = 100, state = 0x41, met = listOf(1.8, 1.9)),
                 ),
-                OuraEvent.Spo2RPI(
-                    com.noop.oura.OuraSpO2RPI(
-                        ringTimestamp = 100,
-                        header = 0,
-                        samples = listOf(
-                            com.noop.oura.OuraSpO2RPISample(
-                                sampleIndex = 0,
-                                ratioQ14 = 0x321F,
-                                perfusionIndexRaw = 0x8C,
-                            ),
-                        ),
-                    ),
-                ),
             ),
             anchor,
         )

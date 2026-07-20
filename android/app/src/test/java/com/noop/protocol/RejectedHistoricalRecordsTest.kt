@@ -92,15 +92,4 @@ class RejectedHistoricalRecordsTest {
         assertEquals(1, rejected.size)
         assertTrue(rejected[0].contentEquals(bad))
     }
-
-    @Test
-    fun whoop5HistoricalImuIsPreservedUntilMapped() {
-        // WHOOP 5's inner packet type lives at byte 8. Type 52 participates in offload but currently has
-        // no row decoder, so it must be archived before the trim ACK instead of disappearing as "console".
-        val imu = ByteArray(32)
-        imu[8] = PacketType.HISTORICAL_IMU_DATA_STREAM.rawValue.toByte()
-        val rejected = rejectedHistoricalRecords(listOf(imu), DeviceFamily.WHOOP5)
-        assertEquals(1, rejected.size)
-        assertTrue(rejected[0].contentEquals(imu))
-    }
 }

@@ -18,7 +18,8 @@ public enum ExperimentalBrand: String, CaseIterable, Sendable, Equatable {
     /// Garmin watch. Live HR is the STANDARD broadcast-HR path (0x180D) when the user enables
     /// "Broadcast Heart Rate" on the watch — there is no NOOP-proprietary Garmin protocol.
     case garmin
-    /// Oura ring. Live HR streaming is supported via the OuraLiveSource driver.
+    /// Oura ring. No open live health stream — proprietary, syncs to Oura's own app. The driver makes
+    /// the detection attempt and then points honestly at file import.
     case oura
 
     /// Best-effort brand from an advertised name. Returns `nil` for an unrecognised name (no wrong guess).
@@ -54,11 +55,12 @@ public enum ExperimentalBrand: String, CaseIterable, Sendable, Equatable {
         }
     }
 
-    /// Whether this brand can stream LIVE heart rate at all in NOOP's experimental tier.
+    /// Whether this brand can stream LIVE heart rate at all in NOOP's experimental tier. `false` for Oura
+    /// (no open live stream) — the wizard routes those to file import instead of pretending to connect.
     public var canStreamLiveHR: Bool {
         switch self {
         case .amazfit, .miBand, .garmin: return true
-        case .oura:                      return true
+        case .oura:                      return false
         }
     }
 }

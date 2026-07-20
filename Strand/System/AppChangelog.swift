@@ -1096,7 +1096,7 @@ enum AppChangelog {
                 "New (Android): if NOOP ever crashes, the details are now saved into the strap log you share - so a crash that only happens on your device can actually be diagnosed (#33).",
                 "More accurate HRV: the heart-rate variability NOOP computes from a session now discards stray, irregular beats before averaging - the same cleaning the rest of its HRV maths already does - so a noisy WHOOP 5/MG optical reading no longer comes out inflated. Thanks @frazzle28 (#262/#235).",
                 "Fixed (Mac): the sidebar and the Settings strap card could disagree about your connection - one saying ‘Connecting…’ while the other said ‘Connected’ for the same state. They now read from one source. Thanks @gingerbeardman (#266).",
-                "Fixed (Mac & iPhone): the experimental WHOOP 5/MG R22 configuration sequence now requires the full encrypted bond. A live-HR-only link (strap still owned by the official app) can’t carry the writes, so the button waits for a real bond and tells you to free the strap from the official app first. Thanks @Joshsil03 (#269).",
+                "Fixed (Mac & iPhone): the experimental WHOOP 5/MG deep-data unlock now requires the full encrypted bond. A live-HR-only link (strap still owned by the official app) can’t carry the unlock, so the button waits for a real bond and tells you to free the strap from the official app first. Thanks @Joshsil03 (#269).",
                 "New (Android): the ‘Start a workout’ sport list now shows a scrollbar so you can tell it scrolls, and adds Tennis, Squash and Table tennis. Thanks @nhe (#265).",
                 "New (Android & Mac): the Intelligence ‘By Day’ list gets a W / M / 3M / 6M / 1Y / ALL range filter to narrow to a recent window. Thanks @ujix (#252).",
                 "New (Android): the Today heart-rate chart is now tap-and-drag interactive, matching iPhone and Mac. Thanks @ujix (#254).",
@@ -1282,10 +1282,10 @@ enum AppChangelog {
             ]),
         Release(
             version: "2.5.0",
-            title: "Experimental: WHOOP 5.0/MG R22 configuration",
+            title: "Experimental: unlocking WHOOP 5.0/MG deep data",
             date: "June 2026",
             items: [
-                "New (iPhone and Android, experimental): a WHOOP 5.0/MG R22 configuration experiment under Settings → Experimental. NOOP can send the documented 15 feature-flag values observed from the official app (opt-in, one button, only when worn + bonded). These writes persist, and NOOP has no captured restore sequence; switching the toggle off only blocks future writes. Current evidence also shows no separate live R22 stream - deeper record families still arrive through normal history sync. Advanced hardware testing only. Built on the public protocol work of judes.club, Asherlc/dofek and b-nnett/goose. (#174)",
+                "New (Mac, iOS and Android, experimental): a WHOOP 5.0/MG \"deep data\" unlock under Settings → Experimental. 5/MG straps give a fresh third-party app only live heart rate; the official app switches on the deeper streams by writing a set of feature flags. NOOP can now send that exact, documented sequence to your strap (opt-in, one button, only when worn + bonded). It writes to the strap but is reversible - it just changes which data the strap emits - and it is the same thing the official app does. Experimental: it may do nothing on your firmware yet. If you have a 5/MG, turning it on and sharing your strap log is exactly what we need to finish 5.0/MG support. iPhone/Android only (a Mac cannot write to a 5/MG). Built on the public protocol work of judes.club, Asherlc/dofek and b-nnett/goose. (#174)",
             ]),
         Release(
             version: "2.3.2",

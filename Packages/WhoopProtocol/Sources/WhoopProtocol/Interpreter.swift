@@ -395,20 +395,20 @@ private func decodeWhoop5Historical(_ frame: [UInt8], fb: FieldBuilder, payloadE
         // reset. Single-frame value is unbounded so it carries no physical gate here.
         fb.add(57, 2, "step_motion_counter", "activity", value: .int(raw), note: "cumulative motion counter")
     }
-    if let motion = readDType(frame, 59, "u8") {
-        // A raw motion-correlated byte between the cumulative counter and @63. A labelled hardware run
-        // found it lower during BOTH steady walking and arm-only movement than during either still period,
-        // so it is not safe to call this gait cadence or assign a unit.
-        fb.add(59, 1, "motion_byte_59", "activity", value: .int(motion),
-               note: "raw motion-correlated byte; meaning/unit not pinned")
+    if let cad = readDType(frame, 59, "u8") {
+        // A per-step cadence-like byte between the step counter and @63: never 0, and lower when moving
+        // faster (still > walk > run in the data). Raw — no unit asserted.
+        fb.add(59, 1, "step_cadence", "activity", value: .int(cad), note: "cadence-like byte (raw)")
     }
-    // @63 is a small motion-class enum. A controlled capture pinned 0 to still, but class 1 appeared during
-    // both walking and arm-only movement and class 2 appeared during arm-only movement, disproving the old
-    // 1=walk / 2=run labels. Keep the classes neutral until a broader labelled corpus identifies them.
-    // Only the observed codes are surfaced; anything else (including 0xFF) stores nothing.
+    if let wear = readDType(frame, 63, "u8"), (0...2).contains(wear) {
+        fb.add(63, 1, "motion_wear_quality", "quality", value: .int(wear), note: "0=still/good, 1, 2=poor contact")
+    }
+    // @63 also reads as a small validated ACTIVITY-CLASS enum (community finding, #316): 0=still, 1=walk,
+    // 2=run, 0xFF=invalid. A lightweight, no-cloud per-record activity readout that rides alongside the
+    // step counter. Only the four known codes are surfaced — anything else (incl. 0xFF) stores nothing so
+    // an unmapped firmware can't inject garbage.
     if let cls = readDType(frame, 63, "u8"), cls == 0 || cls == 1 || cls == 2 {
-        fb.add(63, 1, "activity_class", "activity", value: .int(cls),
-               note: "0=still; 1/2=unmapped motion classes (0xFF=invalid)")
+        fb.add(63, 1, "activity_class", "activity", value: .int(cls), note: "0=still, 1=walk, 2=run (0xFF=invalid)")
     }
     // Two auxiliary thermal channels just before skin_temp. Each is a signed i16 whose value/10 reads as
     // °C, tracks skin_temp@73 closely (corr ~0.92 and ~0.97 across the captured corpus) and follows the
@@ -449,17 +449,15 @@ private func decodeWhoop5Historical(_ frame: [UInt8], fb: FieldBuilder, payloadE
                note: "raw; sibling of @75 (low nibble = 2)")
     }
     if let sb = readDType(frame, 81, "u8") {
-        // High nibble (bits 4-5) tracks a scored night: 0 wake / 1 still / 2 asleep / 3 up. The low
-        // bit-pairs are preserved under structural names: a labelled daytime capture showed both varying
-        // with motion while the device remained worn, so the old on-wrist / wake-quality labels were false.
-        // Deep/REM/light are computed off-band, not present here.
+        // High nibble (bits 4-5) tracks a scored night: 0 wake / 1 still / 2 asleep / 3 up; low nibble =
+        // sub-flags. Deep/REM/light are computed off-band, not present here.
         let state = (sb >> 4) & 3
         fb.add(81, 1, "sleep_state", "sleep", value: .int(state),
                note: "0 wake/1 still/2 asleep/3 up (band state; not deep/REM/light)")
-        fb.add(81, 1, "state_bits_0_1", "status", value: .int(sb & 3),
-               note: "raw two-bit state field; meaning not pinned")
-        fb.add(81, 1, "state_bits_2_3", "status", value: .int((sb >> 2) & 3),
-               note: "raw two-bit state field; meaning not pinned")
+        fb.add(81, 1, "onwrist", "sleep", value: .int(sb & 3),
+               note: "on-wrist/validity flag (b0-1)")
+        fb.add(81, 1, "wake_quality", "sleep", value: .int((sb >> 2) & 3),
+               note: "quality code (b2-3); observed nonzero only in wake")
     }
     if let v = readDType(frame, 82, "u8") {
         fb.add(82, 1, "aux_byte_82", "status", value: .int(v),

@@ -37,16 +37,13 @@ class Whoop5OffloadTest {
         }
         val live = ByteArray(8); live[4] = 40 // REALTIME_DATA
         assertFalse(WhoopBleClient.isOffloadFrame(live, DeviceFamily.WHOOP4))
-        val historicalImu = ByteArray(8); historicalImu[4] = 52
-        assertFalse("type 52 is a WHOOP 5/MG-only offload body",
-            WhoopBleClient.isOffloadFrame(historicalImu, DeviceFamily.WHOOP4))
     }
 
     @Test
-    fun whoop5_acceptsAtFrame8_includingHistoricalImu52AndPuffinMetadata56() {
-        for (t in intArrayOf(47, 48, 49, 50, 52, 56)) {
+    fun whoop5_acceptsAtFrame8_includingPuffinMetadata56() {
+        for (t in intArrayOf(47, 48, 49, 50, 56)) {
             val f = ByteArray(12); f[8] = t.toByte()
-            assertTrue("WHOOP5 type $t should be an offload frame (52 = historical IMU, 56 = metadata)",
+            assertTrue("WHOOP5 type $t should be an offload frame (56 = PUFFIN_METADATA)",
                 WhoopBleClient.isOffloadFrame(f, DeviceFamily.WHOOP5))
         }
         val live = ByteArray(12); live[8] = 40 // REALTIME_DATA

@@ -106,8 +106,8 @@ enum class CommandNumber(val rawValue: Int) {
     RUN_HAPTICS_PATTERN(79),
     GET_ALL_HAPTICS_PATTERN(80),
     // SET_CONFIG / SET_FF_VALUE (0x78) — write one persistent feature flag. The 5/MG "enable R22
-    // packets" sequence (Whoop5Config) sends 15 persistent values that may change banked records.
-    // NOOP has no restore sequence; gated behind the deep-data opt-in; iOS/Android only. (#174)
+    // packets" sequence (Whoop5Config) sends 15 of these to switch on the deep biometric streams.
+    // Reversible; gated behind the deep-data opt-in; iOS/Android only. (#174)
     SET_CONFIG(120),
     // SET_DEVICE_CONFIG (0x77) — write one persistent DEVICE-config value (distinct from the
     // feature-flag SET_CONFIG/0x78). Used for the "Broadcast HR" flag whoop_live_hr_in_adv_ind_pkt,

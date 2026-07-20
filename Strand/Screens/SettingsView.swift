@@ -33,8 +33,8 @@ struct SettingsView: View {
     /// Opt-in WHOOP 5/MG raw-frame capture to a file (off by default). See [PuffinFrameRecorder].
     @AppStorage(PuffinFrameRecorder.enabledKey) private var puffinCapture = false
 
-    /// Opt-in WHOOP 5/MG persistent R22 experiment (off by default) — the one probe that writes strap
-    /// feature flags and has no captured restore sequence. See [PuffinExperiment.deepDataKey]. (#174)
+    /// Opt-in WHOOP 5/MG "R22" deep-data unlock (off by default) — the one probe that writes a
+    /// persistent feature flag to the strap. See [PuffinExperiment.deepDataKey]. (#174)
     @AppStorage(PuffinExperiment.deepDataKey) private var deepDataEnabled = false
 
     /// Opt-in "Broadcast heart rate" (off by default) — makes the strap advertise its HR as a standard
@@ -56,9 +56,6 @@ struct SettingsView: View {
     /// `SleepStagerV2` (the transparent cardiorespiratory recipe) instead of the default V1 stager. Read at
     /// the staging call site in `Repository`. See [PuffinExperiment.experimentalSleepV2Key].
     @AppStorage(PuffinExperiment.experimentalSleepV2Key) private var experimentalSleepV2Enabled = false
-
-    /// Opt-in Polar PMD beat-to-beat + motion streams. Standard HR/battery do not depend on this.
-    @AppStorage(PolarPMDExperiment.defaultsKey) private var polarDeepStreamsEnabled = false
 
     // Imperial/Metric display preference (D#103). Stored data is always SI; this only changes how
     // distances/weights/heights/temperatures are SHOWN — and lets the profile fields below take
@@ -1045,35 +1042,8 @@ struct SettingsView: View {
         liquidTodayCard
         liveSessionsCard
         if showFiveMGControls { fiveMGCard }
-        polarPMDCard
         sleepStagingCard
         rawSensorDiagnosticsCard
-    }
-
-    /// Polar's vendor PMD service exposes more than the standard HR profile. The first production-safe
-    /// lane persists PPI (as an HR/R-R fallback) and one motion vector per second. High-rate ECG/PPG
-    /// decoding exists in the protocol package, but is not recorded until NOOP has a bounded waveform
-    /// capture/store rather than an unbounded biometric database.
-    private var polarPMDCard: some View {
-        SettingsSection(
-            icon: "waveform.path.ecg",
-            title: "Experimental · Polar deep streams",
-            blurb: "For Polar devices that expose the vendor PMD service. Standard heart rate and battery already work without this."
-        ) {
-            VStack(alignment: .leading, spacing: NoopMetrics.rowSpacing) {
-                Toggle(isOn: $polarDeepStreamsEnabled) {
-                    Text("Capture Polar PPI + motion")
-                        .font(StrandFont.subhead)
-                        .foregroundStyle(StrandPalette.textPrimary)
-                }
-                .toggleStyle(.switch)
-                .tint(StrandPalette.accent)
-                Text("On the next Polar connection, NOOP requests beat-to-beat PPI and accelerometer data, uses PPI only if standard heart rate goes quiet, and stores motion at one sample per second. It is off by default because continuous PMD streaming uses more device battery. ECG/PPG packet decoding is built, but high-rate waveforms are not recorded yet.")
-                    .font(StrandFont.caption)
-                    .foregroundStyle(StrandPalette.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
     }
 
     /// Opt-in liquid Today redesign (default ON in this build). Off falls back to the
@@ -1159,7 +1129,7 @@ struct SettingsView: View {
         #if os(macOS)
         return true
         #else
-        return !live.encryptedBond || !live.worn || live.r22SequenceInFlight
+        return !live.encryptedBond || !live.worn
         #endif
     }
 
@@ -1172,12 +1142,9 @@ struct SettingsView: View {
         if !live.encryptedBond {
             return String(localized: "Needs the full encrypted bond: close the official WHOOP app and pair the strap to NOOP first (a live-HR-only link can't carry the unlock).")
         }
-        if live.r22SequenceInFlight {
-            return String(localized: "Sending the 15 R22 configuration writes…")
-        }
         return live.worn
-            ? String(localized: "Persistent write: NOOP has no restore sequence. Use only for a controlled before/after capture.")
-            : String(localized: "Put the strap on first. The configuration write is wear-gated.")
+            ? String(localized: "Wear the strap, tap once, then let it sync and share your strap log.")
+            : String(localized: "Put the strap on first. The deep stream is on-wrist only.")
         #endif
     }
 
@@ -1202,21 +1169,21 @@ struct SettingsView: View {
 
                 Divider().overlay(StrandPalette.hairline)
 
-                // MARK: Persistent R22 configuration — the one probe that writes to the strap.
+                // MARK: R22 deep-data unlock — the one probe that writes to the strap.
                 Toggle(isOn: $deepDataEnabled) {
-                    Text("Persistent WHOOP 5/MG R22 flags")
+                    Text("Unlock WHOOP 5/MG deep data (R22)")
                         .font(StrandFont.subhead)
                         .foregroundStyle(StrandPalette.textPrimary)
                 }
                 .toggleStyle(.switch)
                 .tint(StrandPalette.accent)
-                Text("Sends the official app's documented 15 R22 feature flags. A real strap has acknowledged the sequence, but current evidence does not show a separate live stream: type-0x2F records still arrive through normal history sync. These writes persist and NOOP has no captured restore sequence; turning this toggle off only blocks future writes. Advanced testing only, iPhone/Android only.")
+                Text("WHOOP 5/MG straps hand a fresh app only live heart rate. The official app switches on the deeper streams (high-rate HR + motion + history) by writing a set of feature flags, a sequence two independent projects have documented. With this on, the button below sends that exact sequence to your strap. Unlike everything else here it does write to the strap, but it's reversible (it only changes which data the strap chooses to emit) and is the same thing the official app does. Experimental: it may do nothing on your firmware. iPhone/Android only. A Mac can't write to a 5/MG.")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
 
                 if deepDataEnabled {
-                    NoopButton("Write persistent enable sequence", systemImage: "bolt.badge.automatic", kind: .primary) {
+                    NoopButton("Send enable sequence to strap", systemImage: "bolt.badge.automatic", kind: .primary) {
                         model.ble.enableWhoop5DeepData()
                     }
                     .disabled(deepDataButtonDisabled)
@@ -1225,13 +1192,13 @@ struct SettingsView: View {
                         .foregroundStyle(StrandPalette.textTertiary)
 
                     // Live R22 telemetry (#174): proof of what the strap is doing right now.
-                    if live.r22FlagResponses > 0 {
-                        Label(live.r22FlagResponses >= 15
-                              ? "Received responses for all 15 R22 writes"
-                              : "Received \(live.r22FlagResponses)/15 R22 responses…",
-                              systemImage: live.r22FlagResponses >= 15 ? "checkmark.seal.fill" : "ellipsis")
+                    if live.r22FlagsAccepted > 0 {
+                        Label(live.r22FlagsAccepted >= 15
+                              ? "Strap accepted all 15 R22 flags"
+                              : "Strap accepted \(live.r22FlagsAccepted)/15 R22 flags…",
+                              systemImage: live.r22FlagsAccepted >= 15 ? "checkmark.seal.fill" : "ellipsis")
                             .font(StrandFont.caption)
-                            .foregroundStyle(live.r22FlagResponses >= 15 ? StrandPalette.statusPositive : StrandPalette.textSecondary)
+                            .foregroundStyle(live.r22FlagsAccepted >= 15 ? StrandPalette.statusPositive : StrandPalette.textSecondary)
                     }
                     if live.deepPacketsThisSession > 0 {
                         Label(live.deepPacketsThisSession == 1
@@ -1240,8 +1207,8 @@ struct SettingsView: View {
                               systemImage: "clock.arrow.circlepath")
                             .font(StrandFont.caption)
                             .foregroundStyle(StrandPalette.textSecondary)
-                    } else if live.r22FlagResponses >= 15 {
-                        Text("All writes received correlated responses, but that does not prove a configuration result. No separate live stream starts; deep records arrive through normal history sync.")
+                    } else if live.r22FlagsAccepted >= 15 {
+                        Text("Flags accepted, but the enable sequence doesn't start a separate live stream. The deep records arrive as part of the normal history sync (#494).")
                             .font(StrandFont.caption)
                             .foregroundStyle(StrandPalette.textTertiary)
                     }
@@ -1286,7 +1253,7 @@ struct SettingsView: View {
                 }
                 .toggleStyle(.switch)
                 .tint(StrandPalette.accent)
-                Text("Saves every proprietary 5/MG frame — including history and the commands NOOP was already sending — with direction, connection session, timestamp, firmware, wear state, battery and live heart rate. Recording does not cause any additional strap writes. The export contains personal biometric history; keep it private unless you deliberately choose to share it for protocol mapping.")
+                Text("Saves every raw 5/MG frame (with a timestamp and the live heart rate) to a JSON file you can share to help map the biometric layout. This only records frames the strap already sent (it never writes to your strap), so it is safe to leave on. Export the file and attach it to a protocol-mapping issue.")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1348,16 +1315,6 @@ struct SettingsView: View {
                         }
                     } else {
                         Label("Export raw sensor data (CSV)", systemImage: "square.and.arrow.up")
-                    }
-                    if live.puffinCaptureTruncated {
-                        Text("Capture reached its safety limit. The saved file is valid; later frames were not retained.")
-                            .font(StrandFont.caption)
-                            .foregroundStyle(StrandPalette.statusWarning)
-                    }
-                    if let captureError = live.puffinCaptureError {
-                        Text("Capture write failed: \(captureError)")
-                            .font(StrandFont.caption)
-                            .foregroundStyle(StrandPalette.statusCritical)
                     }
                 }
                 .buttonStyle(NoopButtonStyle(.secondary))

@@ -773,9 +773,6 @@ class OuraDriver(
                         ),
                     ),
                 )
-            OuraEventTag.SPO2_R_PI ->
-                OuraDecoders.decodeSpO2RPI(record)?.let { listOf(OuraEvent.Spo2RPI(it)) }
-                    ?: emptyList()
         }
     }
 

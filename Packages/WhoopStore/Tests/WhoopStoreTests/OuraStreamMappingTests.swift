@@ -128,11 +128,6 @@ final class OuraStreamMappingTests: XCTestCase {
     func testTierBAndDiagnosticEventsAreDropped() {
         let s = OuraStreamMapping.streams(from: [
             .tierB(OuraTierBSummary(tag: 0x6A, ringTimestamp: 100, rawPayload: [1, 2, 3], kind: "sleep_summary")),
-            .spo2RPI(OuraSpO2RPI(
-                ringTimestamp: 100,
-                header: 0,
-                samples: [OuraSpO2RPISample(sampleIndex: 0, ratioQ14: 0x321F,
-                                            perfusionIndexRaw: 0x8C)])),
             .motion(OuraMotion(ringTimestamp: 100, index: 0, state: .active)),
             .state(OuraState(ringTimestamp: 100, stateCode: 1)),
             .timeSync(OuraTimeSync(ringTimestamp: 100, epochMs: 1_750_000_000_000, tzOffsetSeconds: 0)),
@@ -143,7 +138,6 @@ final class OuraStreamMappingTests: XCTestCase {
             .activityInfo(OuraActivityInfo(ringTimestamp: 100, state: 0x41, met: [1.8, 1.9])),
         ], at: ts)
         XCTAssertTrue(s.isEmpty, "Tier-B and diagnostic events must not produce any durable stream row")
-        XCTAssertTrue(s.spo2.isEmpty, "experimental R/PI calibration must not leak into SpO2")
         XCTAssertTrue(s.steps.isEmpty, "activity/MET must never fabricate a steps row")
     }
 

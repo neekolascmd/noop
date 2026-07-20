@@ -7,7 +7,6 @@ import com.noop.data.WhoopRepository
 import com.noop.protocol.DeviceFamily
 import com.noop.protocol.Framing
 import com.noop.protocol.HistoricalMeta
-import com.noop.protocol.PacketType
 import com.noop.protocol.classifyHistoricalMeta
 import com.noop.protocol.decodeHistorical
 import com.noop.protocol.extractHistoricalStreams
@@ -214,11 +213,6 @@ class Backfiller(
      */
     private val loggedLayoutVersions = HashSet<Int>()
 
-    /** One bounded safety sample per mapped-but-not-yet-stored WHOOP 5 layout/version each session.
-     * Full mapping corpora belong in the opt-in capture stream; routing every v20/v21/type-52 record
-     * through the rare-reject archive creates repeated multi-megabyte rewrites during normal offload. */
-    private val preservedLayoutSamples = HashSet<String>()
-
     /** SpO2 RE dump (PR #945, reimplemented): how many full-record dumps this session emitted, bounded by
      *  [com.noop.analytics.Spo2ReTrace.MAX_SAMPLES]. Session-scoped so the cap spans chunks; reset in begin. */
     private var spo2Dumped = 0
@@ -255,7 +249,6 @@ class Backfiller(
         loggedNoCursor = false
         loggedFutureRtc = false
         loggedLayoutVersions.clear()
-        preservedLayoutSamples.clear()
         spo2Dumped = 0
         loggedImplausibleClock = false
         sessionDroppedImplausible = 0
@@ -337,33 +330,25 @@ class Backfiller(
             )
             // Observability (PR #241): which historical layout does this strap emit? Only the unmapped/
             // reject path logged a version before, so a healthy sync never revealed v24/v25 (4.0) or
-            // v18/v26 (5/MG). A chunk can mix v18/v26 (or v20/v21 pairs), so sampling only its first
-            // record hid the rarer version. Group by the family-specific type/version bytes, then decode
-            // only one representative per version for the diagnostic signature.
-            val typeIndex = if (family == DeviceFamily.WHOOP5) 8 else 4
-            val versionIndex = if (family == DeviceFamily.WHOOP5) 9 else 5
-            val layoutSamples = LinkedHashMap<Int, ByteArray>()
-            frames.forEach { frame ->
-                if (frame.size > versionIndex &&
-                    (frame[typeIndex].toInt() and 0xFF) == PacketType.HISTORICAL_DATA.rawValue
-                ) {
-                    layoutSamples.putIfAbsent(frame[versionIndex].toInt() and 0xFF, frame)
-                }
-            }
-            layoutSamples.keys.sorted().forEach { v ->
-                if (loggedLayoutVersions.add(v)) {
-                    log("Backfill: historical records use layout v$v")
-                    // Connection test mode: the firmware layout as a compact tagged line. A layout that
-                    // decoded a signature field (heart_rate / gravity_x / ppg_waveform) is decodable.
-                    // Gated zero-cost. Twin of the Swift Backfiller emit.
-                    emitConnection {
-                        val d = layoutSamples[v]?.let { decodeHistorical(it, family) }
-                        val decodable = d != null && (d.containsKey("heart_rate") ||
-                            d.containsKey("gravity_x") || d.containsKey("ppg_waveform"))
-                        com.noop.analytics.ConnectionTrace.firmwareLine(v, decodable)
+            // v18/v26 (5/MG). Sample the chunk's first genuine record (null ⇒ console/CRC-fail); log
+            // each distinct layout once per session.
+            frames.firstNotNullOfOrNull { decodeHistorical(it, family)?.get("hist_version") as? Int }
+                ?.let { v ->
+                    if (loggedLayoutVersions.add(v)) {
+                        log("Backfill: historical records use layout v$v")
+                        // Connection test mode: the firmware layout as a compact tagged line. A layout that
+                        // decoded a signature field (heart_rate / gravity_x / ppg_waveform) is decodable.
+                        // Gated zero-cost. Twin of the Swift Backfiller emit.
+                        emitConnection {
+                            val decodable = frames.any {
+                                val d = decodeHistorical(it, family)
+                                d != null && (d.containsKey("heart_rate") || d.containsKey("gravity_x") ||
+                                    d.containsKey("ppg_waveform"))
+                            }
+                            com.noop.analytics.ConnectionTrace.firmwareLine(v, decodable)
+                        }
                     }
                 }
-            }
             // SpO2 RE dump (PR #945, reimplemented): while the Connection test mode is on, dump a few FULL
             // historical records + their mapped raw SpO2 channels so an offline pass can tell whether the
             // strap banks a COMPUTED SpO2 (a byte tracking the WHOOP app's nightly %) vs only the raw
@@ -413,26 +398,14 @@ class Backfiller(
             // where one good row hid the losses). The rejects are archived durably AFTER the decoded
             // insert below but ALWAYS before the ack (#1006, Swift-order parity — see the archive block
             // for why insert goes first). The WHOOP4 happy path (zero rejects) is unchanged.
-            val allRejected = rejectedHistoricalRecords(frames, family)
-            val newSampleKeys = LinkedHashSet<String>()
-            val rejected = allRejected.filter { frame ->
-                val key = mappedUnstoredSampleKey(frame)
-                if (key == null) {
-                    true
-                } else if (key in preservedLayoutSamples || key in newSampleKeys) {
-                    false
-                } else {
-                    newSampleKeys.add(key)
-                    true
-                }
-            }
+            val rejected = rejectedHistoricalRecords(frames, family)
             // #77 family: decoded no rows AND no genuine rejects ⇒ pure console output. Tally it so a
             // completed-but-empty offload (strap not banking) is distinguishable from a caught-up sync.
-            if (decoded.isEmpty && allRejected.isEmpty()) onConsoleChunk()
+            if (decoded.isEmpty && rejected.isEmpty()) onConsoleChunk()
             if (rejected.isNotEmpty()) {
                 log(
-                    "Backfill: preserving ${rejected.size} record frame sample(s) not stored as rows " +
-                        "(trim=$trim) before ack (CRC/unmapped or mapped-structural layout)",
+                    "Backfill: WARNING ${rejected.size} record frame(s) decoded to 0 rows " +
+                        "(trim=$trim) — archiving raw bytes before ack (CRC/unmapped layout)",
                 )
                 // #91 / #30: a hex sample in the strap log so an unmapped firmware's record layout can
                 // be mapped from a shared log. Dump the FULL frame (not a 64-byte prefix — v25/v26
@@ -485,7 +458,6 @@ class Backfiller(
                 log("Backfill: rejected-frame archive failed (trim=$trim) — holding ack so the strap re-sends.")
                 return
             }
-            preservedLayoutSamples.addAll(newSampleKeys)
         }
 
         // #150 / #783 / #1: trim=0xFFFFFFFF is the strap's "no valid flash cursor" sentinel. Its MEANING
@@ -525,23 +497,6 @@ class Backfiller(
         ackTrim(trim, endData)
         lastAckedTrim = trim   // #364: record the advanced cursor for the auto-continue spin-detector
         committed?.takeIf { !it.isEmpty }?.let(onChunkCommitted)
-    }
-
-    /** Stable per-session sample key for high-volume WHOOP 5 layouts that are structurally understood
-     * but do not yet map to durable biometric rows. `seq` is the layout version for type-47 and the
-     * best available discriminator for type-52 until that envelope is fully mapped. */
-    private fun mappedUnstoredSampleKey(frame: ByteArray): String? {
-        if (family != DeviceFamily.WHOOP5 || frame.size <= 9) return null
-        val parsed = Framing.parseFrame(frame, family)
-        if (!parsed.ok || parsed.crcOk != true) return null
-        return when (frame[8].toInt() and 0xFF) {
-            PacketType.HISTORICAL_DATA.rawValue -> when (val version = frame[9].toInt() and 0xFF) {
-                20, 21 -> "type47-v$version"
-                else -> null
-            }
-            PacketType.HISTORICAL_IMU_DATA_STREAM.rawValue -> "type52"
-            else -> null
-        }
     }
 
     /**

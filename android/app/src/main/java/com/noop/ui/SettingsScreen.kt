@@ -94,7 +94,6 @@ import com.noop.BuildConfig
 import com.noop.analytics.Baselines
 import com.noop.analytics.Zones
 import com.noop.ble.PuffinExperiment
-import com.noop.ble.PolarPmdExperiment
 import com.noop.ble.WhoopModel
 import com.noop.data.DataBackup
 import com.noop.ingest.RawSensorExport
@@ -375,8 +374,6 @@ fun SettingsScreen(vm: AppViewModel) {
     var puffinCapture by remember { mutableStateOf(puffinExperiment.isCaptureEnabled) }
     var deepData by remember { mutableStateOf(puffinExperiment.isDeepDataEnabled) }
     var broadcastHr by remember { mutableStateOf(puffinExperiment.broadcastHr) }
-    val polarPmdExperiment = remember { PolarPmdExperiment.from(context) }
-    var polarDeepStreams by remember { mutableStateOf(polarPmdExperiment.enabled) }
     // Opt-in "Experimental sleep staging (V2)" (off by default). Model-agnostic, so it lives outside the
     // 5/MG-only card — it works on WHOOP 4 and 5. Re-stages detected nights with SleepStagerV2; V1 default.
     var experimentalSleepV2 by remember { mutableStateOf(puffinExperiment.experimentalSleepV2) }
@@ -1357,14 +1354,14 @@ fun SettingsScreen(vm: AppViewModel) {
                     color = Palette.textTertiary,
                 )
 
-                // --- Persistent R22 configuration — the one probe that writes to the strap. (#174) ---
+                // --- R22 deep-data unlock — the one probe that writes to the strap. (#174) ---
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
                     Text(
-                        "Allow persistent WHOOP 5/MG R22 writes",
+                        "Unlock WHOOP 5/MG deep data (R22)",
                         style = NoopType.subhead,
                         color = Palette.textPrimary,
                         modifier = Modifier.weight(1f),
@@ -1383,36 +1380,35 @@ fun SettingsScreen(vm: AppViewModel) {
                             uncheckedBorderColor = Palette.hairline,
                         ),
                         modifier = Modifier.semantics {
-                            contentDescription = "Allow persistent WHOOP 5/MG R22 writes"
+                            contentDescription = "Unlock WHOOP 5/MG deep data"
                         },
                     )
                 }
                 Text(
-                    "Sends the official app's documented 15 R22 feature flags. Hardware returns a response to each write, but current evidence does not show a separate live stream: type-0x2F records still arrive through normal history sync. These writes persist and NOOP has no captured restore sequence; switching this toggle off only blocks future writes. Advanced testing only.",
+                    "WHOOP 5/MG straps hand a fresh app only live heart rate. The official app switches on the deeper streams (high-rate HR + motion + history) by writing a set of feature flags, a sequence two independent projects have documented. With this on, the button below sends that exact sequence to your strap. Unlike everything else here it does write to the strap, but it's reversible (it only changes which data the strap emits) and is the same thing the official app does. Experimental: it may do nothing on your firmware.",
                     style = NoopType.caption,
                     color = Palette.textTertiary,
                 )
                 if (deepData) {
                     NoopButton(
-                        text = "Write persistent enable sequence",
+                        text = "Send enable sequence to strap",
                         leadingIcon = Icons.Filled.Bolt,
                         kind = NoopButtonKind.Primary,
-                        enabled = live.encryptedBond && live.worn && !live.r22SequenceInFlight,
+                        enabled = live.encryptedBond && live.worn,
                         onClick = { vm.ble.enableWhoop5DeepData() },
                     )
                     Text(
-                        if (!live.encryptedBond) "Needs the full encrypted bond: close the official WHOOP app and pair the strap to NOOP first (a live-HR-only link can't carry the writes)."
-                        else if (!live.worn) "Put the strap on first. The R22 configuration write is wear-gated."
-                        else if (live.r22SequenceInFlight) "Sending the 15 R22 configuration writes…"
-                        else "Persistent write: NOOP has no restore sequence. Use only for a controlled before/after capture.",
+                        if (!live.encryptedBond) "Needs the full encrypted bond: close the official WHOOP app and pair the strap to NOOP first (a live-HR-only link can't carry the unlock)."
+                        else if (!live.worn) "Put the strap on first. The deep stream is on-wrist only."
+                        else "Wear the strap, tap once, then let it sync and share your strap log.",
                         style = NoopType.caption,
                         color = Palette.textTertiary,
                     )
                     // Live R22 telemetry (#174): proof of what the strap is doing right now.
                     if (live.r22FlagsAccepted > 0) {
                         Text(
-                            if (live.r22FlagsAccepted >= 15) "Received responses for all 15 R22 writes"
-                            else "Received ${live.r22FlagsAccepted}/15 R22 responses…",
+                            if (live.r22FlagsAccepted >= 15) "✓ Strap accepted all 15 R22 flags"
+                            else "Strap accepted ${live.r22FlagsAccepted}/15 R22 flags…",
                             style = NoopType.caption,
                             color = if (live.r22FlagsAccepted >= 15) Palette.statusPositive else Palette.textSecondary,
                         )
@@ -1425,7 +1421,7 @@ fun SettingsScreen(vm: AppViewModel) {
                         )
                     } else if (live.r22FlagsAccepted >= 15) {
                         Text(
-                            "All writes received correlated responses, but that does not prove a configuration result. Deep records arrive through normal history sync (#494).",
+                            "Flags accepted, but the enable sequence doesn't start a separate live stream. The deep records arrive as part of the normal history sync (#494).",
                             style = NoopType.caption,
                             color = Palette.textTertiary,
                         )
@@ -1487,55 +1483,6 @@ fun SettingsScreen(vm: AppViewModel) {
             }
         }
         } // end if (showFiveMGControls)
-
-        // --- Experimental · Polar PMD --- (every model; only activates when the connected device
-        // advertises Polar's vendor PMD service). Standard HR/battery are unchanged when this is off.
-        SettingsSection(
-            icon = Icons.Filled.Science,
-            title = "Experimental · Polar deep streams",
-            blurb = "For Polar devices that expose the vendor PMD service. Standard heart rate and battery already work without this.",
-        ) {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(16.dp),
-                ) {
-                    Text(
-                        "Capture Polar PPI + motion",
-                        style = NoopType.subhead,
-                        color = Palette.textPrimary,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Switch(
-                        checked = polarDeepStreams,
-                        onCheckedChange = {
-                            polarDeepStreams = it
-                            polarPmdExperiment.enabled = it
-                        },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = Palette.surfaceBase,
-                            checkedTrackColor = Palette.accent,
-                            uncheckedThumbColor = Palette.textSecondary,
-                            uncheckedTrackColor = Palette.surfaceInset,
-                            uncheckedBorderColor = Palette.hairline,
-                        ),
-                        modifier = Modifier.semantics {
-                            contentDescription = "Capture Polar PPI and motion"
-                        },
-                    )
-                }
-                Text(
-                    "On the next Polar connection, NOOP requests beat-to-beat PPI and accelerometer " +
-                        "data, uses PPI only if standard heart rate goes quiet, and stores motion at one " +
-                        "sample per second. It is off by default because continuous PMD streaming uses " +
-                        "more device battery. ECG/PPG packet decoding is built, but high-rate waveforms " +
-                        "are not recorded yet.",
-                    style = NoopType.caption,
-                    color = Palette.textTertiary,
-                )
-            }
-        }
 
         // --- Diagnostics (every model) --- the raw-sensor CSV export is split out of the 5/MG card so it
         // stays available on a WHOOP 4.0 too (#22): a 4.0 owner still needs it to share decoded streams.
@@ -2722,4 +2669,3 @@ private fun AttributionRow(repo: String, note: String) {
         Text("· $note", style = NoopType.footnote, color = Palette.textTertiary)
     }
 }
-

@@ -53,11 +53,6 @@ public final class StandardHRSource: NSObject, ObservableObject {
     private static let cscMeasurement = CBUUID(string: "2A5B")
     private static let cpsService = CBUUID(string: "1818")           // Cycling Power
     private static let cpsMeasurement = CBUUID(string: "2A63")
-    // Polar Measurement Data (PMD), discovered additively. Standard HR and battery remain the
-    // primary/default path; PMD streaming starts only behind PolarPMDExperiment.
-    private static let polarPMDService = CBUUID(string: PolarPMDGATT.service)
-    private static let polarPMDControl = CBUUID(string: PolarPMDGATT.controlPoint)
-    private static let polarPMDData = CBUUID(string: PolarPMDGATT.data)
     /// The three fitness-sensor measurement characteristics we read, mapped to their UUID16 short form.
     private static let fitnessSensorChars: [(CBUUID, String)] = [
         (rscMeasurement, "2A53"), (cscMeasurement, "2A5B"), (cpsMeasurement, "2A63"),
@@ -99,20 +94,6 @@ public final class StandardHRSource: NSObject, ObservableObject {
     private var pendingConnectID: UUID?
     /// Peripherals retained by identifier so a chosen one survives until connection.
     private var seenPeripherals: [UUID: CBPeripheral] = [:]
-
-    // MARK: - Polar PMD state
-
-    private var pmdControlCharacteristic: CBCharacteristic?
-    private var pmdDataCharacteristic: CBCharacteristic?
-    private var pmdFeatureReadRequested = false
-    private var pmdStartAttempted = false
-    private var pmdAssembler = PolarPMDControlResponseAssembler()
-    private var pmdPlanner = PolarPMDSessionPlanner()
-    private var pmdDecoder = PolarPMDDecoder()
-    private var pmdClock = PolarPMDClock()
-    private var pmdLoggedMeasurements = Set<PolarPMDMeasurement>()
-    private var lastStandardHRAt: Date?
-    private var lastPMDAccelerationSecond: Int?
 
     // MARK: - Sample buffer
 
@@ -213,7 +194,6 @@ public final class StandardHRSource: NSObject, ObservableObject {
         flush()                       // persist anything still buffered
         live.clearSensorMetrics()     // a stale speed/cadence/power panel must not outlive the link
         rateComputer.reset()          // next CSC/CPS packet is a first packet again (no carry-over)
-        resetPMD()
         live.connected = false
     }
 
@@ -257,155 +237,6 @@ public final class StandardHRSource: NSObject, ObservableObject {
         let rates = rateComputer.update(reading)
         if let kmh = rates.speedKmh { live.sensorSpeedKmh = kmh }
         if let rpm = rates.crankRpm { live.sensorCadence = rpm }
-    }
-
-    // MARK: - Polar PMD ingest (opt-in)
-
-    private func resetPMD() {
-        pmdControlCharacteristic = nil
-        pmdDataCharacteristic = nil
-        pmdFeatureReadRequested = false
-        pmdStartAttempted = false
-        pmdAssembler.reset()
-        pmdPlanner.reset()
-        pmdDecoder.reset()
-        pmdClock.reset()
-        pmdLoggedMeasurements.removeAll()
-        lastStandardHRAt = nil
-        lastPMDAccelerationSecond = nil
-    }
-
-    /// Read capabilities only after both PMD characteristics are subscribed. Control-point replies
-    /// arrive as indications, so this ordering prevents the first response racing notification setup.
-    private func maybeReadPMDFeatures(from peripheral: CBPeripheral) {
-        guard !pmdFeatureReadRequested,
-              let control = pmdControlCharacteristic,
-              let data = pmdDataCharacteristic,
-              control.isNotifying,
-              data.isNotifying else { return }
-        pmdFeatureReadRequested = true
-        log("HR-strap: Polar PMD transport ready — reading capabilities")
-        peripheral.readValue(for: control)
-    }
-
-    private func handlePMDControl(_ bytes: [UInt8], peripheral: CBPeripheral) {
-        if let features = PolarPMDFeatures(bytes: bytes) {
-            let names = features.measurements
-                .sorted(by: { $0.rawValue < $1.rawValue })
-                .map { String(describing: $0) }
-                .joined(separator: ", ")
-            log("HR-strap: Polar PMD capabilities: \(names.isEmpty ? "none" : names)")
-            guard PolarPMDExperiment.isEnabled else {
-                log("HR-strap: Polar deep streams are off — standard HR/battery remain active")
-                return
-            }
-            guard !pmdStartAttempted else { return }
-            pmdStartAttempted = true
-            applyPMDUpdate(
-                pmdPlanner.begin(features: features, requested: [.ppi, .accelerometer]),
-                peripheral: peripheral
-            )
-            return
-        }
-
-        do {
-            guard let response = try pmdAssembler.append(bytes) else { return }
-            applyPMDUpdate(pmdPlanner.handle(response), peripheral: peripheral)
-        } catch {
-            pmdAssembler.reset()
-            pmdPlanner.reset()
-            log("HR-strap: WARNING Polar PMD control response rejected — \(error)")
-        }
-    }
-
-    private func applyPMDUpdate(_ update: PolarPMDSessionUpdate, peripheral: CBPeripheral) {
-        if let started = update.started {
-            pmdDecoder.configure(
-                started.measurement,
-                selection: started.selection,
-                startResponse: started.startResponse
-            )
-            log("HR-strap: Polar PMD \(started.measurement) stream started")
-        }
-        if let skipped = update.skipped {
-            log("HR-strap: Polar PMD \(skipped) stream unavailable — continuing")
-        }
-        if let command = update.command, let control = pmdControlCharacteristic {
-            peripheral.writeValue(Data(command), for: control, type: .withResponse)
-        } else if update.finished {
-            log("HR-strap: Polar PMD setup finished")
-        }
-    }
-
-    private func ingestPMDData(_ bytes: [UInt8]) {
-        guard PolarPMDExperiment.isEnabled else { return }
-        do {
-            let decoded = try pmdDecoder.decode(bytes)
-            if pmdLoggedMeasurements.insert(decoded.frame.measurement).inserted {
-                log("HR-strap: receiving Polar PMD \(decoded.frame.measurement) data")
-            }
-
-            let receiveNs = UInt64(max(0, Date().timeIntervalSince1970 * 1_000_000_000))
-            var streams = Streams()
-
-            // Prefer standard 0x2A37 when healthy. PPI is a fallback after three quiet seconds,
-            // avoiding duplicate HR/R-R rows from two characteristics on the same device.
-            let standardHRSilent = lastStandardHRAt.map {
-                Date().timeIntervalSince($0) > 3
-            } ?? true
-            if standardHRSilent {
-                var liveIntervals: [Int] = []
-                var latestHR: Int?
-                let ppiTimes = pmdClock.unixNanoseconds(
-                    ppiSamples: decoded.ppi,
-                    receivedAtUnixNs: receiveNs
-                )
-                for (index, sample) in decoded.ppi.enumerated()
-                    where !sample.blocker && sample.skinContact != false
-                        && (30...220).contains(sample.heartRate)
-                        && (250...3_000).contains(sample.intervalMs) {
-                    let unixNs = ppiTimes[index]
-                    let second = Int(unixNs / 1_000_000_000)
-                    streams.hr.append(HRSample(ts: second, bpm: sample.heartRate))
-                    streams.rr.append(RRInterval(ts: second, rrMs: sample.intervalMs))
-                    latestHR = sample.heartRate
-                    liveIntervals.append(sample.intervalMs)
-                }
-                if let latestHR, !liveIntervals.isEmpty {
-                    live.heartRate = latestHR
-                    live.setRRIntervals(liveIntervals)
-                    live.connected = true
-                }
-            }
-
-            // PMD ACC can be 25–200 Hz. The durable lane is intentionally one vector/second:
-            // enough for existing sleep/activity analytics without an unbounded waveform database.
-            var motionBySecond: [Int: PolarPMDAccelerationSample] = [:]
-            for sample in decoded.acceleration {
-                let unixNs = pmdClock.unixNanoseconds(
-                    sensorTimestampNs: sample.sensorTimestampNs,
-                    receivedAtUnixNs: receiveNs
-                )
-                motionBySecond[Int(unixNs / 1_000_000_000)] = sample
-            }
-            for second in motionBySecond.keys.sorted() {
-                guard lastPMDAccelerationSecond.map({ second > $0 }) ?? true,
-                      let sample = motionBySecond[second] else { continue }
-                streams.gravity.append(GravitySample(
-                    ts: second,
-                    x: Double(sample.xMilliG) / 1_000,
-                    y: Double(sample.yMilliG) / 1_000,
-                    z: Double(sample.zMilliG) / 1_000
-                ))
-                lastPMDAccelerationSecond = second
-            }
-
-            if !streams.isEmpty {
-                persist(streams)
-            }
-        } catch {
-            log("HR-strap: WARNING Polar PMD data frame rejected — \(error)")
-        }
     }
 
     // CB delegate callbacks live in the @preconcurrency extensions below. The queue-less central
@@ -465,8 +296,7 @@ extension StandardHRSource: @preconcurrency CBCentralManagerDelegate {
         // speed-cadence sensor / power meter can be surfaced. A device without any of these simply yields
         // no such characteristic — the HR path is wholly unaffected.
         peripheral.discoverServices([Self.heartRateService, Self.batteryService,
-                                     Self.rscService, Self.cscService, Self.cpsService,
-                                     Self.polarPMDService])
+                                     Self.rscService, Self.cscService, Self.cpsService])
     }
 
     public func centralManager(_ central: CBCentralManager,
@@ -488,7 +318,6 @@ extension StandardHRSource: @preconcurrency CBCentralManagerDelegate {
         flush()
         live.clearSensorMetrics()
         rateComputer.reset()
-        resetPMD()
         live.connected = false
         if self.peripheral?.identifier == peripheral.identifier {
             self.peripheral = nil
@@ -536,10 +365,6 @@ extension StandardHRSource: @preconcurrency CBPeripheralDelegate {
             log("HR-strap: 0x1818 cycling power service found")
             peripheral.discoverCharacteristics([Self.cpsMeasurement], for: svc)
         }
-        for svc in services where svc.uuid == Self.polarPMDService {
-            log("HR-strap: Polar PMD service found")
-            peripheral.discoverCharacteristics([Self.polarPMDControl, Self.polarPMDData], for: svc)
-        }
     }
 
     public func peripheral(_ peripheral: CBPeripheral,
@@ -572,38 +397,16 @@ extension StandardHRSource: @preconcurrency CBPeripheralDelegate {
             log("HR-strap: fitness-sensor characteristic \(ch.uuid) found — enabling notifications")
             peripheral.setNotifyValue(true, for: ch)
         }
-        if service.uuid == Self.polarPMDService {
-            for ch in chars where ch.uuid == Self.polarPMDControl {
-                pmdControlCharacteristic = ch
-                peripheral.setNotifyValue(true, for: ch)
-            }
-            for ch in chars where ch.uuid == Self.polarPMDData {
-                pmdDataCharacteristic = ch
-                peripheral.setNotifyValue(true, for: ch)
-            }
-            if pmdControlCharacteristic == nil || pmdDataCharacteristic == nil {
-                log("HR-strap: WARNING Polar PMD service is missing control or data characteristic")
-            }
-        }
     }
 
     public func peripheral(_ peripheral: CBPeripheral,
                            didUpdateNotificationStateFor characteristic: CBCharacteristic,
                            error: Error?) {
-        if characteristic.uuid == Self.heartRateMeasurement {
-            if let error = error {
-                log("HR-strap: WARNING enabling notifications FAILED — \(error.localizedDescription) — strap will send no HR data")
-            } else {
-                log("HR-strap: notifications enabled (isNotifying=\(characteristic.isNotifying))")
-            }
-            return
-        }
-        if characteristic.uuid == Self.polarPMDControl || characteristic.uuid == Self.polarPMDData {
-            if let error {
-                log("HR-strap: WARNING Polar PMD notification setup failed for \(characteristic.uuid) — \(error.localizedDescription)")
-            } else {
-                maybeReadPMDFeatures(from: peripheral)
-            }
+        guard characteristic.uuid == Self.heartRateMeasurement else { return }
+        if let error = error {
+            log("HR-strap: WARNING enabling notifications FAILED — \(error.localizedDescription) — strap will send no HR data")
+        } else {
+            log("HR-strap: notifications enabled (isNotifying=\(characteristic.isNotifying))")
         }
     }
 
@@ -625,14 +428,6 @@ extension StandardHRSource: @preconcurrency CBPeripheralDelegate {
             ingestFitnessSensor(uuid16: uuid16, bytes: [UInt8](value))
             return
         }
-        if characteristic.uuid == Self.polarPMDControl {
-            handlePMDControl([UInt8](value), peripheral: peripheral)
-            return
-        }
-        if characteristic.uuid == Self.polarPMDData {
-            ingestPMDData([UInt8](value))
-            return
-        }
         guard characteristic.uuid == Self.heartRateMeasurement else { return }
         guard let parsed = StandardHeartRate.parse([UInt8](value)) else { return }
         // Log the FIRST sample of a connection only — proof that data is flowing — never every sample.
@@ -643,15 +438,6 @@ extension StandardHRSource: @preconcurrency CBPeripheralDelegate {
         live.heartRate = parsed.hr
         live.setRRIntervals(parsed.rr)
         live.connected = true
-        lastStandardHRAt = Date()
         enqueue(hr: parsed.hr, rr: parsed.rr)
-    }
-
-    public func peripheral(_ peripheral: CBPeripheral,
-                           didWriteValueFor characteristic: CBCharacteristic,
-                           error: Error?) {
-        guard characteristic.uuid == Self.polarPMDControl, let error else { return }
-        pmdPlanner.reset()
-        log("HR-strap: WARNING Polar PMD control write failed — \(error.localizedDescription)")
     }
 }

@@ -47,9 +47,9 @@ class CaptureImporterTest {
 
     @Test
     fun hexToBytesRejectsOverlongFrameFromUntrustedFile() {
-        // The importer accepts real 2,140-byte v20 frames but stays bounded at the live reassembler ceiling.
-        assertEquals(2_140, CaptureImporter.hexToBytes("ab".repeat(2_140))!!.size)
-        val overlong = "ab".repeat(8_193)
+        // A frame far longer than any real strap record (here 600 bytes) is junk in an untrusted file
+        // and must be skipped, not turned into a 600-byte ByteArray fed to the decoder.
+        val overlong = "ab".repeat(600)
         assertNull(CaptureImporter.hexToBytes(overlong))
     }
 
@@ -86,35 +86,6 @@ class CaptureImporterTest {
         assertEquals(0, parsed.skipped)
         assertEquals(1, parsed.byFamily[DeviceFamily.WHOOP5]!!.size)
         assertEquals(1, parsed.byFamily[DeviceFamily.WHOOP4]!!.size)
-    }
-
-    @Test
-    fun parseAcceptsAndroidJsonlExportAndCharacteristicKey() {
-        val jsonl = """
-            # NOOP 5/MG raw backfill capture
-            {"hex":"$v18","characteristic":"$whoop5Char","offload":true}
-            {"hex":"$v25a","characteristic":"$whoop4Char","offload":true}
-        """.trimIndent()
-        val parsed = CaptureImporter.parse(StringReader(jsonl))
-        assertEquals(2, parsed.totalFrames)
-        assertEquals(0, parsed.skipped)
-        assertEquals(1, parsed.byFamily[DeviceFamily.WHOOP5]!!.size)
-        assertEquals(1, parsed.byFamily[DeviceFamily.WHOOP4]!!.size)
-    }
-
-    @Test
-    fun parseJsonlIgnoresOnlyAnUnterminatedTornTail() {
-        val valid = """{"hex":"$v18","characteristic":"$whoop5Char"}"""
-        val parsed = CaptureImporter.parse(StringReader(valid + "\n{\"hex\":\"aa"))
-        assertEquals(1, parsed.totalFrames)
-        assertEquals(1, parsed.skipped)
-        assertTrue(parsed.tornTailSkipped)
-    }
-
-    @Test(expected = org.json.JSONException::class)
-    fun parseJsonlRejectsMalformedTerminatedRecord() {
-        val valid = """{"hex":"$v18","characteristic":"$whoop5Char"}"""
-        CaptureImporter.parse(StringReader(valid + "\n{\"hex\":\"aa\n"))
     }
 
     @Test

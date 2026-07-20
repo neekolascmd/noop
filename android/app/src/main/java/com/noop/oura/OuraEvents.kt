@@ -51,32 +51,6 @@ data class OuraSpO2(
     val sampleOffsetSeconds: Int = 0,
 )
 
-/**
- * One lossless sample from `spo2_r_pi_event` (`0x8B`). [ratioQ14] is the original unsigned
- * big-endian Q14 value and [perfusionIndexRaw] is the original unsigned byte. Open Oura validated
- * this layout on Ring 5; NOOP keeps it Tier B until our Ring 4 overnight capture confirms it.
- */
-data class OuraSpO2RPISample(
-    val sampleIndex: Int,
-    val ratioQ14: Int,
-    val perfusionIndexRaw: Int,
-) {
-    val ratio: Double get() = ratioQ14 / 16_384.0
-    val perfusionIndex: Double get() = perfusionIndexRaw / 255.0 * 0.05
-    val ring4CalibratedTenthsPercent: Int?
-        get() = OuraSpO2Calibration.ring4OreoTenthsPercent(ratioQ14)
-}
-
-/**
- * A complete `0x8B` record. Sample cadence is deliberately not guessed: [samples] retain wire order
- * while [ringTimestamp] remains the only qualified time until Ring 4 hardware confirms the layout.
- */
-data class OuraSpO2RPI(
-    val ringTimestamp: Long,
-    val header: Int,
-    val samples: List<OuraSpO2RPISample>,
-)
-
 /** One decoded skin-temperature sample in degrees C (value already / 100). */
 data class OuraTemp(val ringTimestamp: Long, val celsius: Double)
 
@@ -230,8 +204,6 @@ sealed class OuraEvent {
     data class Ibi(val value: OuraIBI) : OuraEvent()
     data class Hrv(val value: OuraHRV) : OuraEvent()
     data class Spo2(val value: OuraSpO2) : OuraEvent()
-    /** Experimental raw `0x8B` R-ratio/PI record; Tier B until NOOP validates it on Ring 4. */
-    data class Spo2RPI(val value: OuraSpO2RPI) : OuraEvent()
     data class Temp(val value: OuraTemp) : OuraEvent()
     data class Battery(val value: OuraBattery) : OuraEvent()
     data class SleepPhaseEvent(val value: OuraSleepPhase) : OuraEvent()
@@ -258,5 +230,5 @@ sealed class OuraEvent {
     data class ActivityInfo(val value: OuraActivityInfo) : OuraEvent()
 
     /** True for Tier-B events, so a consumer can assert none leaked into a Tier-A-only sink. */
-    val isTierB: Boolean get() = this is TierB || this is ActivityInfo || this is Spo2RPI
+    val isTierB: Boolean get() = this is TierB || this is ActivityInfo
 }

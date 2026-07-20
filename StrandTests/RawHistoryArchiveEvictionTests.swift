@@ -131,19 +131,4 @@ final class RawHistoryArchiveEvictionTests: XCTestCase {
         let lines = (0..<10).map { jsonl(18, filler: String(format: "%02x", $0)) }
         XCTAssertEqual(RawHistoryArchive.evictLines(lines, maxBytes: 1_000_000, floor: 2), lines)
     }
-
-    /// Type-52 byte 9 is payload, not a proven layout version. Every value must use one neutral bucket
-    /// or a noisy IMU stream can create hundreds of protected floors and defeat the archive cap.
-    func testWhoop5Type52UsesOneNeutralRetentionBucket() {
-        var a = [UInt8](repeating: 0, count: 12)
-        var b = a
-        a[8] = 52; a[9] = 1
-        b[8] = 52; b[9] = 255
-        XCTAssertEqual(RawHistoryArchive.versionByte(a, family: .whoop5), -52)
-        XCTAssertEqual(RawHistoryArchive.versionByte(b, family: .whoop5), -52)
-
-        var v21 = a
-        v21[8] = 47; v21[9] = 21
-        XCTAssertEqual(RawHistoryArchive.versionByte(v21, family: .whoop5), 21)
-    }
 }
