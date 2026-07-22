@@ -256,6 +256,11 @@ hello-token or serial hex (the handshake lines log *that* a step happened, not i
 secret payload). The one mild identifier is the strap's advertised name (e.g.
 `WHOOP 5AG…`), which the user chooses to include when they tap Share.
 
+Oura history adds one values-free inventory line at the end of a fetch. It contains only each TLV tag's
+name, record count, wire-byte count, and number of typed events produced by the current decoder. The
+inventory never keeps or logs the TLV payload, ring timestamp, device identity, auth key, or biometric
+value; genuinely unknown tags are reported only by their one-byte tag number and count.
+
 **logcat is opt-in (debug mode), off by default.** By default the log is mirrored
 **only** to the in-app buffer — it is *not* written to Android's system log
 (`Log.d`/logcat). A user has no reason to emit the connection log to the device-wide

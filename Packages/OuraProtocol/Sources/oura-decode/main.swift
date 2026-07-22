@@ -16,7 +16,7 @@ import OuraProtocol
 //   FILE            a capture/fixture JSON file: an array of {"hex": ...} objects. The richer capture
 //                   format ({"hex","kind","ts_ms"}) is a superset and is read too.
 //   (stdin)         the same JSON, piped in, when no FILE is given.
-//   --hex HEX ...   one or more raw record hex strings instead of a file.
+//   --hex HEX ...   one or more raw record/notification-fragment hex strings instead of a file.
 //
 // Options:
 //   --gen G         gen3 | gen4 | gen5   (default: gen3, the verified-corpus generation)
@@ -50,7 +50,7 @@ USAGE:
   oura-decode --hex 600e0100000000010401000000000000
 
 Reads a capture/fixture JSON array of {"hex": ...} from FILE or stdin, or raw
-records from --hex. Generation defaults to gen3. Tier-B (UNVERIFIED) tags are
+records/notification fragments from --hex. Generation defaults to gen3. Tier-B (UNVERIFIED) tags are
 dropped unless --allow-tier-b is passed, so unverified layouts never feed values.
 """
 
@@ -164,37 +164,44 @@ let reassembler = OuraReassembler()
 
 struct JSONLine: Encodable { let index: Int; let kind: String; let detail: String }
 var jsonLines: [JSONLine] = []
-var total = 0
+var inputFragmentCount = 0
 var decodedCount = 0
 var tagCounts: [String: Int] = [:]
+var inventory = OuraRecordInventory()
 
 for (n, rec) in records.enumerated() {
     guard let raw = bytes(fromHex: rec.hex) else {
         FileHandle.standardError.write(Data("skipping bad hex at index \(n)\n".utf8))
         continue
     }
-    total += 1
-    let events = driver.ingest(notification: raw, reassembler: reassembler)
-    if events.isEmpty {
-        // Show the raw tag so an undecoded record is visible (the RE worklist), without guessing.
-        let tagHex = raw.first.map { "0x" + String($0, radix: 16) } ?? "?"
-        tagCounts["undecoded(\(tagHex))", default: 0] += 1
-        if !jsonOut {
-            print("[\(n)] gen=\(gen.rawValue) tag=\(tagHex) -> (no event)")
-        } else {
-            jsonLines.append(JSONLine(index: n, kind: "undecoded", detail: tagHex))
+    inputFragmentCount += 1
+    // Inventory complete TLVs, not notification fragments. A capture item may contain several records,
+    // or only the first/last part of one record; counting its first byte as a tag would create false gaps.
+    for record in reassembler.feed(raw) {
+        let events = driver.ingest(record: record)
+        inventory.observe(record, emittedEventCount: events.count)
+        if events.isEmpty {
+            // Show the structurally-valid raw tag so an undecoded record is visible (the RE worklist),
+            // without exposing its timestamp or payload.
+            let tagHex = String(format: "0x%02X", record.type)
+            tagCounts["silent(\(tagHex))", default: 0] += 1
+            if !jsonOut {
+                print("[\(n)] gen=\(gen.rawValue) tag=\(tagHex) -> (no typed event)")
+            } else {
+                jsonLines.append(JSONLine(index: n, kind: "silent", detail: tagHex))
+            }
+            continue
         }
-        continue
-    }
-    for e in events {
-        decodedCount += 1
-        let line = describe(e)
-        let key = line.split(separator: " ").first.map(String.init) ?? "?"
-        tagCounts[key, default: 0] += 1
-        if jsonOut {
-            jsonLines.append(JSONLine(index: n, kind: key, detail: line))
-        } else {
-            print("[\(n)] " + line)
+        for e in events {
+            decodedCount += 1
+            let line = describe(e)
+            let key = line.split(separator: " ").first.map(String.init) ?? "?"
+            tagCounts[key, default: 0] += 1
+            if jsonOut {
+                jsonLines.append(JSONLine(index: n, kind: key, detail: line))
+            } else {
+                print("[\(n)] " + line)
+            }
         }
     }
 }
@@ -206,9 +213,12 @@ if jsonOut {
         print(s)
     }
 } else {
-    var summary = "\n\(decodedCount) events from \(total) records (tier-b \(allowTierB ? "on" : "off"))\n"
+    var summary = "\n\(decodedCount) events from \(inventory.totalRecordCount) complete records / \(inputFragmentCount) input fragments (tier-b \(allowTierB ? "on" : "off"))\n"
     for (t, c) in tagCounts.sorted(by: { $0.value > $1.value }) {
         summary += "  \(pad(String(c), 5, right: true))  \(t)\n"
     }
     FileHandle.standardError.write(Data(summary.utf8))
 }
+
+// Always send the values-free raw-tag inventory to stderr so JSON stdout remains machine-compatible.
+FileHandle.standardError.write(Data(("Oura inventory: " + inventory.summary() + "\n").utf8))
