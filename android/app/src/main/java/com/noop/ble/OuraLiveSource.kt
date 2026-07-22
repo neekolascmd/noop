@@ -34,6 +34,7 @@ import com.noop.oura.OuraGatt
 import com.noop.oura.OuraCommands
 import com.noop.oura.OuraDecoders
 import com.noop.oura.OuraOuterFrame
+import com.noop.oura.OuraRecordInventory
 import com.noop.oura.OuraReassembler
 import com.noop.oura.OuraRingGen
 import com.noop.oura.OuraTransition
@@ -369,6 +370,8 @@ class OuraLiveSource(
     /** Reassembles BLE notification fragments into complete TLV records (s2.4). Reset on disconnect so a
      *  half-record never bleeds into the next session. */
     private val reassembler = OuraReassembler()
+    /** Values-free metadata for complete TLVs observed during the active history pass. */
+    private var historyInventory = OuraRecordInventory()
 
     /** Cached characteristics, resolved in onServicesDiscovered. */
     private var writeChar: BluetoothGattCharacteristic? = null
@@ -488,6 +491,7 @@ class OuraLiveSource(
     private fun fetchHistoryIfIdle(): Unit = guardedCallback("history-fetch") {
         val d = driver ?: return@guardedCallback
         if (d.phase != OuraDriverPhase.Streaming) return@guardedCallback
+        historyInventory = OuraRecordInventory()
         log("Oura: fetching history from cursor $historyCursor")
         loggedUncorrelatedTimeSync = false
         resetProvisionalHistorySearch()
@@ -699,6 +703,7 @@ class OuraLiveSource(
             d.consumePersistentStateInvalidation()
             clearCoherentSyncState()
             log("Oura: ring-time regression invalidated the saved history mapping; next fetch starts read-only")
+            finishHistoryInventory("unanchored")
             advance(OuraTransition.HistoryCursorAdvanced(cursor = 0L, moreData = false))
             return@guardedCallback
         }
@@ -736,6 +741,7 @@ class OuraLiveSource(
             if (retryHistoryAfterMissingAnchorOnce(retryCursor)) return@guardedCallback
             pendingAnchorEvents.clear()
             resetProvisionalHistorySearch()
+            finishHistoryInventory("unanchored")
             advance(OuraTransition.HistoryCursorAdvanced(cursor = historyCursor, moreData = false))
             return@guardedCallback
         }
@@ -752,6 +758,7 @@ class OuraLiveSource(
             pendingAnchorEvents.clear()
             resetProvisionalHistorySearch()
         }
+        finishHistoryInventory(if (d.hasFreshAnchorForActiveFetch) "caught-up" else "unanchored")
         advance(OuraTransition.HistoryCursorAdvanced(
             cursor = committedCursor ?: historyCursor,
             moreData = false,
@@ -804,6 +811,7 @@ class OuraLiveSource(
                     }
                     resetProvisionalHistorySearch()
                     if (!moreData) log("Oura: history fetch caught up (cursor $historyCursor)")
+                    if (!moreData) finishHistoryInventory("caught-up")
                     advance(OuraTransition.HistoryCursorAdvanced(cursor = committedCursor, moreData = moreData))
                 }
             }
@@ -838,6 +846,7 @@ class OuraLiveSource(
         log("Oura: $reason; saved cursor unchanged and history will retry")
         pendingAnchorEvents.clear()
         resetProvisionalHistorySearch()
+        finishHistoryInventory("persistence-failed")
         advance(OuraTransition.HistoryCursorAdvanced(cursor = historyCursor, moreData = false))
     }
 
@@ -937,6 +946,7 @@ class OuraLiveSource(
             durableCursor = syncState.cursor,
         )
         reassembler.reset()
+        historyInventory = OuraRecordInventory()
         pendingInstallKey = null       // a new connection starts with no install in flight
         _adoptPhase.value = AdoptPhase.Idle   // a stale outcome must never drive the wizard's transition
         _spo2AutomaticEnabled.value = null
@@ -1003,6 +1013,7 @@ class OuraLiveSource(
         resetProvisionalHistorySearch()
         resetAnchorBootstrap()
         reassembler.reset()
+        finishHistoryInventory("stopped")
         loggedFirstHr = false      // a later reconnect should log its first sample again
         loggedFirstTemp = false
         loggedFirstSpo2 = false
@@ -1182,6 +1193,7 @@ class OuraLiveSource(
                         discardUncommittedHistory()
                     }
                     reassembler.reset()
+                    finishHistoryInventory("disconnected")
                     loggedFirstTemp = false
                     loggedFirstSpo2 = false
                     loggedFirstBedtime = false
@@ -1645,6 +1657,9 @@ class OuraLiveSource(
     /** Keep protocol mutation, durable-anchor export, and reset invalidation ordered for every TLV record. */
     private fun ingestRecord(d: OuraDriver, record: com.noop.oura.OuraRecord, origin: EventOrigin) {
         val events = d.ingest(record)
+        if (origin == EventOrigin.HISTORY) {
+            historyInventory.observe(record, emittedEventCount = events.size)
+        }
         if (d.consumePersistentStateInvalidation()) {
             clearCoherentSyncState()
             log("Oura: ring-start invalidated the saved history mapping; recovery remains read-only")
@@ -1652,6 +1667,13 @@ class OuraLiveSource(
             persistPrimaryAnchorIfChanged(d)
         }
         emit(events, origin)
+    }
+
+    /** Emit and clear the current bounded, values-free inventory. */
+    private fun finishHistoryInventory(outcome: String) {
+        if (historyInventory.isEmpty) return
+        log("Oura: history inventory outcome=$outcome ${historyInventory.summary()}")
+        historyInventory = OuraRecordInventory()
     }
 
     /**

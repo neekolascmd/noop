@@ -489,6 +489,19 @@ bits 14–15 : qual_b
 3. **Trust tiers in the decoder:** Tier A (verified, ship now) = TLV framing, auth, GetEvents cursor, live-HR `0x02`, `0x60`/`0x80` IBI, `0x46`/`0x69`/`0x75` temp, Ring 4 `0x6F` percentage SpO2 plus raw `0x77` DC, `0x6A` raw sleep-period measurements, `0x76` bedtime bounds, `0x42` time-sync, `0x0D` battery, `0x45`/`0x53` state, `0x6B` motion. Tier B (UNVERIFIED, fixture-gate before use) = sleep summaries/stage cadence, `0x50/0x51/0x52` activity-MET, `0x7E/0x7F` steps, legacy `0x70`/`0x7B` on Ring 4, the protobuf `0x55/0x59` interpretation (do **not** ship).
 4. **HRV/sleep:** consume `0x5D` HRV, preserve `0x6A` without naming its states, and use `0x76` for stage-less sleep bounds. `0x4E` phase bits remain experimental until a real Ring 4 fixture proves cadence/direction; `0x5A` is not a canonical pinned Ring 4 tag. Never read Oura feature `0x06` (encrypted API).
 
+### 7.4 Passive record inventory
+
+Every production history pass now inventories each **complete** TLV before its bytes are discarded.
+`OuraRecordInventory` retains only tag/count/wire-size/typed-event-count metadata; it never retains the
+record payload, ring timestamp, device identity, auth key, or biometric value. The terminal strap-log line
+therefore answers which tags a particular firmware actually emitted and which are absent from NOOP's
+dictionary without requiring a packet capture or changing any ring setting. Known lifecycle records that
+intentionally emit no typed value remain distinct from genuinely unknown tags.
+
+The `oura-decode` CLI uses the same inventory while replaying an opt-in capture. It counts reassembled TLVs,
+not capture fragments, so a split record or several records packed into one notification cannot create a
+false tag count. Its values-free inventory is written to stderr; `--json` stdout remains machine-readable.
+
 ---
 
 ## 8. Open Implementation Items (for the team)
@@ -496,3 +509,5 @@ bits 14–15 : qual_b
 - Resolve the `0x0D` battery percent-vs-voltage offset per generation via captured fixtures (§6.10).
 - Validate all Tier-B sleep/activity/step layouts against real captures before enabling in scoring.
 - Confirm live-HR `0x02` path on actual Gen-4/Gen-5 hardware (only Gen-3 is verified in the corpus).
+- Compare the passive inventory from each hardware tuple before adding a decoder; an online reference's
+  tag list is not evidence that a particular ring/firmware emitted that tag.

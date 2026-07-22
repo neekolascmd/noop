@@ -200,6 +200,10 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     /// Passive, opt-in qualification capture of the history TLV bytes already delivered by the ring.
     /// It never changes the BLE command stream and never captures live secure-session traffic.
     private lazy var historyCaptureRecorder = OuraHistoryCaptureRecorder()
+    /// Values-free metadata for every complete TLV observed during the active history pass. Unlike the
+    /// opt-in raw capture above, this retains no payload/timestamp/identifier and is safe for the normal
+    /// exportable strap log. It tells us which firmware tags are genuinely present before we add decoders.
+    private var historyInventory = OuraRecordInventory()
 
     /// Logs the FIRST live HR sample of a connection only (never every push); reset on stop/disconnect.
     private var loggedFirstHR = false
@@ -362,6 +366,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     /// both right after reaching `.streaming` and from the periodic timer).
     private func fetchHistoryIfIdle() {
         guard let driver, driver.phase == .streaming else { return }
+        historyInventory = OuraRecordInventory()
         log("Oura: fetching history from cursor \(historyCursor) (\(describeCursor(historyCursor)))")
         loggedUncorrelatedTimeSync = false
         resetProvisionalHistorySearch()
@@ -513,9 +518,28 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     private func ingestDriverNotification(_ bytes: [UInt8], driver: OuraDriver,
                                           origin: IngestOrigin) {
         if origin == .history { historyCaptureRecorder.capture(bytes) }
-        let events = driver.ingest(notification: bytes, reassembler: reassembler)
+        // Keep the complete raw-record boundary long enough to inventory tag/count/size metadata, then
+        // immediately discard the record bytes after the existing typed decoder runs. This is equivalent
+        // to `driver.ingest(notification:reassembler:)`, but preserves a privacy-safe view of what the
+        // firmware actually emitted (including unknown tags) for the exported strap log.
+        var events: [OuraEvent] = []
+        for record in reassembler.feed(bytes) {
+            let decoded = driver.ingest(record: record)
+            if origin == .history {
+                historyInventory.observe(record, emittedEventCount: decoded.count)
+            }
+            events.append(contentsOf: decoded)
+        }
         consumeDriverTimeStateInvalidation(driver)
         ingest(events, origin: origin)
+    }
+
+    /// Emit and clear the current values-free inventory. `outcome` is one of our fixed lifecycle labels,
+    /// never ring/user text. Empty passes stay quiet so a terminal no-data poll does not spam the log.
+    private func finishHistoryInventory(outcome: String) {
+        guard !historyInventory.isEmpty else { return }
+        log("Oura: history inventory outcome=\(outcome) \(historyInventory.summary())")
+        historyInventory = OuraRecordInventory()
     }
 
     private func startHistoryFetchTimer() {
@@ -597,6 +621,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
             if retryHistoryAfterMissingAnchorOnce(from: retryCursor) { return }
             pendingAnchorEvents.removeAll()
             resetProvisionalHistorySearch()
+            finishHistoryInventory(outcome: "unanchored")
             advance(.historyCursorAdvanced(cursor: historyCursor, moreData: false))
             return
         }
@@ -622,6 +647,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
             resetProvisionalHistorySearch()
         }
         let terminalCursor = committedCursor ?? historyCursor
+        finishHistoryInventory(outcome: driver.hasFreshAnchorForActiveFetch ? "caught-up" : "unanchored")
         advance(.historyCursorAdvanced(cursor: terminalCursor, moreData: false))
     }
 
@@ -631,6 +657,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         log("Oura: WARNING history persistence failed; saved cursor unchanged and batch will retry")
         pendingAnchorEvents.removeAll()
         resetProvisionalHistorySearch()
+        finishHistoryInventory(outcome: "persistence-failed")
         advance(.historyCursorAdvanced(cursor: historyCursor, moreData: false))
     }
 
@@ -826,6 +853,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         spo2AutomaticEnabled = nil
         needsPairing = nil
         historyCaptureRecorder.flush()
+        finishHistoryInventory(outcome: "stopped")
         flush()                       // persist anything still buffered
         if feedsLive { live.clearDeviceTelemetryForTransition() }
     }
@@ -1480,6 +1508,7 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         loggedAnchor = false
         loggedTierBKinds.removeAll()
         pendingAnchorEvents.removeAll()   // a fresh session must never replay a stale-anchor guess
+        historyInventory = OuraRecordInventory()
         pendingInstallKey = nil
         adoptPhase = .idle
         spo2AutomaticEnabled = nil
@@ -1546,6 +1575,7 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         batteryPct = nil
         spo2AutomaticEnabled = nil
         historyCaptureRecorder.flush()
+        finishHistoryInventory(outcome: "disconnected")
         flush()
         if feedsLive { live.clearDeviceTelemetryForTransition() }
         if self.peripheral?.identifier == peripheral.identifier { self.peripheral = nil }
