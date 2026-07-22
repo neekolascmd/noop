@@ -1736,6 +1736,13 @@ class OuraLiveSource(
                 }
                 enqueueAnchoredOrPark(e, e.value.ringTimestamp, d)
             }
+            is OuraEvent.Spo2Ratio -> {
+                if (!loggedFirstSpo2) {
+                    loggedFirstSpo2 = true
+                    log("Oura: raw SpO2 ratio history decoded")
+                }
+                enqueueAnchoredOrPark(e, e.value.ringTimestamp, d)
+            }
             is OuraEvent.Hrv -> enqueueAnchoredOrPark(e, e.value.ringTimestamp, d)
             is OuraEvent.SleepPhaseEvent -> enqueueAnchoredOrPark(e, e.value.ringTimestamp, d)
             is OuraEvent.SleepPeriodEvent -> enqueueAnchoredOrPark(e, e.value.ringTimestamp, d)

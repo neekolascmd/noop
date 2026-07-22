@@ -28,13 +28,24 @@ final class DecoderGoldenTests: XCTestCase {
         return rec
     }
 
-    // MARK: - 0x80 green IBI quality (filters on qual; only the good sample passes)
+    // MARK: - 0x80 green IBI quality (split 11-bit IBI + 2-bit quality)
 
     func testGreenIBIQuality0x80FiltersOnQuality() {
-        // body 200b (ibi800, qualA1, qualB0 -> pass) ee42 (ibi750, qualB1 -> reject)
-        let rec = record("800802000100200bee42")
+        // Independently constructed: 1000ms/q1 passes; the same IBI at q0 and q2 is rejected.
+        let rec = record("800a020001007d087d007d10")
         let ibis = OuraDecoders.decodeGreenIBIQuality(rec)
-        XCTAssertEqual(ibis, [OuraIBI(ringTimestamp: rt, ibiMs: 800)])
+        XCTAssertEqual(ibis, [OuraIBI(ringTimestamp: rt, ibiMs: 1000)])
+    }
+
+    func testGreenIBIQuality0x80PhysiologicalBoundsAndShape() {
+        // 300ms/q1 and 2000ms/q1 pass; 299ms and 2001ms are dropped.
+        let rec = record("800c02000100250cfa08250bfa09")
+        XCTAssertEqual(OuraDecoders.decodeGreenIBIQuality(rec), [
+            OuraIBI(ringTimestamp: rt, ibiMs: 300),
+            OuraIBI(ringTimestamp: rt, ibiMs: 2000),
+        ])
+        XCTAssertNil(OuraDecoders.decodeGreenIBIQuality(
+            OuraRecord(type: 0x80, ringTimestamp: rt, payload: [0x7D])))
     }
 
     // MARK: - 0x60 IBI + amplitude (MSB-first bit-packed; n=7 -> shift 0)
@@ -91,6 +102,33 @@ final class DecoderGoldenTests: XCTestCase {
         let rec = record("7b060200010003ca")
         let s = OuraDecoders.decodeSpO2Stable(rec)
         XCTAssertEqual(s, OuraSpO2(ringTimestamp: rt, value: 970, unit: "tenths_percent"))
+    }
+
+    // MARK: - 0x8B raw R-ratio + perfusion index
+
+    func testSpO2RatioPI0x8BPreservesWireValuesAndCalibratesExplicitly() {
+        // Synthetic record: header A5; Q14 ratios 0.75 and ~0.80; perfusion bytes 128 and 64.
+        let rec = record("8b0b02000100a5300080333340")
+        let decoded = OuraDecoders.decodeSpO2RatioPI(rec)
+        XCTAssertEqual(decoded, OuraSpO2RatioRecord(ringTimestamp: rt, header: 0xA5, samples: [
+            OuraSpO2RatioSample(ratioQ14: 0x3000, perfusionRaw: 128),
+            OuraSpO2RatioSample(ratioQ14: 0x3333, perfusionRaw: 64),
+        ]))
+        XCTAssertEqual(decoded?.samples[0].ratio ?? -1, 0.75, accuracy: 1e-12)
+        XCTAssertEqual(decoded?.samples[0].perfusionIndex ?? -1, 128.0 / 255.0 * 0.05,
+                       accuracy: 1e-12)
+        XCTAssertEqual(decoded?.samples.compactMap { OuraSpO2CalibrationProfile.gen4Oreo
+            .calibratedTenthsPercent(ratio: $0.ratio) }, [938, 925])
+        XCTAssertEqual(decoded?.samples.compactMap { OuraSpO2CalibrationProfile.cooper
+            .calibratedTenthsPercent(ratio: $0.ratio) }, [943, 930])
+        XCTAssertNil(OuraSpO2CalibrationProfile.forRingGeneration(.gen3))
+        XCTAssertNil(OuraSpO2CalibrationProfile.forRingGeneration(.gen5))
+    }
+
+    func testSpO2RatioPI0x8BRejectsMalformedShape() {
+        XCTAssertNil(OuraDecoders.decodeSpO2RatioPI(
+            OuraRecord(type: 0x8B, ringTimestamp: rt, payload: [0x00, 0x30, 0x00])))
+        XCTAssertNil(OuraSpO2CalibrationProfile.gen4Oreo.calibratedPercentage(ratio: 0))
     }
 
     func testSleepPeriod0x6AAndBedtimeBounds0x76() {

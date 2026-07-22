@@ -32,6 +32,8 @@ public enum OuraStreamMapping {
     public static let sleepPhaseEventKind = "OURA_SLEEP_PHASE"
     /// Verified 0x6A measurements, preserved without interpreting its unnamed 0/1/2 state as stages.
     public static let sleepPeriodEventKind = "OURA_SLEEP_PERIOD"
+    /// Lossless raw `0x8B` record alongside any explicitly calibrated estimate.
+    public static let spo2RatioEventKind = "OURA_SPO2_RATIO_PI"
 
     /// Build a `Streams` from a batch of decoded Oura events, all stamped at the arrival wall-clock `ts`
     /// (unix seconds). Pure → unit-testable. Section-4 table:
@@ -87,6 +89,31 @@ public enum OuraStreamMapping {
                 guard (700...1000).contains(tenths) else { continue }
                 out.spo2.append(SpO2Sample(ts: ts + v.sampleOffsetSeconds,
                                           red: tenths, ir: 0, unit: "tenths_percent"))
+
+            case .spo2Ratio(let record, let profile):
+                let ratioQ14 = record.samples.map(\.ratioQ14)
+                let perfusionRaw = record.samples.map(\.perfusionRaw)
+                var payload: [String: ParsedValue] = [
+                    "header": .int(Int(record.header)),
+                    "ratio_q14": .intArray(ratioQ14),
+                    "perfusion_u8": .intArray(perfusionRaw),
+                    "calibration_profile": .string(profile?.rawValue ?? "none"),
+                ]
+                if let profile {
+                    let calibrated = record.samples.enumerated().compactMap { index, sample -> (Int, Int)? in
+                        guard let tenths = profile.calibratedTenthsPercent(ratio: sample.ratio),
+                              (850...1_000).contains(tenths) else { return nil }
+                        return (index, tenths)
+                    }
+                    if !calibrated.isEmpty {
+                        payload["calibrated_sample_indices"] = .intArray(calibrated.map(\.0))
+                        payload["calibrated_tenths_percent_samples"] = .intArray(calibrated.map(\.1))
+                    }
+                }
+                // Keep app-side estimates out of the production SpO2 stream: that stream feeds the
+                // unlabelled daily metric and Android Health Connect. The explicitly profiled sample
+                // array remains available in this diagnostic event until hardware/reference qualification.
+                out.events.append(WhoopEvent(ts: ts, kind: spo2RatioEventKind, payload: payload))
 
             case .temp(let v):
                 // The decoder yields degrees C. The durable `SkinTempSample.raw` is an integer in the

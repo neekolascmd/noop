@@ -91,6 +91,69 @@ public struct OuraSpO2: Equatable, Sendable, Codable {
     }
 }
 
+/// One losslessly preserved sample from `0x8B spo2_r_pi_event`. The ring sends a Q14 ratio of
+/// ratios and an unsigned perfusion byte; computed accessors expose their physical scales without
+/// discarding the wire values. Neither value is itself an oxygen percentage.
+public struct OuraSpO2RatioSample: Equatable, Sendable, Codable {
+    public let ratioQ14: Int
+    public let perfusionRaw: Int
+    public var ratio: Double { Double(ratioQ14) / 16_384.0 }
+    public var perfusionIndex: Double { Double(perfusionRaw) / 255.0 * 0.05 }
+
+    public init(ratioQ14: Int, perfusionRaw: Int) {
+        self.ratioQ14 = ratioQ14
+        self.perfusionRaw = perfusionRaw
+    }
+}
+
+/// A complete `0x8B` record. Sample cadence is not yet hardware-qualified, so the samples stay
+/// grouped under the record timestamp instead of receiving invented per-sample timestamps.
+public struct OuraSpO2RatioRecord: Equatable, Sendable, Codable {
+    public let ringTimestamp: UInt32
+    public let header: UInt8
+    public let samples: [OuraSpO2RatioSample]
+
+    public init(ringTimestamp: UInt32, header: UInt8, samples: [OuraSpO2RatioSample]) {
+        self.ringTimestamp = ringTimestamp
+        self.header = header
+        self.samples = samples
+    }
+}
+
+/// Published coefficients for Oura's app-side "SpO2 Simple" approximation. This is distinct from
+/// the firmware-native percentage tags. Only Gen 4 / Oreo has a published generation mapping;
+/// Cooper remains available as an explicit research profile, not an assumed Ring 5 default.
+public enum OuraSpO2CalibrationProfile: String, Equatable, Sendable, Codable {
+    case gen4Oreo = "gen4_oreo"
+    case cooper = "cooper"
+
+    public static func forRingGeneration(_ generation: OuraRingGen) -> Self? {
+        switch generation {
+        case .gen3: return nil
+        case .gen4: return .gen4Oreo
+        case .gen5: return nil
+        }
+    }
+
+    /// Convert one positive R ratio with `a*r^2 + b*r + c`, clamped to the published 85...100%
+    /// output range. Perfusion is preserved as a quality input but no threshold is invented here.
+    public func calibratedPercentage(ratio: Double) -> Double? {
+        guard ratio.isFinite, ratio > 0 else { return nil }
+        let coefficients: (a: Double, b: Double, c: Double)
+        switch self {
+        case .gen4Oreo: coefficients = (-13.4, -5.1, 105.2)
+        case .cooper: coefficients = (-12.1, -6.9, 106.3)
+        }
+        let value = coefficients.a * ratio * ratio + coefficients.b * ratio + coefficients.c
+        return min(100.0, max(85.0, value))
+    }
+
+    /// Independently calibrate one sample without assigning it an invented wall-clock timestamp.
+    public func calibratedTenthsPercent(ratio: Double) -> Int? {
+        calibratedPercentage(ratio: ratio).map { Int(($0 * 10.0).rounded()) }
+    }
+}
+
 /// One decoded skin-temperature sample in hundredths of a degree C scaled to C (value already / 100).
 public struct OuraTemp: Equatable, Sendable, Codable {
     public let ringTimestamp: UInt32
@@ -288,6 +351,7 @@ public enum OuraEvent: Equatable, Sendable {
     case ibi(OuraIBI)
     case hrv(OuraHRV)
     case spo2(OuraSpO2)
+    case spo2Ratio(OuraSpO2RatioRecord, calibrationProfile: OuraSpO2CalibrationProfile?)
     case temp(OuraTemp)
     case battery(OuraBattery)
     case sleepPhase(OuraSleepPhase)

@@ -51,6 +51,48 @@ data class OuraSpO2(
     val sampleOffsetSeconds: Int = 0,
 )
 
+/** Losslessly preserved Q14 R-ratio and unsigned perfusion byte from one `0x8B` sample. */
+data class OuraSpO2RatioSample(
+    val ratioQ14: Int,
+    val perfusionRaw: Int,
+) {
+    val ratio: Double get() = ratioQ14 / 16_384.0
+    val perfusionIndex: Double get() = perfusionRaw / 255.0 * 0.05
+}
+
+/** Complete `0x8B` record; samples stay grouped because their cadence is not qualified. */
+data class OuraSpO2RatioRecord(
+    val ringTimestamp: Long,
+    val header: Int,
+    val samples: List<OuraSpO2RatioSample>,
+)
+
+/** Explicit profiles for Oura's app-side "SpO2 Simple" approximation, not firmware percentages. */
+enum class OuraSpO2CalibrationProfile(val raw: String) {
+    GEN4_OREO("gen4_oreo"),
+    COOPER("cooper");
+
+    fun calibratedPercentage(ratio: Double): Double? {
+        if (!ratio.isFinite() || ratio <= 0.0) return null
+        val (a, b, c) = when (this) {
+            GEN4_OREO -> Triple(-13.4, -5.1, 105.2)
+            COOPER -> Triple(-12.1, -6.9, 106.3)
+        }
+        return (a * ratio * ratio + b * ratio + c).coerceIn(85.0, 100.0)
+    }
+
+    fun calibratedTenthsPercent(ratio: Double): Int? =
+        calibratedPercentage(ratio)?.let { Math.round(it * 10.0).toInt() }
+
+    companion object {
+        fun forRingGeneration(generation: OuraRingGen): OuraSpO2CalibrationProfile? = when (generation) {
+            OuraRingGen.GEN3 -> null
+            OuraRingGen.GEN4 -> GEN4_OREO
+            OuraRingGen.GEN5 -> null
+        }
+    }
+}
+
 /** One decoded skin-temperature sample in degrees C (value already / 100). */
 data class OuraTemp(val ringTimestamp: Long, val celsius: Double)
 
@@ -204,6 +246,10 @@ sealed class OuraEvent {
     data class Ibi(val value: OuraIBI) : OuraEvent()
     data class Hrv(val value: OuraHRV) : OuraEvent()
     data class Spo2(val value: OuraSpO2) : OuraEvent()
+    data class Spo2Ratio(
+        val value: OuraSpO2RatioRecord,
+        val calibrationProfile: OuraSpO2CalibrationProfile?,
+    ) : OuraEvent()
     data class Temp(val value: OuraTemp) : OuraEvent()
     data class Battery(val value: OuraBattery) : OuraEvent()
     data class SleepPhaseEvent(val value: OuraSleepPhase) : OuraEvent()

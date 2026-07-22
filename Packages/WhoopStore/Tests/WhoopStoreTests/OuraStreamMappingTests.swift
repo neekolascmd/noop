@@ -63,6 +63,30 @@ final class OuraStreamMappingTests: XCTestCase {
         XCTAssertEqual(s.spo2.map { $0.ts }, [ts - 1])
     }
 
+    func testSpO2RatioPreservesRawRecordAndLabelsDerivedEstimate() {
+        let raw = OuraSpO2RatioRecord(ringTimestamp: 100, header: 0xA5, samples: [
+            OuraSpO2RatioSample(ratioQ14: 0x3000, perfusionRaw: 128),
+            OuraSpO2RatioSample(ratioQ14: 0x3333, perfusionRaw: 64),
+        ])
+        let s = OuraStreamMapping.streams(from: [
+            .spo2Ratio(raw, calibrationProfile: .gen4Oreo),
+        ], at: ts)
+        XCTAssertTrue(s.spo2.isEmpty)
+        XCTAssertEqual(s.events.count, 1)
+        XCTAssertEqual(s.events[0].kind, OuraStreamMapping.spo2RatioEventKind)
+        XCTAssertEqual(s.events[0].payload["ratio_q14"], .intArray([0x3000, 0x3333]))
+        XCTAssertEqual(s.events[0].payload["perfusion_u8"], .intArray([128, 64]))
+        XCTAssertEqual(s.events[0].payload["calibration_profile"], .string("gen4_oreo"))
+        XCTAssertEqual(s.events[0].payload["calibrated_sample_indices"], .intArray([0, 1]))
+        XCTAssertEqual(s.events[0].payload["calibrated_tenths_percent_samples"], .intArray([938, 925]))
+
+        let uncalibrated = OuraStreamMapping.streams(from: [
+            .spo2Ratio(raw, calibrationProfile: nil),
+        ], at: ts)
+        XCTAssertTrue(uncalibrated.spo2.isEmpty)
+        XCTAssertEqual(uncalibrated.events[0].payload["calibration_profile"], .string("none"))
+    }
+
     // MARK: - Temp 0x46/0x75 -> skinTemp:[SkinTempSample] (centi-degree-C, parity with Kotlin)
 
     func testTempMapsToSkinTempAsCentiC() {

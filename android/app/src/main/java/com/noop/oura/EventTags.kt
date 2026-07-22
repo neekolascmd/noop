@@ -43,6 +43,7 @@ enum class OuraEventTag(val raw: Int) {
     SPO2_PER_SAMPLE(0x6F),    // spo2_event per-second, OURA_PROTOCOL.md s6.5
     SPO2_STABLE(0x7B),        // spo2_stable_event (uint16 BIG-endian), OURA_PROTOCOL.md s6.6
     SPO2_DC(0x77),            // spo2_dc_event (sign-magnitude deltas), OURA_PROTOCOL.md s6.7
+    SPO2_RATIO_PI(0x8B),      // raw R-ratio + perfusion-index samples, OURA_PROTOCOL.md s6.7a
 
     // --- Temperature (Tier A) ---
     TEMP(0x46),               // temp_event (int16 LE / 100), OURA_PROTOCOL.md s6.8
@@ -111,6 +112,7 @@ enum class OuraEventTag(val raw: Int) {
             SPO2_PER_SAMPLE -> "SPO2_PER_SAMPLE"
             SPO2_STABLE -> "SPO2_STABLE"
             SPO2_DC -> "SPO2_DC"
+            SPO2_RATIO_PI -> "SPO2_RATIO_PI"
             TEMP -> "TEMP"
             TEMP_PERIOD -> "TEMP_PERIOD"
             SLEEP_TEMP -> "SLEEP_TEMP"

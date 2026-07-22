@@ -579,6 +579,22 @@ final class OuraDriverTests: XCTestCase {
         XCTAssertEqual(events, [.spo2(OuraSpO2(ringTimestamp: rt, value: 970, unit: "tenths_percent"))])
     }
 
+    func testIngestRoutesQualifiedGreenIBIWithoutReinterpretingBytes() {
+        let d = OuraDriver(ringGen: .gen5, authKey: key)
+        let rec = OuraFraming.parseRecord(bytes("8008020001007d087d10"))!
+        XCTAssertEqual(d.ingest(record: rec), [.ibi(OuraIBI(ringTimestamp: rt, ibiMs: 1000))])
+    }
+
+    func testIngestRoutesSpO2RatioWithGenerationProfile() {
+        let d = OuraDriver(ringGen: .gen4, authKey: key)
+        let rec = OuraFraming.parseRecord(bytes("8b0b02000100a5300080333340"))!
+        let raw = OuraSpO2RatioRecord(ringTimestamp: rt, header: 0xA5, samples: [
+            OuraSpO2RatioSample(ratioQ14: 0x3000, perfusionRaw: 128),
+            OuraSpO2RatioSample(ratioQ14: 0x3333, perfusionRaw: 64),
+        ])
+        XCTAssertEqual(d.ingest(record: rec), [.spo2Ratio(raw, calibrationProfile: .gen4Oreo)])
+    }
+
     func testIngestUnknownTagYieldsNothing() {
         let d = OuraDriver(ringGen: .gen3, authKey: key)
         // 0x99 is not in the dictionary -> [] (never a guessed value).

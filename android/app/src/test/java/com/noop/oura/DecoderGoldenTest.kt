@@ -30,14 +30,26 @@ class DecoderGoldenTest {
         return rec
     }
 
-    // MARK: - 0x80 green IBI quality (filters on qual; only the good sample passes)
+    // MARK: - 0x80 green IBI quality (split 11-bit IBI + 2-bit quality)
 
     @Test
     fun testGreenIBIQuality0x80FiltersOnQuality() {
-        // body 200b (ibi800, qualA1, qualB0 -> pass) ee42 (ibi750, qualB1 -> reject)
-        val rec = record("800802000100200bee42")
+        // Independently constructed: 1000ms/q1 passes; the same IBI at q0 and q2 is rejected.
+        val rec = record("800a020001007d087d007d10")
         val ibis = OuraDecoders.decodeGreenIBIQuality(rec)
-        assertEquals(listOf(OuraIBI(ringTimestamp = rt, ibiMs = 800)), ibis)
+        assertEquals(listOf(OuraIBI(ringTimestamp = rt, ibiMs = 1000)), ibis)
+    }
+
+    @Test
+    fun testGreenIBIQuality0x80PhysiologicalBoundsAndShape() {
+        // 300ms/q1 and 2000ms/q1 pass; 299ms and 2001ms are dropped.
+        val rec = record("800c02000100250cfa08250bfa09")
+        assertEquals(
+            listOf(OuraIBI(ringTimestamp = rt, ibiMs = 300), OuraIBI(ringTimestamp = rt, ibiMs = 2000)),
+            OuraDecoders.decodeGreenIBIQuality(rec),
+        )
+        assertNull(OuraDecoders.decodeGreenIBIQuality(
+            OuraRecord(type = 0x80, ringTimestamp = rt, payload = intArrayOf(0x7D))))
     }
 
     // MARK: - 0x60 IBI + amplitude (MSB-first bit-packed; n=7 -> shift 0)
@@ -103,6 +115,39 @@ class DecoderGoldenTest {
         val rec = record("7b060200010003ca")
         val s = OuraDecoders.decodeSpO2Stable(rec)
         assertEquals(OuraSpO2(ringTimestamp = rt, value = 970, unit = "tenths_percent"), s)
+    }
+
+    // MARK: - 0x8B raw R-ratio + perfusion index
+
+    @Test
+    fun testSpO2RatioPI0x8BPreservesWireValuesAndCalibratesExplicitly() {
+        // Synthetic record: header A5; Q14 ratios 0.75 and ~0.80; perfusion bytes 128 and 64.
+        val rec = record("8b0b02000100a5300080333340")
+        val decoded = OuraDecoders.decodeSpO2RatioPI(rec)
+        assertEquals(
+            OuraSpO2RatioRecord(rt, 0xA5, listOf(
+                OuraSpO2RatioSample(0x3000, 128),
+                OuraSpO2RatioSample(0x3333, 64),
+            )),
+            decoded,
+        )
+        assertEquals(0.75, decoded!!.samples[0].ratio, 1e-12)
+        assertEquals(128.0 / 255.0 * 0.05, decoded.samples[0].perfusionIndex, 1e-12)
+        assertEquals(listOf(938, 925), decoded.samples.mapNotNull {
+            OuraSpO2CalibrationProfile.GEN4_OREO.calibratedTenthsPercent(it.ratio)
+        })
+        assertEquals(listOf(943, 930), decoded.samples.mapNotNull {
+            OuraSpO2CalibrationProfile.COOPER.calibratedTenthsPercent(it.ratio)
+        })
+        assertNull(OuraSpO2CalibrationProfile.forRingGeneration(OuraRingGen.GEN3))
+        assertNull(OuraSpO2CalibrationProfile.forRingGeneration(OuraRingGen.GEN5))
+    }
+
+    @Test
+    fun testSpO2RatioPI0x8BRejectsMalformedShape() {
+        assertNull(OuraDecoders.decodeSpO2RatioPI(
+            OuraRecord(type = 0x8B, ringTimestamp = rt, payload = intArrayOf(0x00, 0x30, 0x00))))
+        assertNull(OuraSpO2CalibrationProfile.GEN4_OREO.calibratedPercentage(0.0))
     }
 
     @Test

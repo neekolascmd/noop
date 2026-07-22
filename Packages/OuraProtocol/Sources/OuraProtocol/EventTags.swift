@@ -38,6 +38,7 @@ public enum OuraEventTag: UInt8, Sendable, CaseIterable, Codable {
     case spo2PerSample    = 0x6F   // spo2_event per-second, OURA_PROTOCOL.md s6.5
     case spo2Stable       = 0x7B   // spo2_stable_event (uint16 BIG-endian), OURA_PROTOCOL.md s6.6
     case spo2Dc           = 0x77   // spo2_dc_event (sign-magnitude deltas), OURA_PROTOCOL.md s6.7
+    case spo2RatioPI      = 0x8B   // raw R-ratio + perfusion-index samples, OURA_PROTOCOL.md s6.7a
 
     // --- Temperature (Tier A) ---
     case temp             = 0x46   // temp_event (int16 LE / 100), OURA_PROTOCOL.md s6.8
@@ -108,6 +109,7 @@ public enum OuraEventTag: UInt8, Sendable, CaseIterable, Codable {
         case .spo2PerSample: return "SPO2_PER_SAMPLE"
         case .spo2Stable: return "SPO2_STABLE"
         case .spo2Dc: return "SPO2_DC"
+        case .spo2RatioPI: return "SPO2_RATIO_PI"
         case .temp: return "TEMP"
         case .tempPeriod: return "TEMP_PERIOD"
         case .sleepTemp: return "SLEEP_TEMP"
