@@ -94,11 +94,41 @@ class HuamiHrSource(
     private var gatt: BluetoothGatt? = null
     private val seen = ConcurrentHashMap<String, BluetoothDevice>()
     private var pendingConnectAddress: String? = null
-    private var lastDevice: BluetoothDevice? = null
     private var retried133 = false
     private var loggedFirstHr = false
 
+    private var reconnectAddress: String? = null
+    private var intentionalDisconnect = false
+    private var failedReconnectAttempts = 0
+    private var reconnectRunnable: Runnable? = null
+
     private val handler = Handler(Looper.getMainLooper())
+
+    private val setupQueue = GattOperationQueue<AndroidGattSetupOperation>(maxStartRetries = 3)
+    private var hrSubscriptionCandidate = false
+    private var hrSubscriptionEnabled = false
+    private var hrSetupTransportFailure = false
+    private var setupFinalized = false
+    private val setupRetryRunnable = Runnable { gatt?.let(::drainGattSetupQueue) }
+    private val serviceDiscoveryTimeoutRunnable = Runnable {
+        val g = gatt ?: return@Runnable
+        log("Huami: service discovery timed out — reconnecting")
+        abortGattSetupAndReconnect(g)
+    }
+    private val setupTimeoutRunnable = Runnable {
+        val g = gatt ?: return@Runnable
+        val timedOut = setupQueue.timeoutCurrent() ?: return@Runnable
+        if (timedOut is AndroidGattSetupOperation.EnableNotifications) {
+            if (loggedFirstHr) {
+                hrSubscriptionEnabled = true
+                log("Huami: ${timedOut.label} callback timed out, but live HR already proves the stream")
+            } else {
+                hrSetupTransportFailure = true
+            }
+        }
+        if (!hrSubscriptionEnabled) log("Huami: ${timedOut.label} timed out — continuing queued setup")
+        drainGattSetupQueue(g)
+    }
 
     // MARK: - Sample buffer
 
@@ -145,17 +175,38 @@ class HuamiHrSource(
     // MARK: - Connecting
 
     fun connect(address: String) {
-        stopScan()
+        cancelScheduledReconnect()
+        pendingConnectAddress = null
+        reconnectAddress = address
+        intentionalDisconnect = false
+        failedReconnectAttempts = 0
+        retried133 = false
         _needsPairing.value = null
+        connectToAddress(address)
+    }
+
+    private fun connectToAddress(address: String) {
+        if (!PeripheralReconnectPolicy.shouldReconnect(intentionalDisconnect, reconnectAddress != null) ||
+            reconnectAddress != address
+        ) return
+        stopScan()
         val device = seen[address] ?: runCatching { adapter?.getRemoteDevice(address) }.getOrNull()
-        if (device == null) { pendingConnectAddress = address; return }
+        if (device == null) {
+            pendingConnectAddress = address
+            log("Huami: saved device isn't cached — scanning to find it")
+            scan()
+            return
+        }
         connectToDevice(device)
     }
 
     private fun connectToDevice(device: BluetoothDevice) {
-        lastDevice = device
+        if (!PeripheralReconnectPolicy.shouldReconnect(intentionalDisconnect, reconnectAddress != null) ||
+            reconnectAddress != device.address
+        ) return
         log("Huami: connecting to ${device.address}")
-        gatt?.let { runCatching { it.disconnect(); it.close() } }
+        resetGattSetupQueue()
+        gatt?.let(::disconnectAndClose)
         gatt = runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 device.connectGatt(appContext, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
@@ -165,17 +216,52 @@ class HuamiHrSource(
             }
         }.getOrElse {
             log("Huami: connectGatt failed (${it.javaClass.simpleName}: ${it.message})")
+            scheduleReconnect()
             null
         }
     }
 
+    private fun cancelScheduledReconnect() {
+        reconnectRunnable?.let(handler::removeCallbacks)
+        reconnectRunnable = null
+    }
+
+    private fun scheduleReconnect(fast133Retry: Boolean = false) {
+        val address = reconnectAddress
+        if (!PeripheralReconnectPolicy.shouldReconnect(intentionalDisconnect, address != null) || address == null) return
+        cancelScheduledReconnect()
+        val delayMs = if (fast133Retry) 1_000L else {
+            failedReconnectAttempts += 1
+            PeripheralReconnectPolicy.delayMs(failedReconnectAttempts)
+        }
+        val label = if (fast133Retry) "connect error 133 — retrying once" else "reconnecting"
+        log("Huami: $label in ${delayMs / 1_000}s" +
+            if (fast133Retry) "" else " (attempt $failedReconnectAttempts)")
+        val task = Runnable {
+            if (!PeripheralReconnectPolicy.shouldReconnect(intentionalDisconnect, reconnectAddress != null) ||
+                reconnectAddress != address
+            ) return@Runnable
+            reconnectRunnable = null
+            connectToAddress(address)
+        }
+        reconnectRunnable = task
+        handler.postDelayed(task, delayMs)
+    }
+
     fun stop() {
+        intentionalDisconnect = true
+        reconnectAddress = null
+        failedReconnectAttempts = 0
+        retried133 = false
+        cancelScheduledReconnect()
+        resetGattSetupQueue()
         stopScan()
         pendingConnectAddress = null
-        gatt?.let { runCatching { it.disconnect(); it.close() } }
+        gatt?.let(::disconnectAndClose)
         gatt = null
         loggedFirstHr = false
         _batteryPct.value = null
+        _needsPairing.value = null
         flush()
     }
 
@@ -207,7 +293,7 @@ class HuamiHrSource(
             loggedFirstHr = true
             log("Huami: receiving data — first sample $hr bpm")
         }
-        handler.post { guarded("live-sink") { liveSink(hr) } }
+        guarded("live-sink") { liveSink(hr) }
         enqueue(hr)
     }
 
@@ -234,7 +320,11 @@ class HuamiHrSource(
             _discovered.value = list
             if (pendingConnectAddress == address) {
                 pendingConnectAddress = null
-                handler.post { connectToDevice(device) }
+                handler.post {
+                    if (PeripheralReconnectPolicy.shouldReconnect(intentionalDisconnect, reconnectAddress != null) &&
+                        reconnectAddress == address
+                    ) connectToDevice(device)
+                }
             }
         }
     }
@@ -242,91 +332,195 @@ class HuamiHrSource(
     // MARK: - GATT callback
 
     private val gattCallback = object : BluetoothGattCallback() {
-        override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) = guarded("connection-state") {
-            when (newState) {
-                BluetoothProfile.STATE_CONNECTED -> {
-                    retried133 = false
-                    log("Huami: connected (status=$status) — discovering services")
-                    g.discoverServices()
-                }
-                BluetoothProfile.STATE_DISCONNECTED -> {
-                    log("Huami: disconnected (status=$status)")
-                    loggedFirstHr = false
-                    _batteryPct.value = null
-                    flush()
-                    if (gatt === g) { runCatching { g.close() }; gatt = null }
-                    if (status == GATT_ERROR_133) {
-                        val device = lastDevice
-                        if (!retried133 && device != null) {
-                            retried133 = true
-                            log("Huami: connect error 133 — retrying once in 1s")
-                            handler.postDelayed({ connectToDevice(device) }, 1000)
-                        } else {
-                            log("Huami: still failing (133) — try forgetting the band in Android " +
-                                "Settings → Bluetooth, then re-pair.")
-                        }
+        override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
+            handler.post { handleConnectionStateChange(g, status, newState) }
+        }
+
+        override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
+            handler.post { configureDiscoveredServices(g, status) }
+        }
+
+        override fun onDescriptorWrite(g: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+            if (descriptor.uuid != GATT_CLIENT_CHARACTERISTIC_CONFIG_UUID) return
+            handler.post {
+                guarded("descriptor-write") {
+                    val characteristicUuid = descriptor.characteristic.uuid
+                    completeGattSetupOperation(g, status) {
+                        it is AndroidGattSetupOperation.EnableNotifications &&
+                            it.characteristic.uuid == characteristicUuid
                     }
                 }
             }
         }
 
-        override fun onServicesDiscovered(g: BluetoothGatt, status: Int) = guarded("services-discovered") {
-            if (status != BluetoothGatt.GATT_SUCCESS) {
-                log("Huami: WARNING service discovery failed (status=$status) — giving up on this band")
-                return@guarded
-            }
-            val stdSvc = g.getService(STD_HEART_RATE_SERVICE)
-            val huamiSvc = g.getService(HUAMI_SERVICE)
-            when {
-                stdSvc != null -> {
-                    log("Huami: standard 0x180D heart-rate service FOUND — using it (preferred)")
-                    val ch = stdSvc.getCharacteristic(STD_HEART_RATE_CHAR)
-                    if (ch != null) enableNotify(g, ch) else announceNeedsPairing()
-                }
-                huamiSvc != null -> {
-                    log("Huami: no standard 0x180D — trying the documented Huami custom HR characteristic")
-                    val ch = huamiSvc.getCharacteristic(HUAMI_HEART_RATE_CHAR)
-                    if (ch != null && ch.canNotify()) enableNotify(g, ch) else announceNeedsPairing()
-                }
-                else -> announceNeedsPairing()  // neither HR service → needs the Huami auth pairing
-            }
-            // Battery (0x2A19): read once if present.
-            val batt = g.getService(BATTERY_SERVICE)?.getCharacteristic(BATTERY_CHAR)
-            if (batt != null) {
-                log("Huami: 0x180F battery service found — reading level")
-                runCatching { g.readCharacteristic(batt) }
-            }
-        }
-
-        override fun onDescriptorWrite(g: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
-            if (descriptor.uuid != CCCD) return
-            if (status == BluetoothGatt.GATT_SUCCESS) {
-                log("Huami: notifications enabled (CCCD write status=$status)")
-            } else {
-                // The band refused the subscription — almost always the Huami auth gate. Be honest.
-                log("Huami: WARNING CCCD write FAILED (status=$status) — band may need pairing we can't do")
-                announceNeedsPairing()
-            }
-        }
-
         override fun onCharacteristicChanged(g: BluetoothGatt, ch: BluetoothGattCharacteristic, value: ByteArray) {
-            handleHr(ch.uuid, value)
+            val snapshot = value.copyOf()
+            handler.post {
+                if (gatt !== g) return@post
+                handleHr(ch.uuid, snapshot)
+            }
         }
 
         @Deprecated("Deprecated in Java")
         @Suppress("DEPRECATION")
         override fun onCharacteristicChanged(g: BluetoothGatt, ch: BluetoothGattCharacteristic) {
-            handleHr(ch.uuid, ch.value ?: return)
+            val snapshot = ch.value?.copyOf() ?: return
+            handler.post {
+                if (gatt !== g) return@post
+                handleHr(ch.uuid, snapshot)
+            }
         }
 
         override fun onCharacteristicRead(g: BluetoothGatt, ch: BluetoothGattCharacteristic, value: ByteArray, status: Int) {
-            if (ch.uuid == BATTERY_CHAR && status == BluetoothGatt.GATT_SUCCESS) handleBattery(value)
+            val snapshot = value.copyOf()
+            handler.post { handleGattCharacteristicRead(g, ch.uuid, snapshot, status) }
         }
 
         @Deprecated("Deprecated in Java")
         @Suppress("DEPRECATION")
         override fun onCharacteristicRead(g: BluetoothGatt, ch: BluetoothGattCharacteristic, status: Int) {
-            if (ch.uuid == BATTERY_CHAR && status == BluetoothGatt.GATT_SUCCESS) handleBattery(ch.value ?: return)
+            val value = ch.value?.copyOf() ?: byteArrayOf()
+            handler.post { handleGattCharacteristicRead(g, ch.uuid, value, status) }
+        }
+    }
+
+    private fun handleConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) =
+        guarded("connection-state") {
+            when (newState) {
+                BluetoothProfile.STATE_CONNECTED -> {
+                    if (gatt !== g) {
+                        log("Huami: ignoring stale connection callback")
+                        disconnectAndClose(g)
+                        return@guarded
+                    }
+                    cancelScheduledReconnect()
+                    log("Huami: connected (status=$status) — discovering services")
+                    beginServiceDiscovery(g)
+                }
+                BluetoothProfile.STATE_DISCONNECTED -> {
+                    if (gatt !== g) {
+                        runCatching { g.close() }
+                        return@guarded
+                    }
+                    log("Huami: disconnected (status=$status)")
+                    resetGattSetupQueue()
+                    loggedFirstHr = false
+                    _batteryPct.value = null
+                    // A classified pairing refusal clears its reconnect target and keeps the guidance
+                    // visible. Ordinary transport drops still clear any stale message before retrying.
+                    if (reconnectAddress != null) _needsPairing.value = null
+                    flush()
+                    if (gatt === g) { runCatching { g.close() }; gatt = null }
+                    if (status == GATT_ERROR_133) {
+                        if (!retried133) {
+                            retried133 = true
+                            scheduleReconnect(fast133Retry = true)
+                        } else {
+                            log("Huami: still failing (133) — try forgetting the band in Android " +
+                                "Settings → Bluetooth, then re-pair.")
+                            scheduleReconnect()
+                        }
+                    } else {
+                        scheduleReconnect()
+                    }
+                }
+            }
+        }
+
+    private fun beginServiceDiscovery(g: BluetoothGatt) = guarded("service-discovery start") {
+        if (gatt !== g) return@guarded
+        val started = runCatching { g.discoverServices() }.getOrElse {
+            log("Huami: service discovery start error (${it.javaClass.simpleName}: ${it.message})")
+            false
+        }
+        if (!started) {
+            log("Huami: service discovery request rejected — reconnecting")
+            abortGattSetupAndReconnect(g)
+            return@guarded
+        }
+        handler.removeCallbacks(serviceDiscoveryTimeoutRunnable)
+        handler.postDelayed(serviceDiscoveryTimeoutRunnable, GATT_SETUP_TIMEOUT_MS)
+    }
+
+    private fun configureDiscoveredServices(g: BluetoothGatt, status: Int) = guarded("services-discovered") {
+        if (gatt !== g) return@guarded
+        handler.removeCallbacks(serviceDiscoveryTimeoutRunnable)
+        if (status != BluetoothGatt.GATT_SUCCESS) {
+            log("Huami: WARNING service discovery failed (status=$status) — reconnecting")
+            abortGattSetupAndReconnect(g)
+            return@guarded
+        }
+        resetGattSetupQueue()
+        val standard = g.getService(STD_HEART_RATE_SERVICE)?.getCharacteristic(STD_HEART_RATE_CHAR)
+        val custom = g.getService(HUAMI_SERVICE)?.getCharacteristic(HUAMI_HEART_RATE_CHAR)
+        fun isUsable(characteristic: BluetoothGattCharacteristic?): Boolean =
+            characteristic != null && characteristic.canNotify() &&
+                characteristic.getDescriptor(GATT_CLIENT_CHARACTERISTIC_CONFIG_UUID) != null
+        val hrCharacteristic = when {
+            isUsable(standard) -> {
+                log("Huami: standard 0x180D heart-rate service FOUND — using it (preferred)")
+                standard
+            }
+            isUsable(custom) -> {
+                log("Huami: standard HR unavailable — trying the documented Huami custom HR characteristic")
+                custom
+            }
+            else -> standard ?: custom?.takeIf { it.canNotify() }
+        }
+        if (hrCharacteristic != null) {
+            hrSubscriptionCandidate = true
+            if (!hrCharacteristic.canNotify() ||
+                hrCharacteristic.getDescriptor(GATT_CLIENT_CHARACTERISTIC_CONFIG_UUID) == null
+            ) {
+                log("Huami: WARNING HR characteristic isn't subscribable — pairing may be required")
+            } else {
+                val kind = if (hrCharacteristic.uuid == STD_HEART_RATE_CHAR) "standard" else "Huami"
+                log("Huami: queueing notifications on $kind HR characteristic")
+                setupQueue.enqueue(AndroidGattSetupOperation.EnableNotifications(
+                    characteristic = hrCharacteristic,
+                    label = "$kind HR notification setup",
+                    requiredForPrimaryStream = true,
+                ))
+            }
+        }
+        g.getService(BATTERY_SERVICE)?.getCharacteristic(BATTERY_CHAR)?.let { battery ->
+            log("Huami: 0x180F battery service found — queueing level read")
+            setupQueue.enqueue(AndroidGattSetupOperation.Read(battery, "battery read"))
+        }
+        drainGattSetupQueue(g)
+    }
+
+    private fun drainGattSetupQueue(g: BluetoothGatt): Unit = guarded("GATT setup") {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post { drainGattSetupQueue(g) }
+            return@guarded
+        }
+        if (gatt !== g || setupFinalized) return@guarded
+        val operation = setupQueue.beginNext()
+        if (operation == null) {
+            if (setupQueue.isIdle) finalizeGattSetup(g)
+            return@guarded
+        }
+        val started = runCatching { startAndroidGattSetupOperation(g, operation) }.getOrElse {
+            log("Huami: ${operation.label} start error (${it.javaClass.simpleName}: ${it.message})")
+            false
+        }
+        if (started) {
+            log("Huami: ${operation.label} requested")
+            handler.removeCallbacks(setupTimeoutRunnable)
+            handler.postDelayed(setupTimeoutRunnable, GATT_SETUP_TIMEOUT_MS)
+            return@guarded
+        }
+        val rejection = setupQueue.rejectCurrentStart() ?: return@guarded
+        if (rejection.willRetry) {
+            log("Huami: ${operation.label} busy — retrying start " +
+                "${rejection.rejectionNumber}/$MAX_GATT_START_RETRIES")
+            handler.removeCallbacks(setupRetryRunnable)
+            handler.postDelayed(setupRetryRunnable, GATT_START_RETRY_DELAY_MS)
+        } else {
+            if (operation is AndroidGattSetupOperation.EnableNotifications) hrSetupTransportFailure = true
+            log("Huami: ${operation.label} could not start — continuing queued setup")
+            drainGattSetupQueue(g)
         }
     }
 
@@ -334,24 +528,101 @@ class HuamiHrSource(
         properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0 ||
             properties and BluetoothGattCharacteristic.PROPERTY_INDICATE != 0
 
-    private fun enableNotify(g: BluetoothGatt, ch: BluetoothGattCharacteristic) {
-        loggedFirstHr = false
-        g.setCharacteristicNotification(ch, true)
-        val cccd = ch.getDescriptor(CCCD) ?: run {
-            log("Huami: WARNING ${ch.uuid} has no CCCD (0x2902) — cannot enable notifications")
-            announceNeedsPairing()
-            return
-        }
-        log("Huami: enabling notifications on ${if (ch.uuid == STD_HEART_RATE_CHAR) "standard" else "Huami"} HR characteristic")
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            g.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+    private fun completeGattSetupOperation(
+        g: BluetoothGatt,
+        status: Int,
+        matches: (AndroidGattSetupOperation) -> Boolean,
+    ) = guarded("GATT setup callback") {
+        if (gatt !== g) return@guarded
+        val completed = setupQueue.completeIf(matches) ?: return@guarded
+        handler.removeCallbacks(setupTimeoutRunnable)
+        if (status == BluetoothGatt.GATT_SUCCESS) {
+            if (completed is AndroidGattSetupOperation.EnableNotifications) hrSubscriptionEnabled = true
+            log("Huami: ${completed.label} completed")
+        } else if (completed is AndroidGattSetupOperation.EnableNotifications && loggedFirstHr) {
+            hrSubscriptionEnabled = true
+            log("Huami: ${completed.label} callback failed (status=$status), but live HR is flowing")
         } else {
-            @Suppress("DEPRECATION")
-            run {
-                cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                g.writeDescriptor(cccd)
+            if (completed is AndroidGattSetupOperation.EnableNotifications &&
+                !isGattAuthenticationFailure(status)
+            ) {
+                hrSetupTransportFailure = true
+            }
+            log("Huami: WARNING ${completed.label} failed (status=$status)")
+        }
+        drainGattSetupQueue(g)
+    }
+
+    private fun handleGattCharacteristicRead(
+        g: BluetoothGatt,
+        characteristicUuid: UUID,
+        value: ByteArray,
+        status: Int,
+    ) = guarded("characteristic-read") {
+        if (gatt !== g) return@guarded
+        if (characteristicUuid == BATTERY_CHAR && status == BluetoothGatt.GATT_SUCCESS) {
+            handleBattery(value)
+        }
+        completeGattSetupOperation(g, status) {
+            it is AndroidGattSetupOperation.Read && it.characteristic.uuid == characteristicUuid
+        }
+    }
+
+    private fun finalizeGattSetup(g: BluetoothGatt) {
+        if (setupFinalized || gatt !== g) return
+        setupFinalized = true
+        when (singleSubscriptionSetupOutcome(
+            candidateFound = hrSubscriptionCandidate,
+            enabled = hrSubscriptionEnabled,
+            transportFailure = hrSetupTransportFailure,
+        )) {
+            SingleSubscriptionSetupOutcome.READY -> {
+                failedReconnectAttempts = 0
+                retried133 = false
+                loggedFirstHr = false
+                _needsPairing.value = null
+                log("Huami: GATT setup complete — live HR notifications enabled")
+            }
+            SingleSubscriptionSetupOutcome.RETRY -> {
+                log("Huami: HR setup did not complete at the transport layer — reconnecting")
+                abortGattSetupAndReconnect(g)
+            }
+            SingleSubscriptionSetupOutcome.UNAVAILABLE -> {
+                failedReconnectAttempts = 0
+                reconnectAddress = null
+                if (!hrSubscriptionCandidate) {
+                    log("Huami: no readable standard or custom HR characteristic found")
+                }
+                announceNeedsPairing()
             }
         }
+    }
+
+    private fun resetGattSetupQueue() {
+        handler.removeCallbacks(serviceDiscoveryTimeoutRunnable)
+        handler.removeCallbacks(setupRetryRunnable)
+        handler.removeCallbacks(setupTimeoutRunnable)
+        setupQueue.clear()
+        hrSubscriptionCandidate = false
+        hrSubscriptionEnabled = false
+        hrSetupTransportFailure = false
+        setupFinalized = false
+    }
+
+    private fun abortGattSetupAndReconnect(g: BluetoothGatt) {
+        if (gatt !== g) return
+        resetGattSetupQueue()
+        loggedFirstHr = false
+        _batteryPct.value = null
+        flush()
+        disconnectAndClose(g)
+        gatt = null
+        scheduleReconnect()
+    }
+
+    private fun disconnectAndClose(g: BluetoothGatt) {
+        runCatching { g.disconnect() }
+        runCatching { g.close() }
     }
 
     /** Run a GATT-callback body so a throw on the binder thread can never crash the app (mirrors
@@ -364,7 +635,7 @@ class HuamiHrSource(
         val pct = StandardBattery.parse(data) ?: return@guarded
         log("Huami: battery $pct%")
         _batteryPct.value = pct
-        handler.post { guarded("battery-sink") { onBattery(pct) } }
+        guarded("battery-sink") { onBattery(pct) }
     }
 
     private fun handleHr(uuid: UUID, data: ByteArray) = guarded("hr-parse") {
@@ -395,8 +666,10 @@ class HuamiHrSource(
 
         private val BATTERY_SERVICE: UUID = UUID.fromString("0000180f-0000-1000-8000-00805f9b34fb")
         private val BATTERY_CHAR: UUID = UUID.fromString("00002a19-0000-1000-8000-00805f9b34fb")
-        private val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
         private const val GATT_ERROR_133 = 133
+        private const val MAX_GATT_START_RETRIES = 3
+        private const val GATT_START_RETRY_DELAY_MS = 250L
+        private const val GATT_SETUP_TIMEOUT_MS = 8_000L
     }
 }

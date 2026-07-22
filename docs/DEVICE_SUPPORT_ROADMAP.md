@@ -12,12 +12,14 @@ claim. Exact device, firmware, host, build, and capability evidence belongs in t
 |--------|--------|-----|
 | **WHOOP 4 / 5 / MG** | ✅ Shipped, primary | Local BLE decode |
 | **Generic BLE heart-rate straps** (Polar / Wahoo / Coospo / Garmin HRM / Amazfit Helio HR-broadcast) | ✅ Shipped (v3.8.0), live HR + RR | Standard HR service `0x180D` / `0x2A37` |
+| **Bluetooth FTMS gym equipment** | ✅ Shipped, live machine metrics | Standard Fitness Machine service `0x1826`; treadmill, bike, rower, cross-trainer |
 | **Fitness Age / Vitality / Body Age** | ✅ Shipped (v4.0.0) | On-device, from the data above |
 | **Xiaomi Smart Band 8 / 9 / 10** (Mi Band) | ✅ Shipped, **import lane** | Read the Mi Fitness iOS app's own SQLite, on-device (below) |
+| **Amazfit / Zepp / Mi Band — live HR** | 🧪 Experimental Android lane | Standard HR when exposed, otherwise auth-free Huami custom HR; encrypted pairing remains below |
 | **Xiaomi Smart Band — live BLE sync** | 🔬 Protocol researched, decoder not built | Mi protobuf-v2 over BLE GATT + `encryptKey` handshake (below) — hardware-gated |
 | **Polar deep streams** (ECG / PPG / ACC / PPI) | 🔬 Protocol verified, decoder not built | PMD service (below) — alpha, hardware-gated |
 | **Garmin** (sleep / HRV / Body Battery / SpO₂ / FIT) | 📋 Researched, not built | Local BLE re-derive (Gadgetbridge-informed, **never** GPLv3 copy) |
-| **Amazfit / Zepp** (incl. Helio deep) | 📋 Researched, not built | Encrypted Huami BLE — needs a one-time **user-pasted** vendor key (NOOP never logs into the vendor cloud) |
+| **Amazfit / Zepp deep history and sensors** (incl. Helio deep) | 📋 Researched, not built | Encrypted Huami BLE — needs a one-time **user-pasted** vendor key (NOOP never logs into the vendor cloud) |
 | **Oura** | 🧪 Experimental; Ring 4 partially qualified on Android and macOS | Local BLE protocol package and platform sources; see the per-host graduation matrix before making a support claim |
 | **Fitbit / Google** | 📋 Researched, not built | Build against **Google Health** API (Fitbit Web API sunsets Sept 2026) — off-by-default import |
 

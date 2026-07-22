@@ -158,9 +158,10 @@ The framing envelope (verified): `0xAA`, u16 LE length, CRC8(length bytes),
 `[type=35][seq][cmd][payload]`, CRC32 LE. Fragments arriving on the notify
 characteristics are reassembled before routing.
 
-`StandardHrSource` serializes its HR notification, battery read, and optional RSC/CSC/CPS
-subscriptions. Android has one asynchronous GATT slot, so each request waits for its matching callback;
-rejected starts retry in place and a missing callback closes and reconnects the wedged session.
+`StandardHrSource`, `FtmsSource`, and `HuamiHrSource` serialize notification setup and battery reads.
+Android has one asynchronous GATT slot, so each request waits for its matching callback; rejected starts
+retry in place, required transport failures recover through bounded reconnect, and an optional battery
+failure cannot take down an otherwise working live stream.
 
 ---
 

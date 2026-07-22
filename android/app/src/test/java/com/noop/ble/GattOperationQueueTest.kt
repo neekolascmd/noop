@@ -83,11 +83,65 @@ class GattOperationQueueTest {
     fun `required failure reconnects while optional telemetry preserves live heart rate`() {
         assertEquals(
             GattOperationFailureAction.RECONNECT,
-            gattOperationFailureAction(requiredForHr = true),
+            gattOperationFailureAction(requiredForPrimaryStream = true),
         )
         assertEquals(
             GattOperationFailureAction.SKIP_OPTIONAL,
-            gattOperationFailureAction(requiredForHr = false),
+            gattOperationFailureAction(requiredForPrimaryStream = false),
         )
+    }
+
+    @Test
+    fun `any-of subscription setup needs one successful primary stream`() {
+        assertEquals(
+            PrimarySubscriptionSetupOutcome.UNSUPPORTED,
+            primarySubscriptionSetupOutcome(candidateCount = 0, enabledCount = 0),
+        )
+        assertEquals(
+            PrimarySubscriptionSetupOutcome.RETRY,
+            primarySubscriptionSetupOutcome(candidateCount = 2, enabledCount = 0),
+        )
+        assertEquals(
+            PrimarySubscriptionSetupOutcome.READY,
+            primarySubscriptionSetupOutcome(candidateCount = 2, enabledCount = 1),
+        )
+    }
+
+    @Test
+    fun `single-stream setup separates transport retry from an unavailable characteristic`() {
+        assertEquals(
+            SingleSubscriptionSetupOutcome.READY,
+            singleSubscriptionSetupOutcome(candidateFound = true, enabled = true, transportFailure = false),
+        )
+        assertEquals(
+            SingleSubscriptionSetupOutcome.RETRY,
+            singleSubscriptionSetupOutcome(candidateFound = true, enabled = false, transportFailure = true),
+        )
+        assertEquals(
+            SingleSubscriptionSetupOutcome.UNAVAILABLE,
+            singleSubscriptionSetupOutcome(candidateFound = false, enabled = false, transportFailure = false),
+        )
+        assertEquals(
+            SingleSubscriptionSetupOutcome.UNAVAILABLE,
+            singleSubscriptionSetupOutcome(candidateFound = true, enabled = false, transportFailure = false),
+        )
+    }
+
+    @Test
+    fun `CCCD mode prefers notifications and supports indication-only devices`() {
+        assertEquals(GattCccdWriteKind.NOTIFY, gattCccdWriteKind(0x10))
+        assertEquals(GattCccdWriteKind.INDICATE, gattCccdWriteKind(0x20))
+        assertEquals(GattCccdWriteKind.NOTIFY, gattCccdWriteKind(0x10 or 0x20))
+        assertEquals(GattCccdWriteKind.UNSUPPORTED, gattCccdWriteKind(0x02))
+    }
+
+    @Test
+    fun `only authentication and encryption GATT failures require pairing`() {
+        assertTrue(isGattAuthenticationFailure(0x05))
+        assertTrue(isGattAuthenticationFailure(0x08))
+        assertTrue(isGattAuthenticationFailure(0x0c))
+        assertTrue(isGattAuthenticationFailure(0x0f))
+        assertFalse(isGattAuthenticationFailure(0))
+        assertFalse(isGattAuthenticationFailure(133))
     }
 }
