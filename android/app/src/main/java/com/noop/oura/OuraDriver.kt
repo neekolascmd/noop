@@ -642,7 +642,7 @@ class OuraDriver(
             OuraEventTag.HRV_RMSSD ->
                 (OuraDecoders.decodeHRV(record) ?: emptyList()).map { OuraEvent.Hrv(it) }
 
-            // --- Tier A: SpO2 ---
+            // --- SpO2 (0x8B is diagnostic-only in downstream mapping) ---
             OuraEventTag.SPO2_PER_SAMPLE ->
                 (OuraDecoders.decodeSpO2PerSample(record) ?: emptyList()).map { OuraEvent.Spo2(it) }
             OuraEventTag.SPO2_STABLE ->

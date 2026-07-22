@@ -704,6 +704,12 @@ class OuraDriverTest {
     }
 
     @Test
+    fun testEvidenceTiersKeepQualifiedIBIProductionAndRatioSpO2Diagnostic() {
+        assertEquals(TrustTier.TIER_A, OuraEventTag.GREEN_IBI_QUALITY.tier)
+        assertEquals(TrustTier.DIAGNOSTIC, OuraEventTag.SPO2_RATIO_PI.tier)
+    }
+
+    @Test
     fun testIngestUnknownTagYieldsNothing() {
         val d = OuraDriver(ringGen = OuraRingGen.GEN3, authKey = key)
         // 0x99 is not in the dictionary -> [] (never a guessed value).

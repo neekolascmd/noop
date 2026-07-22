@@ -595,6 +595,11 @@ final class OuraDriverTests: XCTestCase {
         XCTAssertEqual(d.ingest(record: rec), [.spo2Ratio(raw, calibrationProfile: .gen4Oreo)])
     }
 
+    func testEvidenceTiersKeepQualifiedIBIProductionAndRatioSpO2Diagnostic() {
+        XCTAssertEqual(OuraEventTag.greenIbiQuality.tier, .tierA)
+        XCTAssertEqual(OuraEventTag.spo2RatioPI.tier, .diagnostic)
+    }
+
     func testIngestUnknownTagYieldsNothing() {
         let d = OuraDriver(ringGen: .gen3, authKey: key)
         // 0x99 is not in the dictionary -> [] (never a guessed value).

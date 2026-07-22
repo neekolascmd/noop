@@ -6,14 +6,16 @@ package com.noop.oura
 // s6 / s7.3.
 
 /**
- * Decoder trust tier. Tier A is verified against the byte-for-byte corpus and ships live. Tier B is
- * attested by a single no-license / AI-generated doc and MUST pass a real-capture fixture before
- * scoring trusts it (the OuraDriver gates Tier-B emission behind an explicit flag). Per the brief's
- * TIER DISCIPLINE rule and OURA_PROTOCOL.md s7.3.
+ * Decoder trust tier. Tier A is hardware-backed and may feed production metrics. Diagnostic tags
+ * preserve useful, plausibly decoded evidence but are explicitly barred from production metrics
+ * until their hardware-qualification gate passes. Tier B is unverified and MUST pass a real-capture
+ * fixture before scoring trusts it (the OuraDriver gates Tier-B emission behind an explicit flag).
+ * Per the brief's TIER DISCIPLINE rule and OURA_PROTOCOL.md s7.3.
  */
 enum class TrustTier {
-    TIER_A,   // verified, ship now
-    TIER_B,   // UNVERIFIED, fixture-gate before use
+    TIER_A,      // hardware-backed, may feed production metrics
+    DIAGNOSTIC,  // decoded for investigation, never a production metric
+    TIER_B,      // UNVERIFIED, fixture-gate before use
 }
 
 /**
@@ -39,11 +41,11 @@ enum class OuraEventTag(val raw: Int) {
     // --- HRV / RMSSD (Tier A) ---
     HRV_RMSSD(0x5D),          // hrv_event (ring's own RMSSD-derived HRV), OURA_PROTOCOL.md s6.9
 
-    // --- SpO2 (Tier A) ---
+    // --- SpO2 (Tier A unless explicitly diagnostic) ---
     SPO2_PER_SAMPLE(0x6F),    // spo2_event per-second, OURA_PROTOCOL.md s6.5
     SPO2_STABLE(0x7B),        // spo2_stable_event (uint16 BIG-endian), OURA_PROTOCOL.md s6.6
     SPO2_DC(0x77),            // spo2_dc_event (sign-magnitude deltas), OURA_PROTOCOL.md s6.7
-    SPO2_RATIO_PI(0x8B),      // raw R-ratio + perfusion-index samples, OURA_PROTOCOL.md s6.7a
+    SPO2_RATIO_PI(0x8B),      // experimental diagnostic ratio/PI evidence, OURA_PROTOCOL.md s6.7a
 
     // --- Temperature (Tier A) ---
     TEMP(0x46),               // temp_event (int16 LE / 100), OURA_PROTOCOL.md s6.8
@@ -88,6 +90,7 @@ enum class OuraEventTag(val raw: Int) {
      */
     val tier: TrustTier
         get() = when (this) {
+            SPO2_RATIO_PI -> TrustTier.DIAGNOSTIC
             SLEEP_SUMMARY_1, SLEEP_SUMMARY_B, SLEEP_SUMMARY_C, SLEEP_SUMMARY_D, SLEEP_SUMMARY_E,
             SLEEP_SUMMARY_F, ACTIVITY_INFO, ACTIVITY_SUMMARY_1, ACTIVITY_SUMMARY_2,
             REAL_STEPS_1, REAL_STEPS_2, SPO2_SMOOTHED -> TrustTier.TIER_B
