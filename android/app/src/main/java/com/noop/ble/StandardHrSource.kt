@@ -117,10 +117,16 @@ class StandardHrSource(
     /** A device asked to connect before a scan result for it landed (connect-by-address path). */
     private var pendingConnectAddress: String? = null
 
-    /** The device of the in-flight connection, remembered so a status-133 disconnect can retry it. */
-    private var lastDevice: BluetoothDevice? = null
     /** Guards the single status-133 (Android GATT_ERROR) auto-retry; reset on a successful connect. */
     private var retried133 = false
+    /** Address this source should keep reaching after an involuntary drop. Cleared by `stop()`. */
+    private var reconnectAddress: String? = null
+    /** Explicit user/coordinator teardown gate. Prevents a stale GATT callback from reviving the source. */
+    private var intentionalDisconnect = false
+    /** Consecutive ordinary reconnect attempts; drives the shared capped-exponential schedule. */
+    private var failedReconnectAttempts = 0
+    /** Named/cancellable deferred retry. Both the fast 133 retry and ordinary retry use this slot. */
+    private var reconnectRunnable: Runnable? = null
     /** Logs the FIRST HR sample of a connection only (not every notification); reset on stop/disconnect. */
     private var loggedFirstHr = false
 
@@ -183,14 +189,37 @@ class StandardHrSource(
 
     /** Connect to the chosen discovered strap (by address) and start streaming its HR. */
     fun connect(address: String) {
+        cancelScheduledReconnect()
+        pendingConnectAddress = null
+        reconnectAddress = address
+        intentionalDisconnect = false
+        failedReconnectAttempts = 0
+        retried133 = false
+        connectToAddress(address)
+    }
+
+    /** Execute one attempt without resetting user intent or the reconnect streak. */
+    private fun connectToAddress(address: String) {
+        if (!PeripheralReconnectPolicy.shouldReconnect(intentionalDisconnect, reconnectAddress != null) ||
+            reconnectAddress != address
+        ) return
         stopScan()
         val device = seen[address] ?: runCatching { adapter?.getRemoteDevice(address) }.getOrNull()
-        if (device == null) { pendingConnectAddress = address; return }
+        if (device == null) {
+            pendingConnectAddress = address
+            log("HR-strap: saved strap is not cached — scanning to find it")
+            scan()
+            return
+        }
         connectToDevice(device)
     }
 
     private fun connectToDevice(device: BluetoothDevice) {
-        lastDevice = device   // remembered so a status-133 disconnect can auto-retry the same strap
+        if (!PeripheralReconnectPolicy.shouldReconnect(
+                intentionalDisconnect,
+                reconnectAddress != null,
+            ) || reconnectAddress != device.address
+        ) return
         log("HR-strap: connecting to ${device.address}")
         // Tear down any prior link first so we never run two GATTs for this source.
         gatt?.let { runCatching { it.disconnect(); it.close() } }
@@ -206,12 +235,48 @@ class StandardHrSource(
             }
         }.getOrElse {
             log("HR-strap: connectGatt failed (${it.javaClass.simpleName}: ${it.message})")
+            scheduleReconnect()
             null
         }
     }
 
+    private fun cancelScheduledReconnect() {
+        reconnectRunnable?.let(handler::removeCallbacks)
+        reconnectRunnable = null
+    }
+
+    /** Schedule a normal capped-backoff attempt, or the one-shot 1s Android status-133 recovery. */
+    private fun scheduleReconnect(fast133Retry: Boolean = false) {
+        val address = reconnectAddress
+        if (!PeripheralReconnectPolicy.shouldReconnect(intentionalDisconnect, address != null) || address == null) return
+
+        cancelScheduledReconnect()
+        val delayMs = if (fast133Retry) {
+            1_000L
+        } else {
+            failedReconnectAttempts += 1
+            PeripheralReconnectPolicy.delayMs(failedReconnectAttempts)
+        }
+        val label = if (fast133Retry) "connect error 133 — retrying once" else "reconnecting"
+        log("HR-strap: $label in ${delayMs / 1_000}s" +
+            if (fast133Retry) "" else " (attempt $failedReconnectAttempts)")
+        val task = Runnable {
+            if (!PeripheralReconnectPolicy.shouldReconnect(intentionalDisconnect, reconnectAddress != null) ||
+                reconnectAddress != address) return@Runnable
+            reconnectRunnable = null
+            connectToAddress(address)
+        }
+        reconnectRunnable = task
+        handler.postDelayed(task, delayMs)
+    }
+
     /** Tear down: cancel the connection and stop scanning, persisting anything still buffered. Idempotent. */
     fun stop() {
+        intentionalDisconnect = true
+        reconnectAddress = null
+        failedReconnectAttempts = 0
+        retried133 = false
+        cancelScheduledReconnect()
         stopScan()
         pendingConnectAddress = null
         gatt?.let { runCatching { it.disconnect(); it.close() } }
@@ -279,7 +344,13 @@ class StandardHrSource(
             // Replay a connect intent that arrived before the device was discovered.
             if (pendingConnectAddress == address) {
                 pendingConnectAddress = null
-                handler.post { connectToDevice(device) }
+                handler.post {
+                    if (PeripheralReconnectPolicy.shouldReconnect(
+                            intentionalDisconnect,
+                            reconnectAddress != null,
+                        ) && reconnectAddress == address
+                    ) connectToDevice(device)
+                }
             }
         }
     }
@@ -290,15 +361,26 @@ class StandardHrSource(
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) = guardedCallback("connection-state") {
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
+                    if (gatt !== g) {
+                        log("HR-strap: ignoring stale connection callback")
+                        runCatching { g.disconnect(); g.close() }
+                        return@guardedCallback
+                    }
                     if (status != BluetoothGatt.GATT_SUCCESS) {
                         // CONNECTED reported but with a non-success status — unusual; surface it loudly.
                         log("HR-strap: WARNING connected with non-success status=$status")
                     }
                     retried133 = false   // a real connection clears the one-shot 133 retry guard
+                    failedReconnectAttempts = 0
+                    cancelScheduledReconnect()
                     log("HR-strap: connected (status=$status) — discovering services")
                     g.discoverServices()
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
+                    if (gatt !== g) {
+                        runCatching { g.close() }
+                        return@guardedCallback
+                    }
                     log("HR-strap: disconnected (status=$status)")
                     loggedFirstHr = false   // a reconnect should log its first sample again
                     loggedFirstSensor = false
@@ -306,18 +388,18 @@ class StandardHrSource(
                     flush()
                     clearSensorState()
                     if (gatt === g) { runCatching { g.close() }; gatt = null }
-                    // Hardening: status 133 is Android's infamous generic GATT_ERROR on connect — almost
-                    // always transient. Auto-retry ONCE before telling the user to forget+re-pair.
+                    // Status 133 gets one fast recovery attempt; a repeat joins the normal bounded loop.
                     if (status == GATT_ERROR_133) {
-                        val device = lastDevice
-                        if (!retried133 && device != null) {
+                        if (!retried133) {
                             retried133 = true
-                            log("HR-strap: connect error 133 — retrying once in 1s")
-                            handler.postDelayed({ connectToDevice(device) }, 1000)
+                            scheduleReconnect(fast133Retry = true)
                         } else {
                             log("HR-strap: still failing (133) — try forgetting the strap in " +
                                 "Android Settings → Bluetooth, then re-pair.")
+                            scheduleReconnect()
                         }
+                    } else {
+                        scheduleReconnect()
                     }
                 }
             }
