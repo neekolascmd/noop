@@ -142,6 +142,50 @@ class StandardHrSource(
     /** All BLE work hops onto the main looper, matching the WHOOP client + CBCentralManager(queue:.main). */
     private val handler = Handler(Looper.getMainLooper())
 
+    /** Setup operations are serialized because Android exposes only one asynchronous GATT slot. */
+    private sealed interface SetupGattOperation {
+        val characteristic: BluetoothGattCharacteristic
+        val label: String
+        val requiredForHr: Boolean
+
+        data class EnableNotifications(
+            override val characteristic: BluetoothGattCharacteristic,
+            override val label: String,
+            override val requiredForHr: Boolean,
+        ) : SetupGattOperation
+
+        data class Read(
+            override val characteristic: BluetoothGattCharacteristic,
+            override val label: String,
+            override val requiredForHr: Boolean = false,
+        ) : SetupGattOperation
+    }
+
+    private val setupQueue = GattOperationQueue<SetupGattOperation>(maxStartRetries = 3)
+    /** A rejected start usually means Android's prior GATT slot has not quite cleared yet. */
+    private val setupRetryRunnable = Runnable { gatt?.let(::drainGattSetupQueue) }
+    /** Service discovery is asynchronous too; a missing callback must not leave a false connected state. */
+    private val serviceDiscoveryTimeoutRunnable = Runnable {
+        val g = gatt ?: return@Runnable
+        log("HR-strap: service discovery timed out — reconnecting to recover the GATT session")
+        abortGattSetupAndReconnect(g)
+    }
+    /** A missing required-HR callback reconnects; a missing optional callback is skipped to preserve HR. */
+    private val setupTimeoutRunnable = Runnable {
+        val g = gatt ?: return@Runnable
+        val timedOut = setupQueue.timeoutCurrent() ?: return@Runnable
+        when (gattOperationFailureAction(timedOut.requiredForHr)) {
+            GattOperationFailureAction.RECONNECT -> {
+                log("HR-strap: ${timedOut.label} timed out — reconnecting to recover the GATT session")
+                abortGattSetupAndReconnect(g)
+            }
+            GattOperationFailureAction.SKIP_OPTIONAL -> {
+                log("HR-strap: ${timedOut.label} timed out — skipping optional operation to preserve live HR")
+                drainGattSetupQueue(g)
+            }
+        }
+    }
+
     // MARK: - Sample buffer (flushed in batches off the per-notification hot loop)
 
     private data class Sample(val hr: Int, val rr: List<Int>, val ts: Long)
@@ -221,8 +265,9 @@ class StandardHrSource(
             ) || reconnectAddress != device.address
         ) return
         log("HR-strap: connecting to ${device.address}")
+        resetGattSetupQueue()
         // Tear down any prior link first so we never run two GATTs for this source.
-        gatt?.let { runCatching { it.disconnect(); it.close() } }
+        gatt?.let(::disconnectAndClose)
         // connectGatt can throw (SecurityException if BLUETOOTH_CONNECT was revoked mid-session,
         // IllegalArgumentException on a stale device) — never let that crash the app; the caller (and
         // the SourceCoordinator reconcile guard) treat a failed start as "stay on the previous source".
@@ -277,9 +322,10 @@ class StandardHrSource(
         failedReconnectAttempts = 0
         retried133 = false
         cancelScheduledReconnect()
+        resetGattSetupQueue()
         stopScan()
         pendingConnectAddress = null
-        gatt?.let { runCatching { it.disconnect(); it.close() } }
+        gatt?.let(::disconnectAndClose)
         gatt = null
         loggedFirstHr = false   // a later reconnect should log its first sample again
         loggedFirstSensor = false
@@ -363,7 +409,7 @@ class StandardHrSource(
                 BluetoothProfile.STATE_CONNECTED -> {
                     if (gatt !== g) {
                         log("HR-strap: ignoring stale connection callback")
-                        runCatching { g.disconnect(); g.close() }
+                        disconnectAndClose(g)
                         return@guardedCallback
                     }
                     if (status != BluetoothGatt.GATT_SUCCESS) {
@@ -371,10 +417,9 @@ class StandardHrSource(
                         log("HR-strap: WARNING connected with non-success status=$status")
                     }
                     retried133 = false   // a real connection clears the one-shot 133 retry guard
-                    failedReconnectAttempts = 0
                     cancelScheduledReconnect()
                     log("HR-strap: connected (status=$status) — discovering services")
-                    g.discoverServices()
+                    handler.post { beginServiceDiscovery(g) }
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     if (gatt !== g) {
@@ -382,6 +427,7 @@ class StandardHrSource(
                         return@guardedCallback
                     }
                     log("HR-strap: disconnected (status=$status)")
+                    resetGattSetupQueue()
                     loggedFirstHr = false   // a reconnect should log its first sample again
                     loggedFirstSensor = false
                     _batteryPct.value = null // a stale charge must not outlive the link
@@ -405,62 +451,8 @@ class StandardHrSource(
             }
         }
 
-        override fun onServicesDiscovered(g: BluetoothGatt, status: Int) = guardedCallback("services-discovered") {
-            log("HR-strap: services discovered (status=$status)")
-            // Keep the silent-return behaviour, but LOG the reason first so #421 isn't blind.
-            if (status != BluetoothGatt.GATT_SUCCESS) {
-                log("HR-strap: WARNING service discovery failed (status=$status) — giving up on this strap")
-                return@guardedCallback
-            }
-            val svc = g.getService(HEART_RATE_SERVICE)
-            if (svc == null) {
-                log("HR-strap: 0x180D heart-rate service NOT FOUND — this strap may not expose standard HR")
-                return@guardedCallback
-            }
-            log("HR-strap: 0x180D heart-rate service FOUND")
-            val ch = svc.getCharacteristic(HEART_RATE_CHAR)
-            if (ch == null) {
-                log("HR-strap: 0x2A37 measurement characteristic NOT FOUND — cannot read HR from this strap")
-                return@guardedCallback
-            }
-            log("HR-strap: 0x2A37 measurement characteristic found")
-            g.setCharacteristicNotification(ch, true)
-            // Explicit CCCD write (CoreBluetooth's setNotifyValue does this implicitly).
-            val cccd = ch.getDescriptor(CCCD)
-            if (cccd == null) {
-                log("HR-strap: WARNING 0x2A37 has no CCCD (0x2902) — cannot enable notifications")
-                return@guardedCallback
-            }
-            log("HR-strap: enabling notifications on 0x2A37")
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                // API 33+ returns an Int status code from the descriptor write request.
-                val rc = g.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
-                log("HR-strap: CCCD write requested (rc=$rc)")
-            } else {
-                @Suppress("DEPRECATION")
-                run {
-                    cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                    val ok = g.writeDescriptor(cccd)
-                    log("HR-strap: CCCD write requested (rc=$ok)")
-                }
-            }
-
-            // Additively read the standard Battery Level (0x2A19) if the strap exposes 0x180F. Entirely
-            // separate from the HR path above — a strap without the battery service simply yields nothing.
-            val batt = g.getService(BATTERY_SERVICE)?.getCharacteristic(BATTERY_CHAR)
-            if (batt != null) {
-                log("HR-strap: 0x180F battery service found — reading level")
-                runCatching { g.readCharacteristic(batt) }
-            }
-
-            // Additively subscribe to any standard fitness-sensor measurement (RSC/CSC/CPS) this device
-            // exposes — a footpod / bike speed-cadence sensor / power meter read ALONGSIDE HR. Separate
-            // services from HR; a device without them yields no characteristic and the HR path is untouched.
-            for ((svcUuid, charUuid) in FITNESS_SENSOR_CHARS) {
-                val ch = g.getService(svcUuid)?.getCharacteristic(charUuid) ?: continue
-                log("HR-strap: fitness-sensor characteristic $charUuid found — enabling notifications")
-                enableFitnessNotify(g, ch)
-            }
+        override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
+            handler.post { configureDiscoveredServices(g, status) }
         }
 
         override fun onDescriptorWrite(
@@ -469,10 +461,14 @@ class StandardHrSource(
             status: Int,
         ) {
             if (descriptor.uuid != CCCD) return
-            if (status == BluetoothGatt.GATT_SUCCESS) {
-                log("HR-strap: notifications enabled (CCCD write status=$status)")
-            } else {
-                log("HR-strap: WARNING CCCD write FAILED (status=$status) — strap will send no HR data")
+            handler.post {
+                guardedCallback("descriptor-write") {
+                    val characteristicUuid = descriptor.characteristic.uuid
+                    completeGattSetupOperation(g, status) {
+                        it is SetupGattOperation.EnableNotifications &&
+                            it.characteristic.uuid == characteristicUuid
+                    }
+                }
             }
         }
 
@@ -481,6 +477,7 @@ class StandardHrSource(
             ch: BluetoothGattCharacteristic,
             value: ByteArray,
         ) {
+            if (gatt !== g) return
             when (ch.uuid) {
                 HEART_RATE_CHAR -> handleHr(value)
                 in FITNESS_SENSOR_UUID16.keys -> handleFitnessSensor(ch.uuid, value)
@@ -491,6 +488,7 @@ class StandardHrSource(
         @Deprecated("Deprecated in Java")
         @Suppress("DEPRECATION")
         override fun onCharacteristicChanged(g: BluetoothGatt, ch: BluetoothGattCharacteristic) {
+            if (gatt !== g) return
             when (ch.uuid) {
                 HEART_RATE_CHAR -> handleHr(ch.value ?: return)
                 in FITNESS_SENSOR_UUID16.keys -> handleFitnessSensor(ch.uuid, ch.value ?: return)
@@ -504,14 +502,232 @@ class StandardHrSource(
             value: ByteArray,
             status: Int,
         ) {
-            if (ch.uuid == BATTERY_CHAR && status == BluetoothGatt.GATT_SUCCESS) handleBattery(value)
+            val snapshot = value.copyOf()
+            handler.post { handleGattCharacteristicRead(g, ch.uuid, snapshot, status) }
         }
 
         @Deprecated("Deprecated in Java")
         @Suppress("DEPRECATION")
         override fun onCharacteristicRead(g: BluetoothGatt, ch: BluetoothGattCharacteristic, status: Int) {
-            if (ch.uuid == BATTERY_CHAR && status == BluetoothGatt.GATT_SUCCESS) handleBattery(ch.value ?: return)
+            val value = ch.value?.copyOf() ?: byteArrayOf()
+            handler.post { handleGattCharacteristicRead(g, ch.uuid, value, status) }
         }
+    }
+
+    private fun beginServiceDiscovery(g: BluetoothGatt) = guardedCallback("service-discovery start") {
+        if (gatt !== g) return@guardedCallback
+        val started = runCatching { g.discoverServices() }.getOrElse {
+            log("HR-strap: service discovery start error (${it.javaClass.simpleName}: ${it.message})")
+            false
+        }
+        if (!started) {
+            log("HR-strap: service discovery request was rejected — reconnecting")
+            abortGattSetupAndReconnect(g)
+            return@guardedCallback
+        }
+        handler.removeCallbacks(serviceDiscoveryTimeoutRunnable)
+        handler.postDelayed(serviceDiscoveryTimeoutRunnable, GATT_SETUP_TIMEOUT_MS)
+    }
+
+    private fun configureDiscoveredServices(g: BluetoothGatt, status: Int): Unit = guardedCallback("services-discovered") {
+        if (gatt !== g) {
+            log("HR-strap: ignoring stale services-discovered callback")
+            return@guardedCallback
+        }
+        handler.removeCallbacks(serviceDiscoveryTimeoutRunnable)
+        log("HR-strap: services discovered (status=$status)")
+        if (status != BluetoothGatt.GATT_SUCCESS) {
+            log("HR-strap: WARNING service discovery failed (status=$status) — reconnecting")
+            abortGattSetupAndReconnect(g)
+            return@guardedCallback
+        }
+        val svc = g.getService(HEART_RATE_SERVICE)
+        if (svc == null) {
+            log("HR-strap: 0x180D heart-rate service NOT FOUND after filtered scan — reconnecting")
+            abortGattSetupAndReconnect(g)
+            return@guardedCallback
+        }
+        log("HR-strap: 0x180D heart-rate service FOUND")
+        val hr = svc.getCharacteristic(HEART_RATE_CHAR)
+        if (hr == null) {
+            log("HR-strap: 0x2A37 measurement characteristic NOT FOUND — reconnecting")
+            abortGattSetupAndReconnect(g)
+            return@guardedCallback
+        }
+        log("HR-strap: 0x2A37 measurement characteristic found")
+        if (hr.getDescriptor(CCCD) == null) {
+            log("HR-strap: WARNING 0x2A37 has no CCCD (0x2902) — reconnecting")
+            abortGattSetupAndReconnect(g)
+            return@guardedCallback
+        }
+
+        resetGattSetupQueue()
+        setupQueue.enqueue(SetupGattOperation.EnableNotifications(
+            characteristic = hr,
+            label = "heart-rate notification setup",
+            requiredForHr = true,
+        ))
+
+        // Read Battery Level only after the HR CCCD callback releases Android's single GATT slot.
+        g.getService(BATTERY_SERVICE)?.getCharacteristic(BATTERY_CHAR)?.let { battery ->
+            log("HR-strap: 0x180F battery service found — queueing level read")
+            setupQueue.enqueue(SetupGattOperation.Read(
+                characteristic = battery,
+                label = "battery read",
+            ))
+        }
+
+        // Additive RSC/CSC/CPS subscriptions follow in the same queue. A missing optional CCCD is skipped
+        // without affecting the required HR subscription or any later operation.
+        for ((svcUuid, charUuid) in FITNESS_SENSOR_CHARS) {
+            val sensor = g.getService(svcUuid)?.getCharacteristic(charUuid) ?: continue
+            if (sensor.getDescriptor(CCCD) == null) {
+                log("HR-strap: WARNING $charUuid has no CCCD (0x2902) — skipping optional notifications")
+                continue
+            }
+            log("HR-strap: fitness-sensor characteristic $charUuid found — queueing notifications")
+            setupQueue.enqueue(SetupGattOperation.EnableNotifications(
+                characteristic = sensor,
+                label = "fitness-sensor $charUuid notification setup",
+                requiredForHr = false,
+            ))
+        }
+        drainGattSetupQueue(g)
+    }
+
+    /** Start exactly one queued read/CCCD write. The matching callback is the only path to the next item. */
+    private fun drainGattSetupQueue(g: BluetoothGatt): Unit = guardedCallback("GATT setup") {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post { drainGattSetupQueue(g) }
+            return@guardedCallback
+        }
+        if (gatt !== g) return@guardedCallback
+        val operation = setupQueue.beginNext()
+        if (operation == null) {
+            if (setupQueue.isIdle) {
+                failedReconnectAttempts = 0
+                log("HR-strap: GATT setup complete — all queued operations finished")
+            }
+            return@guardedCallback
+        }
+
+        val started = runCatching {
+            when (operation) {
+                is SetupGattOperation.EnableNotifications -> startNotificationSetup(g, operation.characteristic)
+                is SetupGattOperation.Read -> g.readCharacteristic(operation.characteristic)
+            }
+        }.getOrElse {
+            log("HR-strap: ${operation.label} start error (${it.javaClass.simpleName}: ${it.message})")
+            false
+        }
+
+        if (started) {
+            log("HR-strap: ${operation.label} requested")
+            handler.removeCallbacks(setupTimeoutRunnable)
+            handler.postDelayed(setupTimeoutRunnable, GATT_SETUP_TIMEOUT_MS)
+            return@guardedCallback
+        }
+
+        val rejection = setupQueue.rejectCurrentStart() ?: return@guardedCallback
+        if (rejection.willRetry) {
+            log("HR-strap: ${operation.label} busy — retrying start " +
+                "${rejection.rejectionNumber}/$MAX_GATT_START_RETRIES")
+            handler.removeCallbacks(setupRetryRunnable)
+            handler.postDelayed(setupRetryRunnable, GATT_START_RETRY_DELAY_MS)
+        } else {
+            when (gattOperationFailureAction(operation.requiredForHr)) {
+                GattOperationFailureAction.RECONNECT -> {
+                    log("HR-strap: ${operation.label} could not start — reconnecting")
+                    abortGattSetupAndReconnect(g)
+                }
+                GattOperationFailureAction.SKIP_OPTIONAL -> {
+                    log("HR-strap: ${operation.label} could not start — skipping optional operation")
+                    drainGattSetupQueue(g)
+                }
+            }
+        }
+    }
+
+    private fun startNotificationSetup(g: BluetoothGatt, ch: BluetoothGattCharacteristic): Boolean {
+        if (!g.setCharacteristicNotification(ch, true)) return false
+        val cccd = ch.getDescriptor(CCCD) ?: return false
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            g.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) ==
+                BluetoothGatt.GATT_SUCCESS
+        } else {
+            @Suppress("DEPRECATION")
+            run {
+                cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                g.writeDescriptor(cccd)
+            }
+        }
+    }
+
+    private fun completeGattSetupOperation(
+        g: BluetoothGatt,
+        status: Int,
+        matches: (SetupGattOperation) -> Boolean,
+    ): Unit = guardedCallback("GATT setup callback") {
+        if (gatt !== g) return@guardedCallback
+        val completed = setupQueue.completeIf(matches) ?: return@guardedCallback
+        handler.removeCallbacks(setupTimeoutRunnable)
+        if (status == BluetoothGatt.GATT_SUCCESS) {
+            log("HR-strap: ${completed.label} completed")
+            drainGattSetupQueue(g)
+        } else {
+            when (gattOperationFailureAction(completed.requiredForHr)) {
+                GattOperationFailureAction.RECONNECT -> {
+                    log("HR-strap: WARNING ${completed.label} failed (status=$status) — reconnecting")
+                    abortGattSetupAndReconnect(g)
+                }
+                GattOperationFailureAction.SKIP_OPTIONAL -> {
+                    log("HR-strap: WARNING ${completed.label} failed (status=$status) — continuing")
+                    drainGattSetupQueue(g)
+                }
+            }
+        }
+    }
+
+    private fun handleGattCharacteristicRead(
+        g: BluetoothGatt,
+        characteristicUuid: UUID,
+        value: ByteArray,
+        status: Int,
+    ): Unit = guardedCallback("characteristic-read") {
+        if (gatt !== g) return@guardedCallback
+        if (characteristicUuid == BATTERY_CHAR && status == BluetoothGatt.GATT_SUCCESS) {
+            handleBattery(value)
+        }
+        completeGattSetupOperation(g, status) {
+            it is SetupGattOperation.Read && it.characteristic.uuid == characteristicUuid
+        }
+    }
+
+    private fun resetGattSetupQueue() {
+        handler.removeCallbacks(serviceDiscoveryTimeoutRunnable)
+        handler.removeCallbacks(setupRetryRunnable)
+        handler.removeCallbacks(setupTimeoutRunnable)
+        setupQueue.clear()
+    }
+
+    /** Close a wedged setup session and enter the same bounded reconnect loop as a real disconnect. */
+    private fun abortGattSetupAndReconnect(g: BluetoothGatt) {
+        if (gatt !== g) return
+        resetGattSetupQueue()
+        loggedFirstHr = false
+        loggedFirstSensor = false
+        _batteryPct.value = null
+        flush()
+        clearSensorState()
+        disconnectAndClose(g)
+        gatt = null
+        scheduleReconnect()
+    }
+
+    /** Always attempt close even when disconnect throws because the Android binder is already dead. */
+    private fun disconnectAndClose(g: BluetoothGatt) {
+        runCatching { g.disconnect() }
+        runCatching { g.close() }
     }
 
     /**
@@ -533,25 +749,6 @@ class StandardHrSource(
         log("HR-strap: battery $pct%")
         _batteryPct.value = pct
         handler.post { guardedCallback("battery-sink") { onBattery(pct) } }
-    }
-
-    /** Enable notifications on a fitness-sensor characteristic (setCharacteristicNotification + the
-     *  explicit CCCD write). Kept separate from the inline HR enablement so the HR path is untouched. */
-    private fun enableFitnessNotify(g: BluetoothGatt, ch: BluetoothGattCharacteristic) = guardedCallback("sensor-notify") {
-        g.setCharacteristicNotification(ch, true)
-        val cccd = ch.getDescriptor(CCCD) ?: run {
-            log("HR-strap: WARNING ${ch.uuid} has no CCCD (0x2902) — cannot enable notifications")
-            return@guardedCallback
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            g.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
-        } else {
-            @Suppress("DEPRECATION")
-            run {
-                cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                g.writeDescriptor(cccd)
-            }
-        }
     }
 
     /**
@@ -594,6 +791,9 @@ class StandardHrSource(
     }
 
     companion object {
+        private const val MAX_GATT_START_RETRIES = 3
+        private const val GATT_START_RETRY_DELAY_MS = 250L
+        private const val GATT_SETUP_TIMEOUT_MS = 8_000L
         /** Standard BLE Heart Rate service + measurement characteristic + the CCCD. */
         val HEART_RATE_SERVICE: UUID = UUID.fromString("0000180d-0000-1000-8000-00805f9b34fb")
         val HEART_RATE_CHAR: UUID = UUID.fromString("00002a37-0000-1000-8000-00805f9b34fb")

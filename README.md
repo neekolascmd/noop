@@ -82,7 +82,7 @@ Everything runs **offline**. The only feature that ever uses the network is the 
 | Device | What works | What's next |
 |---|---|---|
 | **Oura Ring 4** | Stored-key BLE auth, live HR + R-R, history/skin-temp fetch, overnight sleep windows — on macOS and Android (hardware-recorded, [qualification data](docs/HARDWARE_SUPPORT.md)) | Reference sensor, out-of-range reconnect, full 24 h run; sleep stages and SpO₂ still experimental. Ring 3, iOS not yet recorded. |
-| **Standard BLE HR devices** (Polar, Wahoo, Garmin HRM, Coospo, Amazfit broadcast) | Live HR + R-R via standard `0x180D` / `0x2A37` since v3.8.0; automatic reconnect after link drops | No per-model firmware matrix recorded. Report each model. |
+| **Standard BLE HR devices** (Polar, Wahoo, Garmin HRM, Coospo, Amazfit broadcast) | Live HR + R-R via standard `0x180D` / `0x2A37` since v3.8.0; automatic reconnect after link drops; serialized Android GATT setup for reliable HR, battery, and optional fitness-sensor subscriptions | No per-model firmware matrix recorded. Report each model. |
 | **Xiaomi Smart Band 8 / 9 / 10** | Offline Mi Fitness SQLite import (one real Band 10 export verified) | Bands 8/9 need own exports; live BLE sync planned. |
 | **Oura / Fitbit / Garmin exports** | Offline wellness-export import with shared Swift/Kotlin fixtures | Capture fresh exports per vendor app version. |
 
