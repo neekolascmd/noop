@@ -11,6 +11,8 @@ platform-specific; see the [hardware graduation gate](HARDWARE_SUPPORT.md#oura-g
 - **[open_oura-r3]** - Th0rgal/open_oura `docs/horizon-ring3-protocol-cheatsheet.md` (no-license; Ring 3).
 - **[open_oura-r5]** - Th0rgal/open_oura `docs/ring-5-observations.md` (Ring 5).
 - **[open_oura-feat]** - Th0rgal/open_oura `docs/ring-features.md` (feature gating).
+- **[open_oura-spo2]** - Th0rgal/open_oura `docs/spo2-calibration.md` (no-license; app-side
+  calibration facts and Ring 5 overnight evidence, facts only).
 - **[relue]** - relue/oura_ring_reverse `docs/.../heartbeat_replication_guide.md` and `heartbeat_complete_flow.md` (no-license; Ring 3 live-HR).
 - **[oura-rs]** - Th0rgal/open_oura `crates/oura-protocol/src/events.rs` (no-license Rust clean-room decoder; facts cited only, no code copied). Its event tags marked `"_status": "unvalidated"` are treated the same as our Tier B - plausible, not ground-truth-confirmed.
 
@@ -355,14 +357,15 @@ All records share the §2.3 TLV header (`type`, `len`, 4-byte `ringTimestamp`). 
 - 7 amplitudes: first `byte<<3`, rest `byte<<shift`. [ringverse]
 
 ### 6.4 Green IBI quality - `0x80` `green_ibi_quality_event` (4–18 B, 2 B/sample)
-Per 16-bit LE sample: [open_ring][ringverse]
+Each two-byte sample is a split bitfield (not a little-endian integer): [oura-rs]
 ```
-bits 0–10  : value_11bit  → IBI in ms
-bits 11–13 : qual_a
-bits 14–15 : qual_b
+IBI ms  = (byte0 << 3) | (byte1 & 0x07)
+quality = (byte1 >> 3) & 0x03
+flags   = byte1 >> 5
 ```
-**NOOP filter:** accept sample only if `qual_a ≤ 1 && qual_b == 0`. [open_ring]
-(7 samples per 14-byte record.) [open_ring]
+**NOOP filter:** accept quality `1` and a physiological `300...2000 ms` IBI. Quality `0`/`2` and
+out-of-range values are withheld rather than allowed to corrupt HRV/recovery. Seven samples fit in a
+14-byte record. [oura-rs]
 
 ### 6.5 SpO2 per-sample - `0x6F` `spo2_event` (5–18 B, 1 s spacing)
 - Byte 6 is a status/header field; it is **not** added to the following values. [ringverse]
@@ -380,6 +383,26 @@ bits 14–15 : qual_b
 - Byte 6: bit`[7]`=HDR low bit; bit`[6]`=`hasBase`; bits`[5:4]`=scale shift. [ringverse]
 - If `hasBase`: bytes 7–9 = 24-bit LE base. [ringverse]
 - Remaining: sign-magnitude int8 deltas; `v=(int8)raw; mag=|v|<<scale; out = v<0 ? -mag : mag`, accumulated. [ringverse]
+
+### 6.7a SpO2 ratio + perfusion - `0x8B` `spo2_r_pi_event` (4+ B body)
+- One header byte, then an exact multiple of three-byte samples. Each sample is `R:u16 BE / 16384`
+  followed by `PI:u8 / 255 × 0.05`. A short body or trailing partial sample is rejected. [oura-rs]
+- `R` is a ratio of ratios and `PI` is perfusion index; neither is an oxygen percentage. NOOP keeps
+  the lossless Q14 and u8 arrays in an `OURA_SPO2_RATIO_PI` event. Sample cadence is not qualified, so
+  a record stays grouped at its real ring timestamp instead of receiving invented timestamps.
+- Oura's app-side "SpO2 Simple" approximation is `a×R² + b×R + c`, clamped to 85...100%.
+  Gen 4 / Oreo uses `(-13.4, -5.1, 105.2)`; Cooper uses `(-12.1, -6.9, 106.3)`. [open_oura-spo2]
+- NOOP preserves every valid app-side result as `calibrated_tenths_percent_samples` plus matching
+  `calibrated_sample_indices` inside the diagnostic event. It does not invent per-sample timestamps,
+  collapse variable-size records to equally weighted means, or promote the estimates to the unlabelled
+  daily oxygen metric / Health Connect before hardware and reference-sensor qualification. PI remains
+  available for later quality research; no undocumented threshold is invented. Gen 3 has no qualified
+  profile. Ring 5's coefficient mapping is unconfirmed, so NOOP applies no automatic Ring 5 profile;
+  the Cooper coefficients remain an explicit research option. Firmware-native `0x6F` percentages remain
+  separately tagged `tenths_percent` and retain precedence as production oxygen readings.
+- Ring 5 has real overnight evidence for `0x8B`; no `0x8B` emission was recorded from the available
+  Ring 4's previous retained bank. Ring 4 support therefore remains software-ready but
+  hardware-unqualified until a fresh overnight inventory records tag `0x8B`. [open_oura-spo2]
 
 ### 6.8 Skin temperature
 - **`0x46` `temp_event`** (10–18 B, even len): up to 7 samples, each **int16 LE ÷ 100 = °C**. [ringverse]
@@ -486,7 +509,7 @@ bits 14–15 : qual_b
 ### 7.3 NOOP decoder build guidance
 1. **Single TLV parser** (§2.3) for all generations - the framing is generation-invariant. Branch only on: MTU clamp (203 vs 247) and Gen-4/5 extra-char presence (discover but ignore in v1).
 2. **Generation detection:** read product info (`0x18 03 18 00 10`) → hardware id (`ORE_06` on the tested Ring 4), and firmware (`0x08`). Map to Gen 3/4/5 to set MTU and pick verified-vs-unverified layout confidence.
-3. **Trust tiers in the decoder:** Tier A (verified, ship now) = TLV framing, auth, GetEvents cursor, live-HR `0x02`, `0x60`/`0x80` IBI, `0x46`/`0x69`/`0x75` temp, Ring 4 `0x6F` percentage SpO2 plus raw `0x77` DC, `0x6A` raw sleep-period measurements, `0x76` bedtime bounds, `0x42` time-sync, `0x0D` battery, `0x45`/`0x53` state, `0x6B` motion. Tier B (UNVERIFIED, fixture-gate before use) = sleep summaries/stage cadence, `0x50/0x51/0x52` activity-MET, `0x7E/0x7F` steps, legacy `0x70`/`0x7B` on Ring 4, the protobuf `0x55/0x59` interpretation (do **not** ship).
+3. **Trust tiers in the decoder:** Tier A (hardware-backed, may feed production metrics) = TLV framing, auth, GetEvents cursor, live-HR `0x02`, `0x60` IBI, `0x46`/`0x69`/`0x75` temp, Ring 4 `0x6F` percentage SpO2 plus raw `0x77` DC, `0x6A` raw sleep-period measurements, `0x76` bedtime bounds, `0x42` time-sync, `0x0D` battery, `0x45`/`0x53` state, `0x6B` motion. The corrected `0x80` layout is also Tier A: external real Ring 5 captures contain more than 1,100 coherent beats and validate the split-bitfield layout; a repository-owned capture remains useful corroboration, not a production gate. Diagnostic = decoded investigation evidence that cannot feed production metrics; `0x8B` raw ratio/PI and its explicitly labelled simple-calibration evidence remain here until the available Ring 4 emits a local fixture and passes reference-sensor comparison. Tier B (UNVERIFIED, fixture-gate before use) items = sleep summaries/stage cadence, `0x50/0x51/0x52` activity-MET, `0x7E/0x7F` steps, legacy `0x70`/`0x7B` on Ring 4, the protobuf `0x55/0x59` interpretation (do **not** ship).
 4. **HRV/sleep:** consume `0x5D` HRV, preserve `0x6A` without naming its states, and use `0x76` for stage-less sleep bounds. `0x4E` phase bits remain experimental until a real Ring 4 fixture proves cadence/direction; `0x5A` is not a canonical pinned Ring 4 tag. Never read Oura feature `0x06` (encrypted API).
 
 ### 7.4 Passive record inventory

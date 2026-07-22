@@ -1246,6 +1246,13 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 }
                 parkHistoryEvent(e, ringTimestamp: s.ringTimestamp)
 
+            case .spo2Ratio(let record, _):
+                if !loggedFirstSpo2 {
+                    loggedFirstSpo2 = true
+                    log("Oura: raw SpO2 ratio history decoded")
+                }
+                parkHistoryEvent(e, ringTimestamp: record.ringTimestamp)
+
             case .hrv(let v):
                 parkHistoryEvent(e, ringTimestamp: v.ringTimestamp)
 

@@ -4,13 +4,15 @@ import Foundation
 // s2.3 / s6). Every tag carries an explicit trust tier so Tier-B (UNVERIFIED) layouts can never feed
 // values into scoring silently. Facts cited per OURA_PROTOCOL.md s6 / s7.3.
 
-/// Decoder trust tier. Tier A is verified against the byte-for-byte corpus and ships live. Tier B is
-/// attested by a single no-license / AI-generated doc and MUST pass a real-capture fixture before
-/// scoring trusts it (the OuraDriver gates Tier-B emission behind an explicit flag). Per the brief's
-/// TIER DISCIPLINE rule and OURA_PROTOCOL.md s7.3.
+/// Decoder trust tier. Tier A is hardware-backed and may feed production metrics. Diagnostic tags
+/// preserve useful, plausibly decoded evidence but are explicitly barred from production metrics
+/// until their hardware-qualification gate passes. Tier B is unverified and MUST pass a real-capture
+/// fixture before scoring trusts it (the OuraDriver gates Tier-B emission behind an explicit flag).
+/// Per the brief's TIER DISCIPLINE rule and OURA_PROTOCOL.md s7.3.
 public enum TrustTier: String, Sendable, Equatable, Codable {
-    case tierA   // verified, ship now
-    case tierB   // UNVERIFIED, fixture-gate before use
+    case tierA       // hardware-backed, may feed production metrics
+    case diagnostic  // decoded for investigation, never a production metric
+    case tierB       // UNVERIFIED, fixture-gate before use
 }
 
 /// The Oura inner-event-record tag. Raw value == the `type` byte (>= 0x41 per OURA_PROTOCOL.md s2.3).
@@ -34,10 +36,11 @@ public enum OuraEventTag: UInt8, Sendable, CaseIterable, Codable {
     // --- HRV / RMSSD (Tier A) ---
     case hrvRmssd         = 0x5D   // hrv_event (ring's own RMSSD-derived HRV), OURA_PROTOCOL.md s6.9
 
-    // --- SpO2 (Tier A) ---
+    // --- SpO2 (Tier A unless explicitly diagnostic) ---
     case spo2PerSample    = 0x6F   // spo2_event per-second, OURA_PROTOCOL.md s6.5
     case spo2Stable       = 0x7B   // spo2_stable_event (uint16 BIG-endian), OURA_PROTOCOL.md s6.6
     case spo2Dc           = 0x77   // spo2_dc_event (sign-magnitude deltas), OURA_PROTOCOL.md s6.7
+    case spo2RatioPI      = 0x8B   // experimental diagnostic ratio/PI evidence, OURA_PROTOCOL.md s6.7a
 
     // --- Temperature (Tier A) ---
     case temp             = 0x46   // temp_event (int16 LE / 100), OURA_PROTOCOL.md s6.8
@@ -81,6 +84,8 @@ public enum OuraEventTag: UInt8, Sendable, CaseIterable, Codable {
     /// behind an explicit allowTierB flag. Per OURA_PROTOCOL.md s7.3 and the brief's TIER DISCIPLINE.
     public var tier: TrustTier {
         switch self {
+        case .spo2RatioPI:
+            return .diagnostic
         case .sleepSummary1, .sleepSummaryB, .sleepSummaryC, .sleepSummaryD, .sleepSummaryE,
              .sleepSummaryF, .activityInfo, .activitySummary1, .activitySummary2,
              .realSteps1, .realSteps2, .spo2Smoothed:
@@ -108,6 +113,7 @@ public enum OuraEventTag: UInt8, Sendable, CaseIterable, Codable {
         case .spo2PerSample: return "SPO2_PER_SAMPLE"
         case .spo2Stable: return "SPO2_STABLE"
         case .spo2Dc: return "SPO2_DC"
+        case .spo2RatioPI: return "SPO2_RATIO_PI"
         case .temp: return "TEMP"
         case .tempPeriod: return "TEMP_PERIOD"
         case .sleepTemp: return "SLEEP_TEMP"

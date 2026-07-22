@@ -534,7 +534,7 @@ public final class OuraDriver {
         case .hrvRmssd:
             return (OuraDecoders.decodeHRV(record) ?? []).map { OuraEvent.hrv($0) }
 
-        // --- Tier A: SpO2 ---
+        // --- SpO2 (0x8B is diagnostic-only in downstream mapping) ---
         case .spo2PerSample:
             return (OuraDecoders.decodeSpO2PerSample(record) ?? []).map { OuraEvent.spo2($0) }
         case .spo2Stable:
@@ -542,6 +542,10 @@ public final class OuraDriver {
             return []
         case .spo2Dc:
             return (OuraDecoders.decodeSpO2DC(record) ?? []).map { OuraEvent.spo2($0) }
+        case .spo2RatioPI:
+            guard let value = OuraDecoders.decodeSpO2RatioPI(record) else { return [] }
+            return [.spo2Ratio(value,
+                               calibrationProfile: OuraSpO2CalibrationProfile.forRingGeneration(ringGen))]
 
         // --- Tier A: Temperature ---
         case .temp:

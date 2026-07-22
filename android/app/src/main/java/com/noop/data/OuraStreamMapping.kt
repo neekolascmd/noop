@@ -40,6 +40,9 @@ object OuraStreamMapping {
     /** Verified 0x6A measurements; the unnamed state is preserved raw, never promoted to a stage. */
     const val EVENT_SLEEP_PERIOD = "OURA_SLEEP_PERIOD"
 
+    /** Lossless raw `0x8B` record alongside any explicitly calibrated estimate. */
+    const val EVENT_SPO2_RATIO_PI = "OURA_SPO2_RATIO_PI"
+
     /**
      * Fold a batch of decoded [events] into a protocol [Streams] for one flush. [anchor] maps a
      * ring-clock timestamp to wall-clock unix seconds (null => drop the sample). Pure: no BLE, no DB,
@@ -94,6 +97,31 @@ object OuraStreamMapping {
                             unit = "tenths_percent",
                         ),
                     )
+                }
+
+                is OuraEvent.Spo2Ratio -> {
+                    val ts = anchor(ev.value.ringTimestamp) ?: continue
+                    val payload = linkedMapOf<String, Any?>(
+                        "header" to ev.value.header,
+                        "ratio_q14" to ev.value.samples.map { it.ratioQ14 },
+                        "perfusion_u8" to ev.value.samples.map { it.perfusionRaw },
+                        "calibration_profile" to (ev.calibrationProfile?.raw ?: "none"),
+                    )
+                    ev.calibrationProfile?.let { profile ->
+                        val calibrated = ev.value.samples.mapIndexedNotNull { index, sample ->
+                            profile.calibratedTenthsPercent(sample.ratio)
+                                ?.takeIf { it in 850..1_000 }
+                                ?.let { index to it }
+                        }
+                        if (calibrated.isNotEmpty()) {
+                            payload["calibrated_sample_indices"] = calibrated.map { it.first }
+                            payload["calibrated_tenths_percent_samples"] = calibrated.map { it.second }
+                        }
+                    }
+                    // Keep app-side estimates out of the production SpO2 stream: that stream feeds the
+                    // unlabelled daily metric and Android Health Connect. The explicitly profiled sample
+                    // array remains in this diagnostic event until hardware/reference qualification.
+                    out.events.add(WhoopEvent(ts, EVENT_SPO2_RATIO_PI, payload))
                 }
 
                 is OuraEvent.Temp -> {

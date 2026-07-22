@@ -7,6 +7,9 @@ import com.noop.oura.OuraIBI
 import com.noop.oura.OuraSleepPhase
 import com.noop.oura.OuraSleepStage
 import com.noop.oura.OuraSpO2
+import com.noop.oura.OuraSpO2CalibrationProfile
+import com.noop.oura.OuraSpO2RatioRecord
+import com.noop.oura.OuraSpO2RatioSample
 import com.noop.oura.OuraTemp
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -99,6 +102,27 @@ class OuraStreamMappingTest {
         assertEquals(0, s.spo2.first().ir) // unread channel, never a fabricated second reading
         assertEquals("tenths_percent", s.spo2.first().unit)
         assertEquals(base, s.spo2.first().ts)
+    }
+
+    @Test
+    fun spo2RatioPreservesRawRecordAndLabelsDerivedEstimate() {
+        val raw = OuraSpO2RatioRecord(5, 0xA5, listOf(
+            OuraSpO2RatioSample(0x3000, 128), OuraSpO2RatioSample(0x3333, 64),
+        ))
+        val s = OuraStreamMapping.streams(
+            listOf(OuraEvent.Spo2Ratio(raw, OuraSpO2CalibrationProfile.GEN4_OREO)), anchor,
+        )
+        assertTrue(s.spo2.isEmpty())
+        assertEquals(OuraStreamMapping.EVENT_SPO2_RATIO_PI, s.events.single().kind)
+        assertEquals(listOf(0x3000, 0x3333), s.events.single().payload["ratio_q14"])
+        assertEquals(listOf(128, 64), s.events.single().payload["perfusion_u8"])
+        assertEquals("gen4_oreo", s.events.single().payload["calibration_profile"])
+        assertEquals(listOf(0, 1), s.events.single().payload["calibrated_sample_indices"])
+        assertEquals(listOf(938, 925), s.events.single().payload["calibrated_tenths_percent_samples"])
+
+        val uncalibrated = OuraStreamMapping.streams(listOf(OuraEvent.Spo2Ratio(raw, null)), anchor)
+        assertTrue(uncalibrated.spo2.isEmpty())
+        assertEquals("none", uncalibrated.events.single().payload["calibration_profile"])
     }
 
     @Test

@@ -130,9 +130,10 @@ object OuraDecoders {
     // MARK: - Green IBI quality, 2 bytes/sample (0x80; s6.4)
 
     /**
-     * Decode the 0x80 green_ibi_quality_event: per 16-bit LE sample, bits 0-10 = IBI ms,
-     * bits 11-13 = qual_a, bits 14-15 = qual_b. Accept a sample only if qual_a <= 1 && qual_b == 0.
-     * 7 samples per 14-byte record. Per OURA_PROTOCOL.md s6.4. Returns null on a short/odd body.
+     * Decode the 0x80 green_ibi_quality_event. Each two-byte sample is a split bitfield:
+     * IBI ms = (byte0 << 3) | byte1[2:0], quality = byte1[4:3]. Quality 1 is accepted; the
+     * remaining high bits are flags, not part of the IBI. Per OURA_PROTOCOL.md s6.4.
+     * Returns null on a short/odd body.
      *
      * ROBUSTNESS (s6.4): the record holds at most 7 samples (14 bytes at 2 B/sample). We cap the read
      * at 7 samples; any sample bytes beyond the 7th are a misframe and are ignored rather than decoded.
@@ -145,11 +146,9 @@ object OuraDecoders {
         var i = 0
         var sampleCount = 0
         while (i + 1 < b.size && sampleCount < maxSamples) {
-            val sample = u16le(b, i)
-            val ibi = sample and 0x07FF                 // bits 0-10
-            val qualA = (sample shr 11) and 0x07        // bits 11-13
-            val qualB = (sample shr 14) and 0x03        // bits 14-15
-            if (qualA <= 1 && qualB == 0 && ibi > 0) {
+            val ibi = (b[i] shl 3) or (b[i + 1] and 0x07)
+            val quality = (b[i + 1] shr 3) and 0x03
+            if (quality == 1 && ibi in 300..2_000) {
                 out.add(OuraIBI(ringTimestamp = rec.ringTimestamp, ibiMs = ibi))
             }
             i += 2
@@ -281,6 +280,26 @@ object OuraDecoders {
             i += 1
         }
         return if (out.isEmpty()) null else out
+    }
+
+    // MARK: - SpO2 ratio + perfusion index (0x8B; s6.7a)
+
+    /**
+     * Decode `0x8B spo2_r_pi_event`: one header byte followed by exact three-byte samples.
+     * Each sample is a big-endian Q14 R ratio plus one unsigned perfusion byte. Raw integers stay
+     * lossless; calibration is generation-aware and happens after dispatch.
+     */
+    fun decodeSpO2RatioPI(rec: OuraRecord): OuraSpO2RatioRecord? {
+        val b = rec.payload
+        if (b.size < 4 || (b.size - 1) % 3 != 0) return null
+        val samples = ArrayList<OuraSpO2RatioSample>()
+        var i = 1
+        while (i + 2 < b.size) {
+            samples.add(OuraSpO2RatioSample(ratioQ14 = u16be(b, i), perfusionRaw = b[i + 2]))
+            i += 3
+        }
+        if (samples.isEmpty()) return null
+        return OuraSpO2RatioRecord(rec.ringTimestamp, header = b[0], samples = samples)
     }
 
     // MARK: - Temperature (0x46 / 0x69 / 0x75; s6.8)

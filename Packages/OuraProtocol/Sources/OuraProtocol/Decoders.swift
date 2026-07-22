@@ -119,9 +119,10 @@ public enum OuraDecoders {
 
     // MARK: - Green IBI quality, 2 bytes/sample (0x80; s6.4)
 
-    /// Decode the 0x80 green_ibi_quality_event: per 16-bit LE sample, bits 0-10 = IBI ms,
-    /// bits 11-13 = qual_a, bits 14-15 = qual_b. Accept a sample only if qual_a <= 1 && qual_b == 0.
-    /// 7 samples per 14-byte record. Per OURA_PROTOCOL.md s6.4. Returns nil on a short/odd body.
+    /// Decode the 0x80 green_ibi_quality_event. Each two-byte sample is a split bitfield:
+    /// IBI ms = (byte0 << 3) | byte1[2:0], quality = byte1[4:3]. Quality 1 is accepted; the
+    /// remaining high bits are flags, not part of the IBI. Per OURA_PROTOCOL.md s6.4.
+    /// Returns nil on a short/odd body.
     ///
     /// ROBUSTNESS (s6.4): the record holds at most 7 samples (14 bytes at 2 B/sample). We cap the read
     /// at 7 samples; any sample bytes beyond the 7th are a misframe and are ignored rather than decoded.
@@ -133,11 +134,9 @@ public enum OuraDecoders {
         var i = 0
         var sampleCount = 0
         while i + 1 < b.count && sampleCount < maxSamples {
-            let sample = u16le(b, i)
-            let ibi = sample & 0x07FF                 // bits 0-10
-            let qualA = (sample >> 11) & 0x07         // bits 11-13
-            let qualB = (sample >> 14) & 0x03         // bits 14-15
-            if qualA <= 1 && qualB == 0 && ibi > 0 {
+            let ibi = (Int(b[i]) << 3) | (Int(b[i + 1]) & 0x07)
+            let quality = (Int(b[i + 1]) >> 3) & 0x03
+            if quality == 1 && (300...2_000).contains(ibi) {
                 out.append(OuraIBI(ringTimestamp: rec.ringTimestamp, ibiMs: ibi))
             }
             i += 2
@@ -256,6 +255,26 @@ public enum OuraDecoders {
             i += 1
         }
         return out.isEmpty ? nil : out
+    }
+
+    // MARK: - SpO2 ratio + perfusion index (0x8B; s6.7a)
+
+    /// Decode `0x8B spo2_r_pi_event`: one header byte followed by exact three-byte samples.
+    /// Each sample is a big-endian Q14 R ratio plus one unsigned perfusion byte. The raw integers
+    /// are retained losslessly; calibration is generation-aware and happens after dispatch.
+    public static func decodeSpO2RatioPI(_ rec: OuraRecord) -> OuraSpO2RatioRecord? {
+        let b = rec.payload
+        guard b.count >= 4, (b.count - 1).isMultiple(of: 3) else { return nil }
+        var samples: [OuraSpO2RatioSample] = []
+        var i = 1
+        while i + 2 < b.count {
+            samples.append(OuraSpO2RatioSample(ratioQ14: u16be(b, i),
+                                               perfusionRaw: Int(b[i + 2])))
+            i += 3
+        }
+        guard !samples.isEmpty else { return nil }
+        return OuraSpO2RatioRecord(ringTimestamp: rec.ringTimestamp,
+                                   header: b[0], samples: samples)
     }
 
     // MARK: - Temperature (0x46 / 0x69 / 0x75; s6.8)

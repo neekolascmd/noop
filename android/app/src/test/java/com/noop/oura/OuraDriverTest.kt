@@ -687,6 +687,29 @@ class OuraDriverTest {
     }
 
     @Test
+    fun testIngestRoutesQualifiedGreenIBIWithoutReinterpretingBytes() {
+        val d = OuraDriver(ringGen = OuraRingGen.GEN5, authKey = key)
+        val rec = OuraFraming.parseRecord(bytes("8008020001007d087d10"))!!
+        assertEquals(listOf(OuraEvent.Ibi(OuraIBI(ringTimestamp = rt, ibiMs = 1000))), d.ingest(rec))
+    }
+
+    @Test
+    fun testIngestRoutesSpO2RatioWithGenerationProfile() {
+        val d = OuraDriver(ringGen = OuraRingGen.GEN4, authKey = key)
+        val rec = OuraFraming.parseRecord(bytes("8b0b02000100a5300080333340"))!!
+        val raw = OuraSpO2RatioRecord(rt, 0xA5, listOf(
+            OuraSpO2RatioSample(0x3000, 128), OuraSpO2RatioSample(0x3333, 64),
+        ))
+        assertEquals(listOf(OuraEvent.Spo2Ratio(raw, OuraSpO2CalibrationProfile.GEN4_OREO)), d.ingest(rec))
+    }
+
+    @Test
+    fun testEvidenceTiersKeepQualifiedIBIProductionAndRatioSpO2Diagnostic() {
+        assertEquals(TrustTier.TIER_A, OuraEventTag.GREEN_IBI_QUALITY.tier)
+        assertEquals(TrustTier.DIAGNOSTIC, OuraEventTag.SPO2_RATIO_PI.tier)
+    }
+
+    @Test
     fun testIngestUnknownTagYieldsNothing() {
         val d = OuraDriver(ringGen = OuraRingGen.GEN3, authKey = key)
         // 0x99 is not in the dictionary -> [] (never a guessed value).
