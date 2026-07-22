@@ -406,7 +406,9 @@ class HuamiHrSource(
                     resetGattSetupQueue()
                     loggedFirstHr = false
                     _batteryPct.value = null
-                    _needsPairing.value = null
+                    // A classified pairing refusal clears its reconnect target and keeps the guidance
+                    // visible. Ordinary transport drops still clear any stale message before retrying.
+                    if (reconnectAddress != null) _needsPairing.value = null
                     flush()
                     if (gatt === g) { runCatching { g.close() }; gatt = null }
                     if (status == GATT_ERROR_133) {
@@ -587,6 +589,7 @@ class HuamiHrSource(
             }
             SingleSubscriptionSetupOutcome.UNAVAILABLE -> {
                 failedReconnectAttempts = 0
+                reconnectAddress = null
                 if (!hrSubscriptionCandidate) {
                     log("Huami: no readable standard or custom HR characteristic found")
                 }
