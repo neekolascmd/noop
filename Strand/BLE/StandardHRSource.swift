@@ -95,6 +95,48 @@ public final class StandardHRSource: NSObject, ObservableObject {
     /// Peripherals retained by identifier so a chosen one survives until connection.
     private var seenPeripherals: [UUID: CBPeripheral] = [:]
 
+    // MARK: - Auto-reconnect
+
+    /// Exact standard-HR peripheral this source should keep reaching after an involuntary link drop.
+    /// Set only by an explicit `connect(_:)`; cleared by `stop()` so a device switch cannot reconnect the
+    /// old strap behind the coordinator's back.
+    private var reconnectID: UUID?
+    /// Suppresses retries after a user/coordinator teardown. A manual connect re-arms the source.
+    private var intentionalDisconnect = false
+    /// Consecutive failed reconnects. A successful connection or manual connect resets the curve.
+    private var failedReconnectAttempts = 0
+    /// Named work item so `stop()` and a successful/manual connection can cancel a stale deferred retry.
+    private var reconnectWorkItem: DispatchWorkItem?
+
+    private func cancelScheduledReconnect() {
+        reconnectWorkItem?.cancel()
+        reconnectWorkItem = nil
+    }
+
+    private func scheduleReconnect() {
+        guard PeripheralReconnectPolicy.shouldReconnect(
+            intentionalDisconnect: intentionalDisconnect,
+            hasTarget: reconnectID != nil
+        ), let id = reconnectID else { return }
+
+        cancelScheduledReconnect()
+        failedReconnectAttempts += 1
+        let delay = PeripheralReconnectPolicy.delaySeconds(attempt: failedReconnectAttempts)
+        log("HR-strap: reconnecting in \(Int(delay))s (attempt \(failedReconnectAttempts))")
+        let work = DispatchWorkItem { [weak self] in
+            guard let self,
+                  PeripheralReconnectPolicy.shouldReconnect(
+                    intentionalDisconnect: self.intentionalDisconnect,
+                    hasTarget: self.reconnectID != nil
+                  ),
+                  self.reconnectID == id else { return }
+            self.reconnectWorkItem = nil
+            self.connectToTarget(id)
+        }
+        reconnectWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
     // MARK: - Sample buffer
 
     /// Buffered (hr, rr, ts) readings, flushed to `persist` in batches to keep the write path off
@@ -155,6 +197,21 @@ public final class StandardHRSource: NSObject, ObservableObject {
 
     /// Connect to the chosen discovered strap and start streaming its HR.
     public func connect(_ id: UUID) {
+        cancelScheduledReconnect()
+        pendingConnectID = nil
+        reconnectID = id
+        intentionalDisconnect = false
+        failedReconnectAttempts = 0
+        connectToTarget(id)
+    }
+
+    /// Execute one connection attempt without re-arming/resetting the reconnect policy. Used by deferred
+    /// retries and scan discovery; only the public `connect(_:)` represents new user intent.
+    private func connectToTarget(_ id: UUID) {
+        guard PeripheralReconnectPolicy.shouldReconnect(
+            intentionalDisconnect: intentionalDisconnect,
+            hasTarget: reconnectID != nil
+        ), reconnectID == id else { return }
         stopScan()
         // Reach the peripheral directly: use the freshly-discovered handle if we have it, else ask
         // CoreBluetooth for the cached peripheral by identifier (a strap we've connected before). This is
@@ -182,6 +239,10 @@ public final class StandardHRSource: NSObject, ObservableObject {
 
     /// Tear down: cancel the peripheral connection and stop scanning. Idempotent.
     public func stop() {
+        intentionalDisconnect = true
+        reconnectID = nil
+        failedReconnectAttempts = 0
+        cancelScheduledReconnect()
         stopScan()
         pendingConnectID = nil
         if let p = peripheral {
@@ -284,12 +345,22 @@ extension StandardHRSource: @preconcurrency CBCentralManagerDelegate {
         // that it's been seen — the switchToStrap path (#421).
         if pendingConnectID == id {
             pendingConnectID = nil
-            connect(id)
+            connectToTarget(id)
         }
     }
 
     public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        guard PeripheralReconnectPolicy.shouldReconnect(
+            intentionalDisconnect: intentionalDisconnect,
+            hasTarget: reconnectID != nil
+        ), reconnectID == peripheral.identifier else {
+            log("HR-strap: ignoring stale connection callback")
+            central.cancelPeripheralConnection(peripheral)
+            return
+        }
         log("HR-strap: connected — discovering services")
+        failedReconnectAttempts = 0
+        cancelScheduledReconnect()
         peripheral.delegate = self
         // Discover the HR service (unchanged) AND, additively, the standard Battery Service + the three
         // fitness-sensor services (RSC/CSC/CPS) so a generic strap's charge AND a connected footpod / bike
@@ -301,12 +372,25 @@ extension StandardHRSource: @preconcurrency CBCentralManagerDelegate {
 
     public func centralManager(_ central: CBCentralManager,
                                didFailToConnect peripheral: CBPeripheral, error: Error?) {
+        guard self.peripheral?.identifier == peripheral.identifier,
+              reconnectID == peripheral.identifier else {
+            log("HR-strap: ignoring stale failed-connect callback")
+            return
+        }
         log("HR-strap: WARNING failed to connect — \(error?.localizedDescription ?? "unknown error")")
         live.connected = false
+        if self.peripheral?.identifier == peripheral.identifier {
+            self.peripheral = nil
+        }
+        scheduleReconnect()
     }
 
     public func centralManager(_ central: CBCentralManager,
                                didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+        guard self.peripheral?.identifier == peripheral.identifier else {
+            log("HR-strap: ignoring stale disconnect callback")
+            return
+        }
         if let error = error {
             log("HR-strap: disconnected — \(error.localizedDescription)")
         } else {
@@ -322,6 +406,7 @@ extension StandardHRSource: @preconcurrency CBCentralManagerDelegate {
         if self.peripheral?.identifier == peripheral.identifier {
             self.peripheral = nil
         }
+        scheduleReconnect()
     }
 }
 
