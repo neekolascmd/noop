@@ -80,6 +80,21 @@ class GattOperationQueueTest {
     }
 
     @Test
+    fun `optional lane teardown removes only matching pending work`() {
+        val queue = GattOperationQueue<String>(maxStartRetries = 1)
+        queue.enqueue("heart-rate notify")
+        queue.enqueue("PMD control notify")
+        queue.enqueue("battery read")
+        queue.enqueue("PMD data notify")
+
+        assertEquals("heart-rate notify", queue.beginNext())
+        assertEquals(2, queue.removePendingIf { it.startsWith("PMD") })
+        assertEquals("heart-rate notify", queue.completeIf { it == "heart-rate notify" })
+        assertEquals("battery read", queue.beginNext())
+        assertEquals(0, queue.removePendingIf { it.startsWith("PMD") })
+    }
+
+    @Test
     fun `required failure reconnects while optional telemetry preserves live heart rate`() {
         assertEquals(
             GattOperationFailureAction.RECONNECT,

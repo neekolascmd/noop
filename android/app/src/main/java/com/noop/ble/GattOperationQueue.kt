@@ -125,6 +125,23 @@ internal class GattOperationQueue<T>(
         return entry.operation
     }
 
+    /** Remove queued optional work that became irrelevant without disturbing the active GATT slot. */
+    @Synchronized
+    fun removePendingIf(matches: (T) -> Boolean): Int {
+        var removed = 0
+        val retained = ArrayDeque<Entry<T>>(pending.size)
+        while (pending.isNotEmpty()) {
+            val entry = pending.removeFirst()
+            if (matches(entry.operation)) {
+                removed += 1
+            } else {
+                retained.addLast(entry)
+            }
+        }
+        pending.addAll(retained)
+        return removed
+    }
+
     @Synchronized
     fun clear() {
         active = null
