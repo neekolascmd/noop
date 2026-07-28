@@ -589,7 +589,7 @@ class PolarPmdDecoder {
             ppg = vectors.mapIndexed { index, vector ->
                 // Polar applies the start-response factor only to compressed type-0 PPG.
                 val scale = if (frame.compressed) config.factor else 1.0
-                val scaled = vector.map { (it.toDouble() * scale).toInt() }
+                val scaled = vector.map { scaledInt32(it, scale) }
                 PolarPmdPpgSample(times[index], scaled.take(3), scaled[3])
             },
         )
@@ -636,9 +636,9 @@ class PolarPmdDecoder {
             acceleration = vectors.mapIndexed { index, vector ->
                 PolarPmdAccelerationSample(
                     times[index],
-                    (vector[0] * scale).toInt(),
-                    (vector[1] * scale).toInt(),
-                    (vector[2] * scale).toInt(),
+                    scaledInt32(vector[0], scale),
+                    scaledInt32(vector[1], scale),
+                    scaledInt32(vector[2], scale),
                 )
             },
         )
@@ -680,6 +680,15 @@ class PolarPmdDecoder {
                 )
             },
         )
+    }
+
+    /** Keep sample conversion identical to Swift and reject corrupt scaling before narrowing. */
+    private fun scaledInt32(value: Int, scale: Double): Int {
+        val scaled = value.toDouble() * scale
+        if (!scaled.isFinite() || scaled < Int.MIN_VALUE.toDouble() || scaled > Int.MAX_VALUE.toDouble()) {
+            throw PolarPmdException("scaled sample exceeds signed 32-bit range")
+        }
+        return scaled.toInt()
     }
 
     companion object {

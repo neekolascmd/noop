@@ -201,7 +201,7 @@ public struct PolarPMDDecoder: Sendable {
             // Polar applies the start-response factor only to delta-compressed type-0 PPG.
             // Raw type-0 samples are already expressed in their final integer units.
             let scale = frame.isCompressed ? factor : 1
-            let scaled = vector.map { Int(Double($0) * scale) }
+            let scaled = try vector.map { try Self.scaledInt32($0, by: scale) }
             output.ppg.append(PolarPMDPPGSample(
                 sensorTimestampNs: timestamps[index],
                 channels: Array(scaled.prefix(3)),
@@ -261,9 +261,9 @@ public struct PolarPMDDecoder: Sendable {
             }
             output.acceleration.append(PolarPMDAccelerationSample(
                 sensorTimestampNs: timestamps[index],
-                xMilliG: Int(Double(vector[0]) * scale),
-                yMilliG: Int(Double(vector[1]) * scale),
-                zMilliG: Int(Double(vector[2]) * scale)
+                xMilliG: try Self.scaledInt32(vector[0], by: scale),
+                yMilliG: try Self.scaledInt32(vector[1], by: scale),
+                zMilliG: try Self.scaledInt32(vector[2], by: scale)
             ))
         }
         return output
@@ -318,6 +318,18 @@ public struct PolarPMDDecoder: Sendable {
     }
 
     // MARK: - Shared wire helpers
+
+    /// PMD sample fields are signed 32-bit on both app platforms. Validate before converting so an
+    /// extreme but finite device-provided factor cannot turn a corrupt frame into a process trap.
+    static func scaledInt32(_ value: Int, by scale: Double) throws -> Int {
+        let scaled = Double(value) * scale
+        guard scaled.isFinite,
+              scaled >= Double(Int32.min),
+              scaled <= Double(Int32.max) else {
+            throw PolarPMDError.limitExceeded("scaled sample exceeds signed 32-bit range")
+        }
+        return Int(scaled)
+    }
 
     static func timestamps(end: UInt64,
                            previous: UInt64,

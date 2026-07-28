@@ -1018,60 +1018,66 @@ class StandardHrSource(
         if (complete != null) finishPmdResponse(g, complete)
     }
 
-    private fun handlePmdData(data: ByteArray) = guardedCallback("Polar-PMD-data") {
-        if (pmdDisabledForSession) return@guardedCallback
-        val decoded = pmdDecoder.decode(data)
-        if (pmdLoggedMeasurements.add(decoded.frame.measurement)) {
-            log("HR-strap: receiving Polar PMD ${decoded.frame.measurement.name.lowercase()} data")
-        }
-
-        val nowMs = System.currentTimeMillis()
-        val receiveNs = nowMs * 1_000_000L
-        val hrRows = mutableListOf<HrRow>()
-        val rrRows = mutableListOf<RrRow>()
-        val gravityRows = mutableListOf<GravityRow>()
-
-        if (lastStandardHrAtMs == 0L || nowMs - lastStandardHrAtMs > 3_000L) {
-            val liveIntervals = mutableListOf<Int>()
-            var latestHr: Int? = null
-            val times = pmdClock.unixNanoseconds(decoded.ppi, receiveNs)
-            for ((index, sample) in decoded.ppi.withIndex()) {
-                if (sample.blocker || sample.skinContact == false ||
-                    sample.heartRate !in 30..220 || sample.intervalMs !in 250..3_000
-                ) continue
-                val second = times[index] / 1_000_000_000L
-                hrRows += HrRow(second, sample.heartRate)
-                rrRows += RrRow(second, sample.intervalMs)
-                latestHr = sample.heartRate
-                liveIntervals += sample.intervalMs
+    private fun handlePmdData(data: ByteArray) {
+        if (pmdDisabledForSession) return
+        try {
+            val decoded = pmdDecoder.decode(data)
+            if (pmdLoggedMeasurements.add(decoded.frame.measurement)) {
+                log("HR-strap: receiving Polar PMD ${decoded.frame.measurement.name.lowercase()} data")
             }
-            if (latestHr != null && liveIntervals.isNotEmpty()) {
-                guardedCallback("Polar-PMD-live-sink") { liveSink(latestHr, liveIntervals) }
+
+            val nowMs = System.currentTimeMillis()
+            val receiveNs = nowMs * 1_000_000L
+            val hrRows = mutableListOf<HrRow>()
+            val rrRows = mutableListOf<RrRow>()
+            val gravityRows = mutableListOf<GravityRow>()
+
+            if (lastStandardHrAtMs == 0L || nowMs - lastStandardHrAtMs > 3_000L) {
+                val liveIntervals = mutableListOf<Int>()
+                var latestHr: Int? = null
+                val times = pmdClock.unixNanoseconds(decoded.ppi, receiveNs)
+                for ((index, sample) in decoded.ppi.withIndex()) {
+                    if (sample.blocker || sample.skinContact == false ||
+                        sample.heartRate !in 30..220 || sample.intervalMs !in 250..3_000
+                    ) continue
+                    val second = times[index] / 1_000_000_000L
+                    hrRows += HrRow(second, sample.heartRate)
+                    rrRows += RrRow(second, sample.intervalMs)
+                    latestHr = sample.heartRate
+                    liveIntervals += sample.intervalMs
+                }
+                if (latestHr != null && liveIntervals.isNotEmpty()) {
+                    liveSink(latestHr, liveIntervals)
+                }
             }
-        }
 
-        val motionBySecond = linkedMapOf<Long, com.noop.polar.PolarPmdAccelerationSample>()
-        for (sample in decoded.acceleration) {
-            val second = pmdClock.unixNanoseconds(
-                sample.sensorTimestampNs,
-                receiveNs,
-            ) / 1_000_000_000L
-            motionBySecond[second] = sample
-        }
-        for ((second, sample) in motionBySecond.toSortedMap()) {
-            val last = lastPmdAccelerationSecond
-            if (last != null && second <= last) continue
-            gravityRows += GravityRow(
-                second,
-                sample.xMilliG / 1_000.0,
-                sample.yMilliG / 1_000.0,
-                sample.zMilliG / 1_000.0,
-            )
-            lastPmdAccelerationSecond = second
-        }
+            val motionBySecond = linkedMapOf<Long, com.noop.polar.PolarPmdAccelerationSample>()
+            for (sample in decoded.acceleration) {
+                val second = pmdClock.unixNanoseconds(
+                    sample.sensorTimestampNs,
+                    receiveNs,
+                ) / 1_000_000_000L
+                motionBySecond[second] = sample
+            }
+            for ((second, sample) in motionBySecond.toSortedMap()) {
+                val last = lastPmdAccelerationSecond
+                if (last != null && second <= last) continue
+                gravityRows += GravityRow(
+                    second,
+                    sample.xMilliG / 1_000.0,
+                    sample.yMilliG / 1_000.0,
+                    sample.zMilliG / 1_000.0,
+                )
+                lastPmdAccelerationSecond = second
+            }
 
-        val batch = StreamBatch(hr = hrRows, rr = rrRows, gravity = gravityRows)
-        if (!batch.isEmpty) persist(batch, deviceId)
+            val batch = StreamBatch(hr = hrRows, rr = rrRows, gravity = gravityRows)
+            if (!batch.isEmpty) persist(batch, deviceId)
+        } catch (error: Throwable) {
+            // PMD is optional. Fail this lane once instead of processing/logging the same malformed
+            // high-rate stream indefinitely; standard HR and battery remain connected.
+            disablePmd("data frame processing failed (${error.javaClass.simpleName}: ${error.message})")
+        }
     }
 
     private fun handleHr(data: ByteArray) = guardedCallback("hr-parse") {

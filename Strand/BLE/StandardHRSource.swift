@@ -532,7 +532,9 @@ public final class StandardHRSource: NSObject, ObservableObject {
 
             if !streams.isEmpty { persist(streams) }
         } catch {
-            log("HR-strap: WARNING Polar PMD data frame rejected — \(error)")
+            // PMD is optional. Fail this lane once instead of decoding/logging the same malformed
+            // high-rate stream indefinitely; standard HR and battery remain connected.
+            disablePMD("data frame rejected (\(error))")
         }
     }
 

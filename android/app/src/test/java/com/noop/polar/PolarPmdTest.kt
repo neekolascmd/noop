@@ -259,6 +259,28 @@ class PolarPmdTest {
     }
 
     @Test
+    fun extremeCompressedPpgFactorIsRejected() {
+        val decoder = PolarPmdDecoder()
+        decoder.configure(PolarPmdMeasurement.PPG, 1, Float.MAX_VALUE.toDouble())
+        assertThrows(PolarPmdException::class.java) {
+            decoder.decode(
+                frame(
+                    PolarPmdMeasurement.PPG,
+                    3_000_000_000,
+                    0,
+                    compressed = true,
+                    payload = byteArrayOf(
+                        1, 0, 0,
+                        1, 0, 0,
+                        1, 0, 0,
+                        1, 0, 0,
+                    ),
+                ),
+            )
+        }
+    }
+
+    @Test
     fun rawAccelerationWidths() {
         val decoder = PolarPmdDecoder()
         decoder.configure(PolarPmdMeasurement.ACCELEROMETER, 2)
@@ -346,6 +368,23 @@ class PolarPmdTest {
             decoded.acceleration.map { listOf(it.xMilliG, it.yMilliG, it.zMilliG) },
         )
         assertEquals(listOf(900_000_000L, 1_000_000_000L), decoded.acceleration.map { it.sensorTimestampNs })
+    }
+
+    @Test
+    fun extremeCompressedAccelerationFactorIsRejected() {
+        val decoder = PolarPmdDecoder()
+        decoder.configure(PolarPmdMeasurement.ACCELEROMETER, 1, Float.MAX_VALUE.toDouble())
+        assertThrows(PolarPmdException::class.java) {
+            decoder.decode(
+                frame(
+                    PolarPmdMeasurement.ACCELEROMETER,
+                    1_000_000_000,
+                    1,
+                    compressed = true,
+                    payload = byteArrayOf(1, 0, 1, 0, 1, 0),
+                ),
+            )
+        }
     }
 
     @Test

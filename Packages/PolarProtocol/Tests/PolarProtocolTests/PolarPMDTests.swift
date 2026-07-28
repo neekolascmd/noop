@@ -221,6 +221,24 @@ final class PolarPMDTests: XCTestCase {
         XCTAssertEqual(decoded.ppg[0].ambient, 8)
     }
 
+    func testExtremeCompressedPPGFactorIsRejectedWithoutTrapping() {
+        var decoder = PolarPMDDecoder()
+        decoder.configure(.ppg, sampleRateHz: 1, factor: Double(Float.greatestFiniteMagnitude))
+        let packet = frame(
+            .ppg,
+            timestamp: 3_000_000_000,
+            frameType: 0,
+            compressed: true,
+            payload: [
+                0x01, 0x00, 0x00,
+                0x01, 0x00, 0x00,
+                0x01, 0x00, 0x00,
+                0x01, 0x00, 0x00,
+            ]
+        )
+        XCTAssertThrowsError(try decoder.decode(packet))
+    }
+
     func testRawAccelerationWidths() throws {
         var decoder = PolarPMDDecoder()
         decoder.configure(.accelerometer, sampleRateHz: 2)
@@ -313,6 +331,23 @@ final class PolarPMDTests: XCTestCase {
                        [[10, 20, 30], [11, 19, 32]])
         XCTAssertEqual(decoded.acceleration.map(\.sensorTimestampNs),
                        [900_000_000, 1_000_000_000])
+    }
+
+    func testExtremeCompressedAccelerationFactorIsRejectedWithoutTrapping() {
+        var decoder = PolarPMDDecoder()
+        decoder.configure(
+            .accelerometer,
+            sampleRateHz: 1,
+            factor: Double(Float.greatestFiniteMagnitude)
+        )
+        let packet = frame(
+            .accelerometer,
+            timestamp: 1_000_000_000,
+            frameType: 1,
+            compressed: true,
+            payload: [1, 0, 1, 0, 1, 0]
+        )
+        XCTAssertThrowsError(try decoder.decode(packet))
     }
 
     func testMalformedPacketsAreRejected() throws {
