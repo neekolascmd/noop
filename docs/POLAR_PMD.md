@@ -18,16 +18,23 @@ The pure Swift `PolarProtocol` package and its Kotlin twin implement:
   sample counts, timestamp errors, and delta overflows.
 
 The Apple and Android app paths automatically detect PMD alongside standard heart rate. After both
-PMD subscriptions succeed, NOOP reads capabilities and starts PPI and accelerometer when advertised.
-All commands require both a matching control response and a successful write callback; either
-callback order is accepted, and each transaction has a timeout.
+PMD subscriptions succeed, NOOP reads capabilities and starts PPI, accelerometer, ECG, and PPG when
+advertised. All commands require both a matching control response and a successful write callback;
+either callback order is accepted, and each transaction has a timeout.
 
 PPI is accepted only when Polar marks the beat valid. It becomes an HR/R-R fallback after three
 seconds without a standard `0x2A37` heart-rate notification, avoiding duplicate beats. Accelerometer
 data is reduced to one vector per second for the existing motion store.
 
-ECG and PPG packets are decoded but are not requested or persisted by the app yet. Their sample rates
-need a bounded, sub-second waveform store rather than the current per-second gravity table.
+Decoded ECG and PPG sample values are retained without further loss as interleaved signed 32-bit
+little-endian samples. Chunks span at most five seconds or 4,096 sample frames and carry the stream,
+start/end Unix nanoseconds, sample rate, channel count, and sample count. ECG uses one channel. PPG
+uses four channels: three optical channels followed by ambient. Partial chunks are flushed on PMD
+reset, disable, disconnect, and stop.
+
+Waveform retention is bounded independently for each device to the newest 24 hours and 64 MiB of
+payload; insertion enforces both limits on Apple and Android. The store preserves raw sensor evidence
+for future offline analysis. It does not infer a medical measurement or SpO₂ value.
 
 PMD is additive and optional. A PMD subscription, read, write, response, or decode failure disables
 deep streaming for that connection without interrupting standard HR or battery. Stop, disconnect,
@@ -52,7 +59,8 @@ Record a separate result for every model, firmware, host OS, and NOOP build:
 2. Save a redacted log containing PMD service discovery, both subscription successes, advertised
    measurement types, selected settings, and successful stream starts.
 3. Wear the device for at least 30 minutes. Confirm plausible PPI and motion rows, no duplicate beat
-   cadence when standard HR is active, and no rejected-frame log flood.
+   cadence when standard HR is active, no rejected-frame log flood, and monotonically timed ECG or
+   PPG chunks for the stream that model advertises.
 4. Force-stop/quit NOOP, relaunch it, and confirm a clean PMD setup and live stream without stale
    callbacks or duplicated commands.
 5. Move out of Bluetooth range and return. Confirm bounded reconnect, a fresh PMD session, and
@@ -60,10 +68,10 @@ Record a separate result for every model, firmware, host OS, and NOOP build:
 6. Disable or provoke failure in the PMD lane and confirm standard HR and battery remain live.
 7. Compare HR and R-R against the vendor app or a reference sensor over the same interval.
 
-For H10, additionally confirm ECG is advertised even though NOOP does not start it yet. For Verity
-Sense and OH1, record whether PPG, PPI, ACC, and gyroscope are advertised. Do not infer one model's
-status from another.
+For H10, additionally confirm ECG is advertised and retained. For Verity Sense and OH1, record
+whether PPG, PPI, ACC, and gyroscope are advertised, and confirm retained PPG has four channels. Do
+not infer one model's status from another.
 
 Move a model/host cell from **Implemented** to **Partial** only after the tuple and results are recorded
 in [Hardware support](HARDWARE_SUPPORT.md). **Verified** requires a reproducible result another
-maintainer can repeat and the still-missing waveform lane does not inherit verification from PPI/ACC.
+maintainer can repeat; waveform verification does not inherit from PPI/ACC or from a different model.

@@ -96,6 +96,9 @@ class DeviceRegistryTest {
             deletedTables += "dayOwnership" to deviceId
             owners.entries.removeIf { it.value.deviceId == deviceId }
         }
+        override suspend fun deleteWaveformsFor(deviceId: String) {
+            deletedTables += "waveformChunk" to deviceId
+        }
     }
 
     /** Registry over the fake DAO with a pass-through transactor (Room's withTransaction stand-in). */
@@ -193,11 +196,11 @@ class DeviceRegistryTest {
 
         reg.deleteDeviceData("apple-health")
 
-        // The same 17 device-scoped tables the Swift store clears, each targeted with "apple-health".
+        // The same 18 device-scoped tables the Swift store clears, each targeted with "apple-health".
         val expectedTables = setOf(
             "hrSample", "rrInterval", "spo2Sample", "skinTempSample", "respSample", "gravitySample",
             "stepSample", "ppgHrSample", "event", "battery", "dailyMetric", "sleepSession",
-            "journal", "workout", "appleDaily", "metricSeries", "dayOwnership",
+            "journal", "workout", "appleDaily", "metricSeries", "dayOwnership", "waveformChunk",
         )
         assertEquals(expectedTables, dao.deletedTables.map { it.first }.toSet())
         // Every delete was scoped to the requested device, not the seeded my-whoop.

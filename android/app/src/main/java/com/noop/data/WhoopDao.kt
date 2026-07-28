@@ -83,6 +83,78 @@ interface WhoopDao : DeviceRegistryDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertPpgHr(rows: List<PpgHrSample>): List<Long>
 
+    // MARK: - Bounded dense waveform chunks
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertWaveformRows(rows: List<WaveformChunkEntity>): List<Long>
+
+    @Query("SELECT MAX(endUnixNs) FROM waveformChunk WHERE deviceId = :deviceId")
+    suspend fun newestWaveformEnd(deviceId: String): Long?
+
+    @Query("DELETE FROM waveformChunk WHERE deviceId = :deviceId AND endUnixNs < :cutoff")
+    suspend fun deleteWaveformOlderThan(deviceId: String, cutoff: Long): Int
+
+    @Query("SELECT COALESCE(SUM(byteSize), 0) FROM waveformChunk WHERE deviceId = :deviceId")
+    suspend fun waveformPayloadBytes(deviceId: String): Long
+
+    @Query(
+        "SELECT rowid AS rowId, byteSize FROM waveformChunk WHERE deviceId = :deviceId " +
+            "ORDER BY endUnixNs ASC, startUnixNs ASC, stream ASC"
+    )
+    suspend fun oldestWaveformRows(deviceId: String): List<WaveformPruneRow>
+
+    @Query("DELETE FROM waveformChunk WHERE rowid = :rowId")
+    suspend fun deleteWaveformRowId(rowId: Long): Int
+
+    @Query(
+        "SELECT * FROM waveformChunk WHERE deviceId = :deviceId AND " +
+            "endUnixNs >= :fromUnixNs AND startUnixNs <= :toUnixNs " +
+            "ORDER BY startUnixNs ASC, stream ASC LIMIT :limit"
+    )
+    suspend fun waveformRows(
+        deviceId: String,
+        fromUnixNs: Long,
+        toUnixNs: Long,
+        limit: Int,
+    ): List<WaveformChunkEntity>
+
+    @Query(
+        "SELECT * FROM waveformChunk WHERE deviceId = :deviceId AND stream = :stream AND " +
+            "endUnixNs >= :fromUnixNs AND startUnixNs <= :toUnixNs " +
+            "ORDER BY startUnixNs ASC LIMIT :limit"
+    )
+    suspend fun waveformRows(
+        deviceId: String,
+        stream: String,
+        fromUnixNs: Long,
+        toUnixNs: Long,
+        limit: Int,
+    ): List<WaveformChunkEntity>
+
+    /** Insert + both retention passes in one Room transaction. */
+    @Transaction
+    suspend fun insertWaveformRowsBounded(
+        rows: List<WaveformChunkEntity>,
+        deviceId: String,
+        maxAgeNs: Long,
+        maxPayloadBytes: Long,
+    ): Int {
+        val inserted = insertWaveformRows(rows).count { it != -1L }
+        val newest = newestWaveformEnd(deviceId) ?: return inserted
+        val cutoff = if (newest < Long.MIN_VALUE + maxAgeNs) Long.MIN_VALUE else newest - maxAgeNs
+        deleteWaveformOlderThan(deviceId, cutoff)
+        val total = waveformPayloadBytes(deviceId)
+        if (total > maxPayloadBytes) {
+            val evictions = WaveformStoreContract.rowIdsToEvict(
+                oldestFirst = oldestWaveformRows(deviceId),
+                totalPayloadBytes = total,
+                maxPayloadBytes = maxPayloadBytes,
+            )
+            for (rowId in evictions) deleteWaveformRowId(rowId)
+        }
+        return inserted
+    }
+
     // MARK: - Server-derived caches (latest value wins)
 
     @Upsert

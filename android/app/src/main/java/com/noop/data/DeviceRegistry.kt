@@ -81,7 +81,7 @@ class DeviceRegistry(
      *
      * The table set is the device-keyed tables of [WhoopDatabase]: hrSample, rrInterval, spo2Sample,
      * skinTempSample, respSample, gravitySample, stepSample, ppgHrSample, event, battery, dailyMetric,
-     * sleepSession, journal, workout, appleDaily, metricSeries, dayOwnership.
+     * sleepSession, journal, workout, appleDaily, metricSeries, dayOwnership, waveformChunk.
      */
     suspend fun deleteDeviceData(id: String) {
         transactor.run {
@@ -102,6 +102,7 @@ class DeviceRegistry(
             dao.deleteAppleDailyFor(id)
             dao.deleteMetricSeriesFor(id)
             dao.deleteDayOwnershipFor(id)
+            dao.deleteWaveformsFor(id)
         }
     }
 

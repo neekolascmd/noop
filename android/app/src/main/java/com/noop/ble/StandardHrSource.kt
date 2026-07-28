@@ -22,7 +22,9 @@ import android.os.ParcelUuid
 import com.noop.data.GravityRow
 import com.noop.data.HrRow
 import com.noop.data.RrRow
+import com.noop.data.StoredWaveformChunk
 import com.noop.data.StreamBatch
+import com.noop.data.WaveformStream
 import com.noop.polar.PolarPmdClock
 import com.noop.polar.PolarPmdCommandTransaction
 import com.noop.polar.PolarPmdControlResponse
@@ -33,6 +35,10 @@ import com.noop.polar.PolarPmdGatt
 import com.noop.polar.PolarPmdMeasurement
 import com.noop.polar.PolarPmdSessionPlanner
 import com.noop.polar.PolarPmdSessionUpdate
+import com.noop.polar.PolarPmdSettingType
+import com.noop.polar.PolarPmdWaveformBuffer
+import com.noop.polar.PolarPmdWaveformChunk
+import com.noop.polar.PolarPmdWaveformKind
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -70,6 +76,8 @@ class StandardHrSource(
     /** Persist a batch under [deviceId] — wired to `repository.insert`. Called off the main looper is
      *  fine; the implementation hops to its own IO scope (see [SourceCoordinator]). */
     private val persist: (StreamBatch, String) -> Unit,
+    /** Persist Polar ECG/PPG blocks through the repository's bounded rolling waveform store. */
+    private val persistWaveforms: (List<StoredWaveformChunk>, String) -> Unit = { _, _ -> },
     /** Diagnostic sink for the connect lifecycle. Wired (via [SourceCoordinator]) to the SAME in-app strap
      *  log the user exports, so the generic-HR path is no longer invisible in a bug report (issue #421).
      *  Every line is prefixed "HR-strap: " so it's distinguishable from WHOOP lines in the shared log.
@@ -164,6 +172,8 @@ class StandardHrSource(
     private val pmdTransaction = PolarPmdCommandTransaction()
     private val pmdDecoder = PolarPmdDecoder()
     private val pmdClock = PolarPmdClock()
+    private val pmdWaveformBuffer = PolarPmdWaveformBuffer()
+    private val pmdSampleRates = mutableMapOf<PolarPmdMeasurement, Int>()
     private val pmdLoggedMeasurements = mutableSetOf<PolarPmdMeasurement>()
     private var lastStandardHrAtMs = 0L
     private var lastPmdAccelerationSecond: Long? = null
@@ -887,6 +897,7 @@ class StandardHrSource(
             operation.characteristic.uuid == POLAR_PMD_DATA
 
     private fun resetPmd() {
+        flushPmdWaveforms()
         handler.removeCallbacks(pmdResponseTimeoutRunnable)
         pmdControlCharacteristic = null
         pmdDataCharacteristic = null
@@ -900,6 +911,8 @@ class StandardHrSource(
         pmdTransaction.reset()
         pmdDecoder.reset()
         pmdClock.reset()
+        pmdWaveformBuffer.reset()
+        pmdSampleRates.clear()
         pmdLoggedMeasurements.clear()
         lastStandardHrAtMs = 0L
         lastPmdAccelerationSecond = null
@@ -907,6 +920,7 @@ class StandardHrSource(
 
     private fun disablePmd(reason: String) {
         if (pmdDisabledForSession) return
+        flushPmdWaveforms()
         pmdDisabledForSession = true
         handler.removeCallbacks(pmdResponseTimeoutRunnable)
         pmdAssembler.reset()
@@ -915,6 +929,39 @@ class StandardHrSource(
         pmdDecoder.reset()
         setupQueue.removePendingIf(::isPmdOperation)
         log("HR-strap: Polar PMD unavailable for this connection — $reason; standard HR/battery continue")
+    }
+
+    private fun storedWaveformChunks(
+        chunks: List<PolarPmdWaveformChunk>,
+    ): List<StoredWaveformChunk> = chunks.map { chunk ->
+        require(chunk.startUnixNs >= 0 && chunk.endUnixNs >= chunk.startUnixNs) {
+            "invalid waveform Unix timestamp"
+        }
+        StoredWaveformChunk(
+            stream = when (chunk.kind) {
+                PolarPmdWaveformKind.ECG -> WaveformStream.POLAR_ECG
+                PolarPmdWaveformKind.PPG -> WaveformStream.POLAR_PPG
+            },
+            startUnixNs = chunk.startUnixNs,
+            endUnixNs = chunk.endUnixNs,
+            sampleRateHz = chunk.sampleRateHz,
+            channels = chunk.channels,
+            sampleCount = chunk.sampleCount,
+            payload = chunk.payload,
+        )
+    }
+
+    private fun persistPmdWaveforms(chunks: List<PolarPmdWaveformChunk>) {
+        if (chunks.isEmpty()) return
+        persistWaveforms(storedWaveformChunks(chunks), deviceId)
+    }
+
+    private fun flushPmdWaveforms() {
+        val chunks = pmdWaveformBuffer.flush()
+        if (chunks.isEmpty()) return
+        runCatching { persistPmdWaveforms(chunks) }.onFailure {
+            log("HR-strap: Polar PMD waveform flush rejected (${it.message})")
+        }
     }
 
     /** Called only from a matching successful CCCD callback. */
@@ -951,6 +998,10 @@ class StandardHrSource(
     private fun applyPmdUpdate(g: BluetoothGatt, update: PolarPmdSessionUpdate) {
         update.started?.let { started ->
             pmdDecoder.configure(started.measurement, started.selection, started.startResponse)
+            started.selection[PolarPmdSettingType.SAMPLE_RATE]
+                ?.toInt()
+                ?.takeIf { it > 0 }
+                ?.let { pmdSampleRates[started.measurement] = it }
             log("HR-strap: Polar PMD ${started.measurement.name.lowercase()} stream started")
         }
         update.skipped?.let {
@@ -980,13 +1031,17 @@ class StandardHrSource(
             pmdFeaturesHandled = true
             val names = features.measurements.sortedBy { it.wire }.joinToString { it.name.lowercase() }
             log("HR-strap: Polar PMD capabilities: ${names.ifEmpty { "none" }}")
-            // ECG/PPG are decoded by the pure protocol layer but not started until the durable store
-            // can retain bounded sub-second waveforms without primary-key collisions.
+            // ECG/PPG now land in the bounded rolling waveform store when the model advertises them.
             applyPmdUpdate(
                 g,
                 pmdPlanner.begin(
                     features,
-                    listOf(PolarPmdMeasurement.PPI, PolarPmdMeasurement.ACCELEROMETER),
+                    listOf(
+                        PolarPmdMeasurement.PPI,
+                        PolarPmdMeasurement.ACCELEROMETER,
+                        PolarPmdMeasurement.ECG,
+                        PolarPmdMeasurement.PPG,
+                    ),
                 ),
             )
             return@guardedCallback
@@ -1031,10 +1086,14 @@ class StandardHrSource(
             val hrRows = mutableListOf<HrRow>()
             val rrRows = mutableListOf<RrRow>()
             val gravityRows = mutableListOf<GravityRow>()
+            val waveformChunks = mutableListOf<PolarPmdWaveformChunk>()
 
             if (lastStandardHrAtMs == 0L || nowMs - lastStandardHrAtMs > 3_000L) {
                 val liveIntervals = mutableListOf<Int>()
                 var latestHr: Int? = null
+                decoded.ppi.lastOrNull()?.sensorTimestampNs
+                    ?.takeIf { it != 0L }
+                    ?.let { pmdClock.unixNanoseconds(it, receiveNs) }
                 val times = pmdClock.unixNanoseconds(decoded.ppi, receiveNs)
                 for ((index, sample) in decoded.ppi.withIndex()) {
                     if (sample.blocker || sample.skinContact == false ||
@@ -1052,6 +1111,9 @@ class StandardHrSource(
             }
 
             val motionBySecond = linkedMapOf<Long, com.noop.polar.PolarPmdAccelerationSample>()
+            decoded.acceleration.lastOrNull()?.let {
+                pmdClock.unixNanoseconds(it.sensorTimestampNs, receiveNs)
+            }
             for (sample in decoded.acceleration) {
                 val second = pmdClock.unixNanoseconds(
                     sample.sensorTimestampNs,
@@ -1071,8 +1133,35 @@ class StandardHrSource(
                 lastPmdAccelerationSecond = second
             }
 
+            if (decoded.ecg.isNotEmpty()) {
+                val rate = pmdSampleRates[PolarPmdMeasurement.ECG]
+                    ?: throw IllegalStateException("missing ECG sample rate")
+                pmdClock.unixNanoseconds(decoded.ecg.last().sensorTimestampNs, receiveNs)
+                waveformChunks += pmdWaveformBuffer.appendEcg(
+                    samples = decoded.ecg,
+                    unixTimestampsNs = decoded.ecg.map {
+                        pmdClock.unixNanoseconds(it.sensorTimestampNs, receiveNs)
+                    },
+                    sampleRateHz = rate,
+                )
+            }
+
+            if (decoded.ppg.isNotEmpty()) {
+                val rate = pmdSampleRates[PolarPmdMeasurement.PPG]
+                    ?: throw IllegalStateException("missing PPG sample rate")
+                pmdClock.unixNanoseconds(decoded.ppg.last().sensorTimestampNs, receiveNs)
+                waveformChunks += pmdWaveformBuffer.appendPpg(
+                    samples = decoded.ppg,
+                    unixTimestampsNs = decoded.ppg.map {
+                        pmdClock.unixNanoseconds(it.sensorTimestampNs, receiveNs)
+                    },
+                    sampleRateHz = rate,
+                )
+            }
+
             val batch = StreamBatch(hr = hrRows, rr = rrRows, gravity = gravityRows)
             if (!batch.isEmpty) persist(batch, deviceId)
+            persistPmdWaveforms(waveformChunks)
         } catch (error: Throwable) {
             // PMD is optional. Fail this lane once instead of processing/logging the same malformed
             // high-rate stream indefinitely; standard HR and battery remain connected.

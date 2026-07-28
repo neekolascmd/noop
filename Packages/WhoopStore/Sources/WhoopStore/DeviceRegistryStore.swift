@@ -79,7 +79,7 @@ public struct DeviceRegistryStore: Sendable {
     static let deviceScopedTables = [
         "hrSample", "rrInterval", "spo2Sample", "skinTempSample", "respSample", "gravitySample",
         "stepSample", "ppgHrSample", "event", "battery", "dailyMetric", "sleepSession",
-        "journal", "workout", "appleDaily", "metricSeries", "dayOwnership",
+        "journal", "workout", "appleDaily", "metricSeries", "dayOwnership", "waveformChunk",
     ]
 
     /// Permanently delete every recorded sample/derived row belonging to one device, across all
