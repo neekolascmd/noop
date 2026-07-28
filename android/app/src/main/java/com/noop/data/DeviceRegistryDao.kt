@@ -79,6 +79,7 @@ interface DeviceRegistryDao {
     @Query("DELETE FROM appleDaily WHERE deviceId = :deviceId") suspend fun deleteAppleDailyFor(deviceId: String)
     @Query("DELETE FROM metricSeries WHERE deviceId = :deviceId") suspend fun deleteMetricSeriesFor(deviceId: String)
     @Query("DELETE FROM dayOwnership WHERE deviceId = :deviceId") suspend fun deleteDayOwnershipFor(deviceId: String)
+    @Query("DELETE FROM waveformChunk WHERE deviceId = :deviceId") suspend fun deleteWaveformsFor(deviceId: String)
 
     /** Set the owner override for a day (insert-or-replace by the day PK). */
     @Insert(onConflict = OnConflictStrategy.REPLACE)

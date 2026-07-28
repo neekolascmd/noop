@@ -54,10 +54,13 @@ account-free, on top of the standard heart-rate service.
 
 The production transport now discovers PMD additively after standard HR, subscribes to the control
 and data characteristics, queries capabilities, and serializes every control transaction. It starts
-PPI and ACC automatically when advertised. Valid PPI is a fallback for HR/R-R only when standard HR
-has been quiet for three seconds, preventing duplicate beats; ACC is stored at one vector per second
-in the existing motion lane. ECG and PPG are decoded and covered by cross-platform tests, but are not
-started or persisted until NOOP has a bounded sub-second waveform store.
+PPI, ACC, ECG, and PPG when advertised. Valid PPI is a fallback for HR/R-R only when standard HR has
+been quiet for three seconds, preventing duplicate beats; ACC is stored at one vector per second in
+the existing motion lane. Decoded ECG and PPG sample values are stored without further loss as
+interleaved signed 32-bit samples in five-second chunks with start/end timestamps, sample rate, and
+channel count. Retention is bounded
+per device to the newest 24 hours and 64 MiB of waveform payload. This preserves raw sensor evidence;
+NOOP does not infer a medical measurement or SpO₂ value from it.
 
 PMD failure is intentionally optional: it disables deep streaming for that connection while standard
 HR and battery continue. Apple and Android both reset the PMD session on stop, disconnect, and

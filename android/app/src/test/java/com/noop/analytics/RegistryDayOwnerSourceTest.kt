@@ -65,6 +65,7 @@ class RegistryDayOwnerSourceTest {
         override suspend fun deleteAppleDailyFor(deviceId: String) {}
         override suspend fun deleteMetricSeriesFor(deviceId: String) {}
         override suspend fun deleteDayOwnershipFor(deviceId: String) {}
+        override suspend fun deleteWaveformsFor(deviceId: String) {}
     }
 
     private fun registry(dao: FakeDao) = DeviceRegistry(

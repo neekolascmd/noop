@@ -417,6 +417,9 @@ class SourceCoordinator(
                 persist = { batch: StreamBatch, deviceId: String ->
                     scope.launch { runCatching { repo.insert(batch, deviceId) } }
                 },
+                persistWaveforms = { chunks, deviceId ->
+                    scope.launch { runCatching { repo.insertWaveformChunks(chunks, deviceId) } }
+                },
                 log = straplog,   // generic-HR lifecycle → the SAME exported strap log (issue #421)
                 onBattery = batterySink,  // strap battery → the same live state the WHOOP strap battery uses
                 sensorSink = { metrics ->

@@ -216,6 +216,72 @@ class WhoopRepository(private val dao: WhoopDao) {
         )
     }
 
+    /** Persist dense waveform chunks and enforce the rolling age + byte ceilings atomically. */
+    suspend fun insertWaveformChunks(
+        chunks: List<StoredWaveformChunk>,
+        deviceId: String,
+        limits: WaveformRetentionLimits = WaveformRetentionLimits.PRODUCTION,
+    ): Int {
+        if (chunks.isEmpty()) return 0
+        require(deviceId.isNotEmpty()) { "waveform device id is empty" }
+        require(limits.maxAgeNs > 0 && limits.maxPayloadBytesPerDevice > 0) {
+            "invalid waveform retention limits"
+        }
+        chunks.forEach(WaveformStoreContract::validate)
+        val rows = chunks.map {
+            WaveformChunkEntity(
+                deviceId = deviceId,
+                stream = it.stream.wire,
+                startUnixNs = it.startUnixNs,
+                endUnixNs = it.endUnixNs,
+                sampleRateHz = it.sampleRateHz,
+                channels = it.channels,
+                sampleCount = it.sampleCount,
+                encoding = StoredWaveformChunk.ENCODING,
+                byteSize = it.payload.size.toLong(),
+                payload = it.payload,
+            )
+        }
+        return dao.insertWaveformRowsBounded(
+            rows = rows,
+            deviceId = deviceId,
+            maxAgeNs = limits.maxAgeNs,
+            maxPayloadBytes = limits.maxPayloadBytesPerDevice,
+        )
+    }
+
+    suspend fun waveformChunks(
+        deviceId: String,
+        stream: WaveformStream? = null,
+        fromUnixNs: Long,
+        toUnixNs: Long,
+        limit: Int = 20_000,
+    ): List<StoredWaveformChunk> {
+        if (fromUnixNs > toUnixNs) return emptyList()
+        val boundedLimit = limit.coerceIn(0, 50_000)
+        if (boundedLimit == 0) return emptyList()
+        val rows = if (stream == null) {
+            dao.waveformRows(deviceId, fromUnixNs, toUnixNs, boundedLimit)
+        } else {
+            dao.waveformRows(deviceId, stream.wire, fromUnixNs, toUnixNs, boundedLimit)
+        }
+        return rows.mapNotNull {
+            val parsedStream = WaveformStream.fromWire(it.stream) ?: return@mapNotNull null
+            if (it.encoding != StoredWaveformChunk.ENCODING) return@mapNotNull null
+            StoredWaveformChunk(
+                stream = parsedStream,
+                startUnixNs = it.startUnixNs,
+                endUnixNs = it.endUnixNs,
+                sampleRateHz = it.sampleRateHz,
+                channels = it.channels,
+                sampleCount = it.sampleCount,
+                payload = it.payload,
+            )
+        }
+    }
+
+    suspend fun waveformPayloadBytes(deviceId: String): Long = dao.waveformPayloadBytes(deviceId)
+
     /** #836 — cheap whole-history raw-HR change fingerprint `"count:maxTs"`. The idle 15-min rescore (the
      *  AppViewModel backstop) skips when this is unchanged since the last completed run. Any HR insert/delete
      *  moves it (count or maxTs), so a real change always rescores; mirrors Swift WhoopStore.hrFingerprint. */

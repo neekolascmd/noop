@@ -84,6 +84,8 @@ public final class StandardHRSource: NSObject, ObservableObject {
     private var pmdTransaction = PolarPMDCommandTransaction()
     private var pmdDecoder = PolarPMDDecoder()
     private var pmdClock = PolarPMDClock()
+    private var pmdWaveformBuffer = PolarPMDWaveformBuffer()
+    private var pmdSampleRates: [PolarPMDMeasurement: Int] = [:]
     private var pmdTimeoutWorkItem: DispatchWorkItem?
     private var pmdLoggedMeasurements = Set<PolarPMDMeasurement>()
     private var lastStandardHRAt: Date?
@@ -93,6 +95,7 @@ public final class StandardHRSource: NSObject, ObservableObject {
 
     private let live: LiveState
     private let persist: (Streams) -> Void
+    private let persistWaveforms: ([StoredWaveformChunk]) -> Void
     private let deviceId: String
     /// Optional hook fired with the strap's battery percent (0–100) whenever it's read off 0x2A19.
     /// Wired (via `SourceCoordinator`) into `LiveState.setBattery` so a generic strap surfaces its
@@ -175,17 +178,20 @@ public final class StandardHRSource: NSObject, ObservableObject {
     ///   - live: the shared `LiveState` the Live UI observes.
     ///   - deviceId: the datastore device id these samples are attributed to.
     ///   - persist: wired by the app to `store.insert(_, deviceId:)`. Called on the main actor.
+    ///   - persistWaveforms: wired to the bounded waveform store for Polar ECG/PPG chunks.
     ///   - log: connect-lifecycle diagnostics sink, wired at the composition root to the same strap log
     ///     `BLEManager` writes to (issue #421). Defaults to a no-op so the discovery-only scanner and
     ///     existing call sites stay silent / compile unchanged.
     public init(live: LiveState,
                 deviceId: String,
                 persist: @escaping (Streams) -> Void,
+                persistWaveforms: @escaping ([StoredWaveformChunk]) -> Void = { _ in },
                 log: @escaping (String) -> Void = { _ in },
                 onBattery: @escaping (Int) -> Void = { _ in }) {
         self.live = live
         self.deviceId = deviceId
         self.persist = persist
+        self.persistWaveforms = persistWaveforms
         self.log = log
         self.onBattery = onBattery
         super.init()
@@ -326,6 +332,7 @@ public final class StandardHRSource: NSObject, ObservableObject {
     // MARK: - Polar PMD ingest (additive)
 
     private func resetPMD() {
+        flushPMDWaveforms()
         pmdTimeoutWorkItem?.cancel()
         pmdTimeoutWorkItem = nil
         pmdControlCharacteristic = nil
@@ -338,6 +345,8 @@ public final class StandardHRSource: NSObject, ObservableObject {
         pmdTransaction.reset()
         pmdDecoder.reset()
         pmdClock.reset()
+        pmdWaveformBuffer.reset()
+        pmdSampleRates.removeAll(keepingCapacity: true)
         pmdLoggedMeasurements.removeAll()
         lastStandardHRAt = nil
         lastPMDAccelerationSecond = nil
@@ -345,6 +354,7 @@ public final class StandardHRSource: NSObject, ObservableObject {
 
     private func disablePMD(_ reason: String) {
         guard !pmdDisabledForSession else { return }
+        flushPMDWaveforms()
         pmdDisabledForSession = true
         pmdTimeoutWorkItem?.cancel()
         pmdTimeoutWorkItem = nil
@@ -353,6 +363,45 @@ public final class StandardHRSource: NSObject, ObservableObject {
         pmdTransaction.reset()
         pmdDecoder.reset()
         log("HR-strap: Polar PMD unavailable for this connection — \(reason); standard HR/battery continue")
+    }
+
+    private func storedWaveformChunks(
+        _ chunks: [PolarPMDWaveformChunk]
+    ) throws -> [StoredWaveformChunk] {
+        try chunks.map { chunk in
+            guard let start = Int64(exactly: chunk.startUnixNs),
+                  let end = Int64(exactly: chunk.endUnixNs) else {
+                throw PolarPMDError.limitExceeded("waveform Unix timestamp")
+            }
+            let stream: WaveformStream = switch chunk.kind {
+            case .ecg: .polarECG
+            case .ppg: .polarPPG
+            }
+            return StoredWaveformChunk(
+                stream: stream,
+                startUnixNs: start,
+                endUnixNs: end,
+                sampleRateHz: chunk.sampleRateHz,
+                channels: chunk.channels,
+                sampleCount: chunk.sampleCount,
+                payload: Data(chunk.payload)
+            )
+        }
+    }
+
+    private func persistPMDWaveforms(_ chunks: [PolarPMDWaveformChunk]) throws {
+        guard !chunks.isEmpty else { return }
+        persistWaveforms(try storedWaveformChunks(chunks))
+    }
+
+    private func flushPMDWaveforms() {
+        let chunks = pmdWaveformBuffer.flush()
+        guard !chunks.isEmpty else { return }
+        do {
+            try persistPMDWaveforms(chunks)
+        } catch {
+            log("HR-strap: Polar PMD waveform flush rejected (\(error))")
+        }
     }
 
     private func armPMDTimeout(_ label: String, peripheralID: UUID) {
@@ -404,6 +453,11 @@ public final class StandardHRSource: NSObject, ObservableObject {
                 selection: started.selection,
                 startResponse: started.startResponse
             )
+            if let selectedRate = started.selection[.sampleRate],
+               let rate = Int(exactly: selectedRate),
+               rate > 0 {
+                pmdSampleRates[started.measurement] = rate
+            }
             log("HR-strap: Polar PMD \(started.measurement) stream started")
         }
         if let skipped = update.skipped {
@@ -438,10 +492,13 @@ public final class StandardHRSource: NSObject, ObservableObject {
                 .map { String(describing: $0) }
                 .joined(separator: ", ")
             log("HR-strap: Polar PMD capabilities: \(names.isEmpty ? "none" : names)")
-            // PPI provides beat quality/R-R and ACC feeds the existing local motion lane. ECG/PPG
-            // remain decoded by PolarProtocol but are not started until NOOP has a bounded waveform store.
+            // PPI provides beat quality/R-R, ACC feeds the existing local motion lane, and ECG/PPG
+            // now land in NOOP's bounded rolling waveform store when the model advertises them.
             applyPMDUpdate(
-                pmdPlanner.begin(features: features, requested: [.ppi, .accelerometer]),
+                pmdPlanner.begin(
+                    features: features,
+                    requested: [.ppi, .accelerometer, .ecg, .ppg]
+                ),
                 peripheral: peripheral
             )
             return
@@ -478,6 +535,7 @@ public final class StandardHRSource: NSObject, ObservableObject {
 
             let receiveNs = UInt64(max(0, Date().timeIntervalSince1970 * 1_000_000_000))
             var streams = Streams()
+            var waveformChunks: [PolarPMDWaveformChunk] = []
 
             // Prefer standard 0x2A37 while it is healthy. PPI is a fallback after three quiet seconds,
             // preventing duplicate HR/R-R rows from the same Polar.
@@ -487,6 +545,13 @@ public final class StandardHRSource: NSObject, ObservableObject {
             if standardHRSilent {
                 var liveIntervals: [Int] = []
                 var latestHR: Int?
+                if let latestSensorTime = decoded.ppi.last?.sensorTimestampNs,
+                   latestSensorTime != 0 {
+                    _ = pmdClock.unixNanoseconds(
+                        sensorTimestampNs: latestSensorTime,
+                        receivedAtUnixNs: receiveNs
+                    )
+                }
                 let times = pmdClock.unixNanoseconds(
                     ppiSamples: decoded.ppi,
                     receivedAtUnixNs: receiveNs
@@ -511,6 +576,12 @@ public final class StandardHRSource: NSObject, ObservableObject {
             // The current durable gravity schema has second-level keys. Keep the newest vector in each
             // second instead of silently colliding hundreds of raw ACC rows on the same primary key.
             var motionBySecond: [Int: PolarPMDAccelerationSample] = [:]
+            if let latestSensorTime = decoded.acceleration.last?.sensorTimestampNs {
+                _ = pmdClock.unixNanoseconds(
+                    sensorTimestampNs: latestSensorTime,
+                    receivedAtUnixNs: receiveNs
+                )
+            }
             for sample in decoded.acceleration {
                 let unixNs = pmdClock.unixNanoseconds(
                     sensorTimestampNs: sample.sensorTimestampNs,
@@ -530,7 +601,54 @@ public final class StandardHRSource: NSObject, ObservableObject {
                 lastPMDAccelerationSecond = second
             }
 
+            if !decoded.ecg.isEmpty {
+                guard let rate = pmdSampleRates[.ecg] else {
+                    throw PolarPMDError.malformed("missing ECG sample rate")
+                }
+                if let latestSensorTime = decoded.ecg.last?.sensorTimestampNs {
+                    _ = pmdClock.unixNanoseconds(
+                        sensorTimestampNs: latestSensorTime,
+                        receivedAtUnixNs: receiveNs
+                    )
+                }
+                let timestamps = decoded.ecg.map {
+                    pmdClock.unixNanoseconds(
+                        sensorTimestampNs: $0.sensorTimestampNs,
+                        receivedAtUnixNs: receiveNs
+                    )
+                }
+                waveformChunks += try pmdWaveformBuffer.append(
+                    ecg: decoded.ecg,
+                    unixTimestampsNs: timestamps,
+                    sampleRateHz: rate
+                )
+            }
+
+            if !decoded.ppg.isEmpty {
+                guard let rate = pmdSampleRates[.ppg] else {
+                    throw PolarPMDError.malformed("missing PPG sample rate")
+                }
+                if let latestSensorTime = decoded.ppg.last?.sensorTimestampNs {
+                    _ = pmdClock.unixNanoseconds(
+                        sensorTimestampNs: latestSensorTime,
+                        receivedAtUnixNs: receiveNs
+                    )
+                }
+                let timestamps = decoded.ppg.map {
+                    pmdClock.unixNanoseconds(
+                        sensorTimestampNs: $0.sensorTimestampNs,
+                        receivedAtUnixNs: receiveNs
+                    )
+                }
+                waveformChunks += try pmdWaveformBuffer.append(
+                    ppg: decoded.ppg,
+                    unixTimestampsNs: timestamps,
+                    sampleRateHz: rate
+                )
+            }
+
             if !streams.isEmpty { persist(streams) }
+            try persistPMDWaveforms(waveformChunks)
         } catch {
             // PMD is optional. Fail this lane once instead of decoding/logging the same malformed
             // high-rate stream indefinitely; standard HR and battery remain connected.

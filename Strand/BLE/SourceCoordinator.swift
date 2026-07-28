@@ -291,6 +291,13 @@ final class SourceCoordinator: ObservableObject {
             persist: { [storeHandle] streams in
                 Task { if let store = await storeHandle() { _ = try? await store.insert(streams, deviceId: id) } }
             },
+            persistWaveforms: { [storeHandle] chunks in
+                Task {
+                    if let store = await storeHandle() {
+                        _ = try? await store.insertWaveformChunks(chunks, deviceId: id)
+                    }
+                }
+            },
             log: straplog,   // generic-HR lifecycle → the SAME exported strap log (issue #421)
             // Surface the generic strap's standard Battery Service (0x180F) charge the SAME place the
             // WHOOP strap battery shows (the Live/device status), via the shared LiveState funnel.

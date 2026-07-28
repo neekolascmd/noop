@@ -455,6 +455,31 @@ extension WhoopStore {
                 t.add(column: "unit", .text).notNull().defaults(to: "raw_adc")
             }
         }
+
+        // v24: bounded dense-waveform chunks for Polar ECG/PPG. A row represents up to five seconds
+        // of interleaved signed-32-bit samples, not one BLE notification or one sample, keeping SQLite
+        // row overhead tractable. Retention is enforced by WaveformStore on every insert (24 hours AND
+        // 64 MiB per device); the table is nevertheless part of normal backup/delete-device behavior.
+        migrator.registerMigration("v24-waveform-chunk") { db in
+            try db.create(table: "waveformChunk") { t in
+                t.column("deviceId", .text).notNull()
+                t.column("stream", .text).notNull()
+                t.column("startUnixNs", .integer).notNull()
+                t.column("endUnixNs", .integer).notNull()
+                t.column("sampleRateHz", .integer).notNull()
+                t.column("channels", .integer).notNull()
+                t.column("sampleCount", .integer).notNull()
+                t.column("encoding", .text).notNull()
+                t.column("byteSize", .integer).notNull()
+                t.column("payload", .blob).notNull()
+                t.primaryKey(["deviceId", "stream", "startUnixNs"])
+            }
+            try db.create(
+                index: "idx_waveformChunk_device_end",
+                on: "waveformChunk",
+                columns: ["deviceId", "endUnixNs"]
+            )
+        }
         return migrator
     }
 }
