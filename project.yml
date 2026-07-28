@@ -54,6 +54,10 @@ packages:
   # zero CoreBluetooth, so it stays headless/JVM-testable; the app target imports it for OuraLiveSource.
   OuraProtocol:
     path: Packages/OuraProtocol
+  # Clean-room Polar Measurement Data control/data decoder. Transport stays in the platform apps;
+  # this pure package contains no CoreBluetooth or Polar SDK dependency.
+  PolarProtocol:
+    path: Packages/PolarProtocol
   # Compresses the full-database `.noopbak` backup (single-entry deflate ZIP) in DataBackup.swift.
   # Already resolved transitively via StrandImport; linked directly so the app target can
   # `import ZIPFoundation`. Same exact version as StrandImport's, so SPM resolves one copy.
@@ -85,7 +89,7 @@ targets:
         CFBundleVersion: "200"
         LSMinimumSystemVersion: "13.0"
         LSApplicationCategoryType: public.app-category.healthcare-fitness
-        NSBluetoothAlwaysUsageDescription: "NOOP connects directly to your WHOOP strap over Bluetooth to read heart rate, R-R intervals, battery, and sensor data locally on your Mac. Nothing leaves your device."
+        NSBluetoothAlwaysUsageDescription: "NOOP connects directly to your health device over Bluetooth to read heart rate, R-R intervals, battery, and supported sensor data locally on your Mac. Nothing leaves your device."
         NSLocationWhenInUseUsageDescription: "NOOP records your route during an outdoor workout to show distance, pace, and a map. The route stays on your device. Nothing leaves it."
         # The AI Coach's "Custom (OpenAI-compatible)" provider talks to a LOCAL LLM server over plain
         # HTTP on loopback (Ollama / LM Studio / llama.cpp at http://localhost:…). ATS blocks cleartext
@@ -126,6 +130,7 @@ targets:
       - package: MarkdownUI
       - package: ZIPFoundation
       - package: OuraProtocol
+      - package: PolarProtocol
   StrandTests:
     type: bundle.unit-test
     platform: macOS
@@ -137,6 +142,7 @@ targets:
       - package: WhoopProtocol
       - package: WhoopStore
       - package: OuraProtocol
+      - package: PolarProtocol
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
@@ -227,7 +233,7 @@ targets:
         # otherwise iOS refuses to schedule or deliver the background drop.
         BGTaskSchedulerPermittedIdentifiers:
           - com.noopapp.noop.debugexport
-        NSBluetoothAlwaysUsageDescription: "NOOP connects directly to your WHOOP strap over Bluetooth to read heart rate, R-R intervals, battery, and sensor data locally on your iPhone. Nothing leaves your device."
+        NSBluetoothAlwaysUsageDescription: "NOOP connects directly to your health device over Bluetooth to read heart rate, R-R intervals, battery, and supported sensor data locally on your iPhone. Nothing leaves your device."
         NSLocationWhenInUseUsageDescription: "NOOP records your route during an outdoor workout to show distance, pace, and a map, and keeps recording while the screen is off. The route stays on your device. Nothing leaves it."
         NSHealthShareUsageDescription: "NOOP reads your own Apple Health data on-device to compute recovery, strain, and sleep. Nothing leaves your device."
         NSHealthUpdateUsageDescription: "NOOP writes the metrics it computes from your strap back into Apple Health, on-device and only when you allow it."
@@ -268,6 +274,7 @@ targets:
       - package: StrandDesign
       - package: MarkdownUI
       - package: ZIPFoundation
+      - package: PolarProtocol
       - target: NOOPiOSWidgets
       # Embed the watchOS app so the iPhone app carries it (NOOP.app/Watch/NOOPWatch.app). A watch app
       # installs by riding inside its iOS companion; without this it would never reach a paired watch.

@@ -25,6 +25,13 @@ internal sealed interface AndroidGattSetupOperation {
         override val label: String,
         override val requiredForPrimaryStream: Boolean = false,
     ) : AndroidGattSetupOperation
+
+    data class Write(
+        override val characteristic: BluetoothGattCharacteristic,
+        val value: ByteArray,
+        override val label: String,
+        override val requiredForPrimaryStream: Boolean = false,
+    ) : AndroidGattSetupOperation
 }
 
 internal val GATT_CLIENT_CHARACTERISTIC_CONFIG_UUID: UUID =
@@ -64,5 +71,22 @@ internal fun startAndroidGattSetupOperation(
             }
         }
         is AndroidGattSetupOperation.Read -> gatt.readCharacteristic(operation.characteristic)
+        is AndroidGattSetupOperation.Write -> {
+            val characteristic = operation.characteristic
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                gatt.writeCharacteristic(
+                    characteristic,
+                    operation.value,
+                    BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+                ) == BluetoothGatt.GATT_SUCCESS
+            } else {
+                @Suppress("DEPRECATION")
+                run {
+                    characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                    characteristic.value = operation.value
+                    gatt.writeCharacteristic(characteristic)
+                }
+            }
+        }
     }
 }

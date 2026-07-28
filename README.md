@@ -83,6 +83,7 @@ Everything runs **offline**. The only feature that ever uses the network is the 
 |---|---|---|
 | **Oura Ring 4** | Stored-key BLE auth, live HR + R-R, history/skin-temp fetch, overnight sleep windows, and software support for lossless `0x8B` SpO₂ ratio/perfusion plus explicitly profiled calibration evidence — on macOS and Android (hardware-recorded, [qualification data](docs/HARDWARE_SUPPORT.md)) | Fresh overnight `0x8B` emission + reference-sensor qualification before derived values enter the production oxygen metric; out-of-range reconnect and a full 24 h run. Sleep stages and SpO₂ remain experimental. Ring 3 and physical iOS are not yet recorded. |
 | **Standard BLE HR devices** (Polar, Wahoo, Garmin HRM, Coospo, Amazfit broadcast) | Live HR + R-R via standard `0x180D` / `0x2A37` since v3.8.0; automatic reconnect after link drops; serialized Android GATT setup for reliable HR, battery, and optional fitness-sensor subscriptions | No per-model firmware matrix recorded. Report each model. |
+| **Polar H10 / Verity Sense / OH1 deep BLE** | Automatic Apple/Android PMD capability negotiation, PPI fallback, and one-Hz accelerometer persistence; clean-room ECG/PPG/ACC/PPI decoders have matching Swift/Kotlin tests | Physical-device qualification is still required. ECG/PPG need a bounded waveform store before live capture is enabled. |
 | **Bluetooth FTMS gym equipment** | Live treadmill, bike, rower, or cross-trainer metrics; Android setup is serialized and automatically reconnects | No per-model hardware report yet. |
 | **Amazfit / Zepp / Mi Band live HR** | Experimental standard-HR or auth-free Huami-characteristic streaming on Android; serialized setup and automatic reconnect | Encrypted Huami pairing/history still needs clean-room implementation and hardware captures. |
 | **Xiaomi Smart Band 8 / 9 / 10** | Offline Mi Fitness SQLite import (one real Band 10 export verified) | Bands 8/9 need own exports; live BLE sync planned. |
@@ -92,7 +93,6 @@ Everything runs **offline**. The only feature that ever uses the network is the 
 
 | Device | Status |
 |---|---|
-| **Polar H10 / Verity Sense / OH1 deep BLE** (PMD ECG / PPG / ACC / PPI) | Protocol documented, production decoder not built |
 | **Garmin / Amazfit deep BLE** | Needs owned hardware and clean-room captures |
 | **Fitbit / Google** Google Health import | Needs registered API path |
 
@@ -146,6 +146,8 @@ Platform-pure Swift packages plus a macOS app target. All packages declare `.iOS
 Strand/                  macOS SwiftUI reference app
 Packages/
   WhoopProtocol/         BLE frame parsing, CRC, command/event/packet decode
+  OuraProtocol/          Oura auth, live/history command and record decode
+  PolarProtocol/         Clean-room Polar PMD control/data decode
   WhoopStore/            GRDB/SQLite persistence (v22 migration)
   StrandAnalytics/       HRV / recovery / strain / sleep / correlation math
   StrandImport/          WHOOP CSV + Apple Health + nutrition importers
