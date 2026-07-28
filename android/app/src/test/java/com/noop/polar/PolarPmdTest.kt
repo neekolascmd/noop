@@ -352,6 +352,11 @@ class PolarPmdTest {
     fun malformedPacketsAreRejected() {
         assertThrows(PolarPmdException::class.java) { PolarPmdDataFrame.parse(byteArrayOf(0)) }
         assertThrows(PolarPmdException::class.java) {
+            PolarPmdDataFrame.parse(
+                byteArrayOf(0) + ByteArray(8) { 0xFF.toByte() } + byteArrayOf(0),
+            )
+        }
+        assertThrows(PolarPmdException::class.java) {
             PolarPmdSettings.parse(byteArrayOf(0, 2, 0x82.toByte()))
         }
         assertThrows(PolarPmdException::class.java) {
@@ -362,6 +367,16 @@ class PolarPmdTest {
                 byteArrayOf(0, 0, 0, 0, 0, 0, 0, 1),
                 channels = 3,
                 resolution = 16,
+            )
+        }
+        assertThrows(PolarPmdException::class.java) {
+            PolarPmdDecoder.deltaSamples(
+                byteArrayOf(
+                    0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0x7F,
+                    2, 1, 1,
+                ),
+                channels = 1,
+                resolution = 32,
             )
         }
         assertThrows(PolarPmdException::class.java) {
@@ -404,6 +419,14 @@ class PolarPmdTest {
         clock.reset()
         val staleSensor = plausibleSensor - 24L * 60 * 60 * 1_000_000_000
         assertEquals(receive, clock.unixNanoseconds(staleSensor, receive))
+
+        clock.reset()
+        val futureSensor = receive + 1_000_000_000
+        assertEquals(receive, clock.unixNanoseconds(futureSensor, receive))
+        assertEquals(
+            receive + 1_000_000_000,
+            clock.unixNanoseconds(futureSensor + 1_000_000_000, receive + 2_000_000_000),
+        )
     }
 
     @Test

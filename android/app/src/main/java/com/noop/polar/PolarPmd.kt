@@ -812,11 +812,16 @@ class PolarPmdClock {
             fallbackOffset = if (receivedAtUnixNs >= sensorTimestampNs) {
                 receivedAtUnixNs - sensorTimestampNs
             } else {
-                0
+                -(sensorTimestampNs - receivedAtUnixNs)
             }
         }
         val offset = fallbackOffset ?: 0
-        return if (sensorTimestampNs <= Long.MAX_VALUE - offset) sensorTimestampNs + offset else receivedAtUnixNs
+        return if (offset >= 0) {
+            if (sensorTimestampNs <= Long.MAX_VALUE - offset) sensorTimestampNs + offset else receivedAtUnixNs
+        } else {
+            val magnitude = -offset
+            if (sensorTimestampNs >= magnitude) sensorTimestampNs - magnitude else receivedAtUnixNs
+        }
     }
 
     /**

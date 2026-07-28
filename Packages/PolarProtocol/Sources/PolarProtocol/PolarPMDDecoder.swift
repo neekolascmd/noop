@@ -20,6 +20,9 @@ public struct PolarPMDDataFrame: Equatable, Sendable {
         for index in 0..<8 {
             timestamp |= UInt64(bytes[index + 1]) << UInt64(index * 8)
         }
+        guard timestamp <= UInt64(Int64.max) else {
+            throw PolarPMDError.limitExceeded("timestamp exceeds signed 64-bit range")
+        }
         self.measurement = measurement
         sensorTimestampNs = timestamp
         frameType = bytes[9] & 0x7F
@@ -456,11 +459,11 @@ public struct PolarPMDDecoder: Sendable {
                         if raw & sign != 0 { raw |= ~mask }
                     }
                     let delta = Int(Int32(bitPattern: raw))
-                    let sum = next[channel].addingReportingOverflow(delta)
-                    guard !sum.overflow else {
+                    let sum = Int64(next[channel]) + Int64(delta)
+                    guard sum >= Int64(Int32.min), sum <= Int64(Int32.max) else {
                         throw PolarPMDError.malformed("delta accumulation overflow")
                     }
-                    next[channel] = sum.partialValue
+                    next[channel] = Int(sum)
                     bitOffset += deltaWidth
                 }
                 samples.append(next)

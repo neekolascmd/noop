@@ -317,6 +317,9 @@ final class PolarPMDTests: XCTestCase {
 
     func testMalformedPacketsAreRejected() throws {
         XCTAssertThrowsError(try PolarPMDDataFrame(bytes: [0x00]))
+        XCTAssertThrowsError(try PolarPMDDataFrame(
+            bytes: [0x00] + Array(repeating: 0xFF, count: 8) + [0x00]
+        ))
         XCTAssertThrowsError(try PolarPMDSettings(parameters: [0x00, 0x02, 0x82]))
         XCTAssertThrowsError(
             try PolarPMDDecoder.deltaSamples([0, 0], channels: 3, resolution: 16)
@@ -326,6 +329,13 @@ final class PolarPMDTests: XCTestCase {
                 [0, 0, 0, 0, 0, 0, 0, 1],
                 channels: 3,
                 resolution: 16
+            )
+        )
+        XCTAssertThrowsError(
+            try PolarPMDDecoder.deltaSamples(
+                [0xFF, 0xFF, 0xFF, 0x7F, 2, 1, 1],
+                channels: 1,
+                resolution: 32
             )
         )
         XCTAssertThrowsError(
@@ -365,6 +375,20 @@ final class PolarPMDTests: XCTestCase {
         XCTAssertEqual(
             clock.unixNanoseconds(sensorTimestampNs: staleSensor, receivedAtUnixNs: receive),
             receive
+        )
+
+        clock.reset()
+        let futureSensor = receive + 1_000_000_000
+        XCTAssertEqual(
+            clock.unixNanoseconds(sensorTimestampNs: futureSensor, receivedAtUnixNs: receive),
+            receive
+        )
+        XCTAssertEqual(
+            clock.unixNanoseconds(
+                sensorTimestampNs: futureSensor + 1_000_000_000,
+                receivedAtUnixNs: receive + 2_000_000_000
+            ),
+            receive + 1_000_000_000
         )
     }
 
