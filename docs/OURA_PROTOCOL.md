@@ -523,7 +523,8 @@ intentionally emit no typed value remain distinct from genuinely unknown tags.
 
 The complete history TLV is also retained in NOOP's on-device SQLite database so a later clean-room decoder
 can reprocess already-worn nights. The archive contains only the existing registry device id, tag, 32-bit
-ring timestamp, payload, wire size, and a local first-seen time. It is populated only after TLV reassembly
+ring timestamp, payload, wire size, a local first-seen time, and (when that settled page had one) the
+validated ring-clock/UTC anchor used by the live decoder. It is populated only after TLV reassembly
 on the GetEvents history path: secure live/auth frames, install keys, identifiers extracted from traffic,
 outgoing commands, and incomplete fragments cannot enter the record payload. Exact
 `(deviceId, ringTimestamp, tag, payload)` uniqueness makes refetches
@@ -531,6 +532,16 @@ idempotent. The archive write is awaited before cursor advancement; a failure le
 unchanged for safe refetch. Retention is bounded to 128 MiB of original TLV wire bytes per device, oldest
 whole records first, with a 100,000-record/32 MiB transport-RAM guard. Device-data deletion and normal
 local database backup behavior include the table automatically.
+
+Schema v26 adds a per-row `decodedRevision` and the optional validated anchor tuple. On Oura source
+activation, the current decoder pages only rows older than its decoder revision, maps timestamps with
+overflow-checked `OuraTimeAnchorMapping`, writes typed streams/sleep windows through their natural-key
+idempotent paths, and advances a page's revision **only after** every write succeeds. A crash therefore
+retries rather than skipping partially processed data. Rows migrated from v25 recover anchors from their
+own verified `0x42`/`0x85` records; a regressing `0x41` ring-start opens a new segment so an anchor is never
+carried across a proven clock reset. Records that still lack safe UTC remain raw and are withheld rather
+than stamped with arrival time. Bump the decoder revision—not the app version—when a new clean-room mapping
+can recover additional retained data.
 
 The `oura-decode` CLI uses the same inventory while replaying an opt-in capture. It counts reassembled TLVs,
 not capture fragments, so a split record or several records packed into one notification cannot create a

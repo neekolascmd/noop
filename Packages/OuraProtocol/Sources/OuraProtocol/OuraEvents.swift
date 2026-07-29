@@ -264,8 +264,9 @@ public struct OuraState: Equatable, Sendable, Codable {
 }
 
 /// A UTC anchor / time-sync event (OURA_PROTOCOL.md s6.11). `epochMs` retains its original API name,
-/// but the decoded wire value is unix seconds on the verified generations. Ring 4 also carries the
-/// ring-clock scale selected by its token (normally 100 ms/tick; token 0xFD means 1 ms/tick).
+/// but the decoded wire value is unix seconds on the verified generations. Convert it only through
+/// `OuraTimeAnchorMapping`, which bounds-checks before multiplying. Ring 4 also carries the ring-clock
+/// scale selected by its token (normally 100 ms/tick; token 0xFD means 1 ms/tick).
 public struct OuraTimeSync: Equatable, Sendable, Codable {
     public let ringTimestamp: UInt32
     public let epochMs: Int64

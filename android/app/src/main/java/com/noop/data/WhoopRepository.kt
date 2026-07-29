@@ -2,6 +2,8 @@ package com.noop.data
 
 import android.content.Context
 import com.noop.oura.OuraRecord
+import com.noop.oura.OuraTimeAnchor
+import com.noop.oura.OuraTimeAnchorMapping
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlin.math.roundToInt
@@ -291,12 +293,16 @@ class WhoopRepository(private val dao: WhoopDao) {
         records: List<OuraRecord>,
         deviceId: String,
         firstSeenAtUnixMs: Long = System.currentTimeMillis(),
+        timeAnchor: OuraTimeAnchor? = null,
         limits: OuraRawHistoryRetentionLimits = OuraRawHistoryRetentionLimits.PRODUCTION,
     ): Int {
         if (records.isEmpty()) return 0
         require(deviceId.isNotEmpty()) { "Oura raw-history device id is empty" }
         require(firstSeenAtUnixMs >= 0) { "invalid Oura first-seen timestamp" }
         require(limits.maxWireBytesPerDevice > 0) { "invalid Oura raw-history retention limit" }
+        require(timeAnchor == null || OuraTimeAnchorMapping.isValid(timeAnchor)) {
+            "invalid Oura time anchor"
+        }
         records.forEach(OuraRawHistoryStoreContract::validate)
         val rows = records.map {
             OuraRawHistoryEntity(
@@ -306,6 +312,10 @@ class WhoopRepository(private val dao: WhoopDao) {
                 payload = ByteArray(it.payload.size) { index -> it.payload[index].toByte() },
                 wireByteSize = it.totalLength.toLong(),
                 firstSeenAtUnixMs = firstSeenAtUnixMs,
+                anchorUtcMilliseconds = timeAnchor?.utcMilliseconds,
+                anchorRingTimestamp = timeAnchor?.ringTimestamp,
+                anchorFactorMillisecondsPerTick = timeAnchor?.factorMillisecondsPerTick,
+                decodedRevision = 0,
             )
         }
         return dao.insertOuraRawHistoryRowsBounded(
@@ -329,8 +339,53 @@ class WhoopRepository(private val dao: WhoopDao) {
                 ringTimestamp = it.ringTimestamp,
                 payload = it.payload,
                 firstSeenAtUnixMs = it.firstSeenAtUnixMs,
+                timeAnchor = it.timeAnchor,
+                decodedRevision = it.decodedRevision,
             )
         }
+    }
+
+    suspend fun ouraRawHistoryRecordsNeedingDecode(
+        deviceId: String,
+        decoderRevision: Int,
+        limit: Int = 2_000,
+    ): List<StoredOuraRawHistoryRecord> {
+        val boundedLimit = limit.coerceIn(0, 10_000)
+        if (deviceId.isEmpty() || decoderRevision <= 0 || boundedLimit == 0) return emptyList()
+        return dao.ouraRawHistoryRowsNeedingDecode(deviceId, decoderRevision, boundedLimit).map {
+            StoredOuraRawHistoryRecord(
+                archiveId = it.archiveId,
+                tag = it.tag,
+                ringTimestamp = it.ringTimestamp,
+                payload = it.payload,
+                firstSeenAtUnixMs = it.firstSeenAtUnixMs,
+                timeAnchor = it.timeAnchor,
+                decodedRevision = it.decodedRevision,
+            )
+        }
+    }
+
+    suspend fun setOuraRawHistoryTimeAnchor(
+        anchor: OuraTimeAnchor,
+        deviceId: String,
+        fromArchiveId: Long,
+        throughArchiveId: Long,
+    ): Int {
+        require(deviceId.isNotEmpty() && fromArchiveId > 0 && throughArchiveId >= fromArchiveId)
+        require(OuraTimeAnchorMapping.isValid(anchor))
+        return dao.setOuraRawHistoryAnchorForRange(
+            deviceId = deviceId,
+            fromArchiveId = fromArchiveId,
+            throughArchiveId = throughArchiveId,
+            utcMilliseconds = anchor.utcMilliseconds,
+            anchorRingTimestamp = anchor.ringTimestamp,
+            factorMillisecondsPerTick = anchor.factorMillisecondsPerTick,
+        )
+    }
+
+    suspend fun markOuraRawHistoryDecoded(archiveIds: List<Long>, decoderRevision: Int) {
+        require(decoderRevision > 0 && archiveIds.all { it > 0 })
+        if (archiveIds.isNotEmpty()) dao.markOuraRawHistoryRowsDecoded(archiveIds, decoderRevision)
     }
 
     suspend fun ouraRawHistoryWireBytes(deviceId: String): Long =

@@ -166,7 +166,8 @@ data class OuraState(val ringTimestamp: Long, val stateCode: Int, val text: Stri
 
 /**
  * A UTC anchor / time-sync event. [epochMs] retains the original API name, but verified wire values
- * are unix seconds. Ring 4 additionally selects 100 ms/tick normally or 1 ms/tick with token 0xFD.
+ * are unix seconds. Convert it only through [OuraTimeAnchorMapping], which bounds-checks before
+ * multiplying. Ring 4 additionally selects 100 ms/tick normally or 1 ms/tick with token 0xFD.
  */
 data class OuraTimeSync(
     val ringTimestamp: Long,

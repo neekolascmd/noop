@@ -61,7 +61,7 @@ single `DatabaseQueue` and applies these PRAGMAs before any query runs:
 
 `WhoopStore` is an `actor`: all GRDB calls run on the actor's serial executor (off the main
 thread) through the `syncRead` / `syncWrite` helpers. The reported schema version is
-`WhoopStoreInfo.schemaVersion = 25`.
+`WhoopStoreInfo.schemaVersion = 26`.
 
 ---
 
@@ -115,6 +115,7 @@ Migrations are registered in `Packages/WhoopStore/Sources/WhoopStore/Database.sw
 | **v23** | Adds explicit SpO2 units so raw ADC and percentage rows cannot be confused. |
 | **v24** | Adds bounded dense Polar ECG/PPG waveform chunks. |
 | **v25** | Adds the bounded, exact-deduplicated Oura raw-history TLV archive. |
+| **v26** | Adds validated per-row Oura time anchors and durable decoder revisions for bounded, fully-offline raw-history re-decoding. |
 
 `WhoopStoreInfo.schemaVersion` is derived from the production migrator's registered identifiers,
 so the public version marker and diagnostics cannot silently lag behind `Database.swift`.

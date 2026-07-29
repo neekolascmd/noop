@@ -7,7 +7,9 @@ import com.noop.data.PairedDeviceRow
 import com.noop.data.SourceKind
 import com.noop.data.StreamBatch
 import com.noop.data.WhoopRepository
+import com.noop.data.redecodeOuraRawHistory
 import com.noop.oura.OuraRingGen
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -371,9 +373,13 @@ class SourceCoordinator(
                 persist = { batch: StreamBatch, deviceId: String ->
                     runCatching { repo.insert(batch, deviceId); true }.getOrDefault(false)
                 },
-                persistRawHistory = { records, deviceId ->
+                persistRawHistory = { records, deviceId, timeAnchor ->
                     runCatching {
-                        repo.insertOuraRawHistoryRecords(records, deviceId)
+                        repo.insertOuraRawHistoryRecords(
+                            records = records,
+                            deviceId = deviceId,
+                            timeAnchor = timeAnchor,
+                        )
                         true
                     }.getOrDefault(false)
                 },
@@ -403,6 +409,24 @@ class SourceCoordinator(
             if (OuraInstallKeyStore.consumePendingAdopt(ctx, id)) {
                 source.setAdoptIntent(true)
                 straplog("Oura: adopt consent granted - this session may install NOOP's key")
+            }
+            // Fully local, revision-gated replay. Already-current archives return immediately; decoder
+            // improvements recover new typed rows without reconnecting the ring or using an Oura account.
+            scope.launch {
+                try {
+                    val report = repo.redecodeOuraRawHistory(id, ringGen)
+                    if (report.decodedRecords > 0) {
+                        straplog(
+                            "Oura: offline archive replay decoded ${report.decodedRecords} record(s), " +
+                                "inserted ${report.insertedRows} row(s), " +
+                                "withheld ${report.withheldEvents}",
+                        )
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Throwable) {
+                    straplog("Oura: offline archive replay paused; retained records will retry")
+                }
             }
             // Mirror this source's live adopt outcome + honest needs-pairing message so the wizard can leave
             // its Adopting step on a confirmed streaming (success) or an honest Failed. Reset on teardown.

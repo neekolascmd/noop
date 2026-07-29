@@ -102,7 +102,8 @@ class OuraLiveSource(
     /** Await persistence under [deviceId]. History ACKs depend on true; live pushes remain best-effort. */
     private val persist: suspend (StreamBatch, String) -> Boolean = { _, _ -> true },
     /** Await bounded storage of complete reassembled history TLVs before any cursor may advance. */
-    private val persistRawHistory: suspend (List<OuraRecord>, String) -> Boolean = { _, _ -> true },
+    private val persistRawHistory:
+        suspend (List<OuraRecord>, String, com.noop.oura.OuraTimeAnchor?) -> Boolean = { _, _, _ -> true },
     /** Await a verified 0x76 bedtime-window upsert before acknowledging its history batch. */
     private val persistSleepSession: suspend (Long, Long) -> Boolean = { _, _ -> true },
     /** Diagnostic sink for the connect/auth/stream lifecycle - the SAME exportable strap log (#421).
@@ -731,8 +732,12 @@ class OuraLiveSource(
         historyPersistenceInFlight = true
         persistenceScope.launch {
             var succeeded = true
+            val timeAnchor = d.currentSessionTimeAnchor
             for (chunk in snapshot.chunked(RAW_HISTORY_PERSIST_CHUNK_SIZE)) {
-                if (!runCatching { persistRawHistory(chunk, deviceId) }.getOrDefault(false)) {
+                if (!runCatching {
+                        persistRawHistory(chunk, deviceId, timeAnchor)
+                    }.getOrDefault(false)
+                ) {
                     succeeded = false
                     break
                 }

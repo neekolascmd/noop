@@ -160,6 +160,23 @@ interface WhoopDao : DeviceRegistryDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertOuraRawHistoryRows(rows: List<OuraRawHistoryEntity>): List<Long>
 
+    @Query(
+        "UPDATE ouraRawHistory SET anchorUtcMilliseconds = :utcMilliseconds, " +
+            "anchorRingTimestamp = :anchorRingTimestamp, " +
+            "anchorFactorMillisecondsPerTick = :factorMillisecondsPerTick, decodedRevision = 0 " +
+            "WHERE deviceId = :deviceId AND ringTimestamp = :ringTimestamp AND tag = :tag " +
+            "AND payload = :payload AND anchorUtcMilliseconds IS NULL"
+    )
+    suspend fun enrichExactOuraRawHistoryAnchor(
+        deviceId: String,
+        ringTimestamp: Long,
+        tag: Int,
+        payload: ByteArray,
+        utcMilliseconds: Long,
+        anchorRingTimestamp: Long,
+        factorMillisecondsPerTick: Long,
+    ): Int
+
     @Query("SELECT COALESCE(SUM(wireByteSize), 0) FROM ouraRawHistory WHERE deviceId = :deviceId")
     suspend fun ouraRawHistoryWireBytes(deviceId: String): Long
 
@@ -182,13 +199,66 @@ interface WhoopDao : DeviceRegistryDao {
         limit: Int,
     ): List<OuraRawHistoryEntity>
 
+    @Query(
+        "SELECT * FROM ouraRawHistory WHERE deviceId = :deviceId " +
+            "AND decodedRevision < :decoderRevision ORDER BY archiveId ASC LIMIT :limit"
+    )
+    suspend fun ouraRawHistoryRowsNeedingDecode(
+        deviceId: String,
+        decoderRevision: Int,
+        limit: Int,
+    ): List<OuraRawHistoryEntity>
+
+    @Query(
+        "UPDATE ouraRawHistory SET anchorUtcMilliseconds = :utcMilliseconds, " +
+            "anchorRingTimestamp = :anchorRingTimestamp, " +
+            "anchorFactorMillisecondsPerTick = :factorMillisecondsPerTick, decodedRevision = 0 " +
+            "WHERE deviceId = :deviceId AND archiveId >= :fromArchiveId " +
+            "AND archiveId <= :throughArchiveId AND anchorUtcMilliseconds IS NULL"
+    )
+    suspend fun setOuraRawHistoryAnchorForRange(
+        deviceId: String,
+        fromArchiveId: Long,
+        throughArchiveId: Long,
+        utcMilliseconds: Long,
+        anchorRingTimestamp: Long,
+        factorMillisecondsPerTick: Long,
+    ): Int
+
+    @Query(
+        "UPDATE ouraRawHistory SET decodedRevision = :decoderRevision " +
+            "WHERE archiveId = :archiveId AND decodedRevision < :decoderRevision"
+    )
+    suspend fun markOuraRawHistoryRowDecoded(archiveId: Long, decoderRevision: Int): Int
+
+    @Transaction
+    suspend fun markOuraRawHistoryRowsDecoded(archiveIds: List<Long>, decoderRevision: Int) {
+        for (archiveId in archiveIds) markOuraRawHistoryRowDecoded(archiveId, decoderRevision)
+    }
+
     @Transaction
     suspend fun insertOuraRawHistoryRowsBounded(
         rows: List<OuraRawHistoryEntity>,
         deviceId: String,
         maxWireBytes: Long,
     ): Int {
-        val inserted = insertOuraRawHistoryRows(rows).count { it != -1L }
+        val results = insertOuraRawHistoryRows(rows)
+        val inserted = results.count { it != -1L }
+        rows.zip(results).forEach { (row, result) ->
+            if (result == -1L && row.anchorUtcMilliseconds != null &&
+                row.anchorRingTimestamp != null && row.anchorFactorMillisecondsPerTick != null
+            ) {
+                enrichExactOuraRawHistoryAnchor(
+                    deviceId = row.deviceId,
+                    ringTimestamp = row.ringTimestamp,
+                    tag = row.tag,
+                    payload = row.payload,
+                    utcMilliseconds = row.anchorUtcMilliseconds,
+                    anchorRingTimestamp = row.anchorRingTimestamp,
+                    factorMillisecondsPerTick = row.anchorFactorMillisecondsPerTick,
+                )
+            }
+        }
         val total = ouraRawHistoryWireBytes(deviceId)
         if (total > maxWireBytes) {
             val evictions = OuraRawHistoryStoreContract.rowIdsToEvict(

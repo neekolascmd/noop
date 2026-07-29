@@ -12,19 +12,25 @@ public struct StoredOuraRawHistoryRecord: Equatable, Sendable {
     public let ringTimestamp: UInt32
     public let payload: Data
     public let firstSeenAtUnixMs: Int64
+    public let timeAnchor: OuraTimeAnchor?
+    public let decodedRevision: Int
 
     public init(
         archiveId: Int64,
         tag: UInt8,
         ringTimestamp: UInt32,
         payload: Data,
-        firstSeenAtUnixMs: Int64
+        firstSeenAtUnixMs: Int64,
+        timeAnchor: OuraTimeAnchor? = nil,
+        decodedRevision: Int = 0
     ) {
         self.archiveId = archiveId
         self.tag = tag
         self.ringTimestamp = ringTimestamp
         self.payload = payload
         self.firstSeenAtUnixMs = firstSeenAtUnixMs
+        self.timeAnchor = timeAnchor
+        self.decodedRevision = decodedRevision
     }
 
     public var record: OuraRecord {
@@ -59,6 +65,7 @@ extension WhoopStore {
         _ records: [OuraRecord],
         deviceId: String,
         firstSeenAtUnixMs: Int64 = Int64(Date().timeIntervalSince1970 * 1_000),
+        timeAnchor: OuraTimeAnchor? = nil,
         limits: OuraRawHistoryRetentionLimits = .production
     ) async throws -> Int {
         guard !records.isEmpty else { return 0 }
@@ -71,26 +78,56 @@ extension WhoopStore {
         guard limits.maxWireBytesPerDevice > 0 else {
             throw OuraRawHistoryStoreError.invalid("retention limit")
         }
+        if let timeAnchor, !OuraTimeAnchorMapping.isValid(timeAnchor) {
+            throw OuraRawHistoryStoreError.invalid("time anchor")
+        }
         for record in records { try Self.validateOuraRawHistoryRecord(record) }
 
         return try syncWrite { db in
             let insert = try db.cachedStatement(sql: """
                 INSERT INTO ouraRawHistory
-                    (deviceId, ringTimestamp, tag, payload, wireByteSize, firstSeenAtUnixMs)
-                VALUES (?, ?, ?, ?, ?, ?)
+                    (deviceId, ringTimestamp, tag, payload, wireByteSize, firstSeenAtUnixMs,
+                     anchorUtcMilliseconds, anchorRingTimestamp, anchorFactorMillisecondsPerTick,
+                     decodedRevision)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
                 ON CONFLICT(deviceId, ringTimestamp, tag, payload) DO NOTHING
+                """)
+            let enrich = try db.cachedStatement(sql: """
+                UPDATE ouraRawHistory
+                SET anchorUtcMilliseconds = ?,
+                    anchorRingTimestamp = ?,
+                    anchorFactorMillisecondsPerTick = ?,
+                    decodedRevision = 0
+                WHERE deviceId = ? AND ringTimestamp = ? AND tag = ? AND payload = ?
+                  AND anchorUtcMilliseconds IS NULL
                 """)
             var inserted = 0
             for record in records {
+                let payload = Data(record.payload)
                 try insert.execute(arguments: [
                     deviceId,
                     Int64(record.ringTimestamp),
                     Int(record.type),
-                    Data(record.payload),
+                    payload,
                     record.totalLength,
                     firstSeenAtUnixMs,
+                    timeAnchor?.utcMilliseconds,
+                    timeAnchor.map { Int64($0.ringTimestamp) },
+                    timeAnchor?.factorMillisecondsPerTick,
                 ])
-                inserted += db.changesCount
+                let wasInserted = db.changesCount
+                inserted += wasInserted
+                if wasInserted == 0, let timeAnchor {
+                    try enrich.execute(arguments: [
+                        timeAnchor.utcMilliseconds,
+                        Int64(timeAnchor.ringTimestamp),
+                        timeAnchor.factorMillisecondsPerTick,
+                        deviceId,
+                        Int64(record.ringTimestamp),
+                        Int(record.type),
+                        payload,
+                    ])
+                }
             }
 
             var total = try Int64.fetchOne(
@@ -135,7 +172,9 @@ extension WhoopStore {
             try Row.fetchAll(
                 db,
                 sql: """
-                    SELECT archiveId, tag, ringTimestamp, payload, firstSeenAtUnixMs
+                    SELECT archiveId, tag, ringTimestamp, payload, firstSeenAtUnixMs,
+                           anchorUtcMilliseconds, anchorRingTimestamp,
+                           anchorFactorMillisecondsPerTick, decodedRevision
                     FROM ouraRawHistory
                     WHERE deviceId = ? AND archiveId > ?
                     ORDER BY archiveId ASC
@@ -143,6 +182,93 @@ extension WhoopStore {
                     """,
                 arguments: [deviceId, afterArchiveId, boundedLimit]
             ).compactMap(Self.decodeOuraRawHistoryRow)
+        }
+    }
+
+    /// Page rows not yet processed by the current clean-room decoder revision.
+    public func ouraRawHistoryRecordsNeedingDecode(
+        deviceId: String,
+        decoderRevision: Int,
+        limit: Int = 2_000
+    ) async throws -> [StoredOuraRawHistoryRecord] {
+        let boundedLimit = min(max(limit, 0), 10_000)
+        guard !deviceId.isEmpty, decoderRevision > 0, boundedLimit > 0 else { return [] }
+        return try syncRead { db in
+            try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT archiveId, tag, ringTimestamp, payload, firstSeenAtUnixMs,
+                           anchorUtcMilliseconds, anchorRingTimestamp,
+                           anchorFactorMillisecondsPerTick, decodedRevision
+                    FROM ouraRawHistory
+                    WHERE deviceId = ? AND decodedRevision < ?
+                    ORDER BY archiveId ASC
+                    LIMIT ?
+                    """,
+                arguments: [deviceId, decoderRevision, boundedLimit]
+            ).compactMap(Self.decodeOuraRawHistoryRow)
+        }
+    }
+
+    /// Attach a validated anchor to still-unresolved rows in an insertion-order segment. Resetting their
+    /// revision makes a later pass reconsider rows that were previously withheld for lack of UTC.
+    @discardableResult
+    public func setOuraRawHistoryTimeAnchor(
+        _ anchor: OuraTimeAnchor,
+        deviceId: String,
+        fromArchiveId: Int64,
+        throughArchiveId: Int64
+    ) async throws -> Int {
+        guard !deviceId.isEmpty,
+              fromArchiveId > 0,
+              throughArchiveId >= fromArchiveId,
+              OuraTimeAnchorMapping.isValid(anchor) else {
+            throw OuraRawHistoryStoreError.invalid("anchor backfill range")
+        }
+        return try syncWrite { db in
+            try db.execute(
+                sql: """
+                    UPDATE ouraRawHistory
+                    SET anchorUtcMilliseconds = ?,
+                        anchorRingTimestamp = ?,
+                        anchorFactorMillisecondsPerTick = ?,
+                        decodedRevision = 0
+                    WHERE deviceId = ?
+                      AND archiveId >= ? AND archiveId <= ?
+                      AND anchorUtcMilliseconds IS NULL
+                    """,
+                arguments: [
+                    anchor.utcMilliseconds,
+                    Int64(anchor.ringTimestamp),
+                    anchor.factorMillisecondsPerTick,
+                    deviceId,
+                    fromArchiveId,
+                    throughArchiveId,
+                ]
+            )
+            return db.changesCount
+        }
+    }
+
+    /// Advance only rows whose typed writes completed. Per-row updates avoid SQLite variable limits and
+    /// keep the operation atomic for each replay page.
+    public func markOuraRawHistoryDecoded(
+        archiveIds: [Int64],
+        decoderRevision: Int
+    ) async throws {
+        guard decoderRevision > 0, archiveIds.allSatisfy({ $0 > 0 }) else {
+            throw OuraRawHistoryStoreError.invalid("decoder revision")
+        }
+        guard !archiveIds.isEmpty else { return }
+        try syncWrite { db in
+            let update = try db.cachedStatement(sql: """
+                UPDATE ouraRawHistory
+                SET decodedRevision = ?
+                WHERE archiveId = ? AND decodedRevision < ?
+                """)
+            for archiveId in archiveIds {
+                try update.execute(arguments: [decoderRevision, archiveId, decoderRevision])
+            }
         }
     }
 
@@ -171,12 +297,28 @@ extension WhoopStore {
         let rawTimestamp: Int64 = row["ringTimestamp"]
         guard let tag = UInt8(exactly: rawTag),
               let ringTimestamp = UInt32(exactly: rawTimestamp) else { return nil }
+        let anchor: OuraTimeAnchor?
+        if let utcMilliseconds: Int64 = row["anchorUtcMilliseconds"],
+           let rawAnchorTimestamp: Int64 = row["anchorRingTimestamp"],
+           let anchorRingTimestamp = UInt32(exactly: rawAnchorTimestamp),
+           let factor: Int64 = row["anchorFactorMillisecondsPerTick"] {
+            let candidate = OuraTimeAnchor(
+                ringTimestamp: anchorRingTimestamp,
+                utcMilliseconds: utcMilliseconds,
+                factorMillisecondsPerTick: factor
+            )
+            anchor = OuraTimeAnchorMapping.isValid(candidate) ? candidate : nil
+        } else {
+            anchor = nil
+        }
         return StoredOuraRawHistoryRecord(
             archiveId: row["archiveId"],
             tag: tag,
             ringTimestamp: ringTimestamp,
             payload: row["payload"],
-            firstSeenAtUnixMs: row["firstSeenAtUnixMs"]
+            firstSeenAtUnixMs: row["firstSeenAtUnixMs"],
+            timeAnchor: anchor,
+            decodedRevision: row["decodedRevision"]
         )
     }
 }
