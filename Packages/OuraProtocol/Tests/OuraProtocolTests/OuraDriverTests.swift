@@ -598,6 +598,10 @@ final class OuraDriverTests: XCTestCase {
     func testEvidenceTiersKeepQualifiedIBIProductionAndRatioSpO2Diagnostic() {
         XCTAssertEqual(OuraEventTag.greenIbiQuality.tier, .tierA)
         XCTAssertEqual(OuraEventTag.spo2RatioPI.tier, .diagnostic)
+        XCTAssertEqual(OuraEventTag.sleepPhase.tier, .diagnostic)
+        XCTAssertEqual(OuraEventTag.sleepPhaseAlt.tier, .diagnostic)
+        XCTAssertEqual(OuraEventTag.sleepPhaseInfo.tier, .tierB)
+        XCTAssertEqual(OuraEventTag.sleepPhaseInfo.name, "SLEEP_PHASE_INFO")
     }
 
     func testIngestUnknownTagYieldsNothing() {

@@ -707,6 +707,10 @@ class OuraDriverTest {
     fun testEvidenceTiersKeepQualifiedIBIProductionAndRatioSpO2Diagnostic() {
         assertEquals(TrustTier.TIER_A, OuraEventTag.GREEN_IBI_QUALITY.tier)
         assertEquals(TrustTier.DIAGNOSTIC, OuraEventTag.SPO2_RATIO_PI.tier)
+        assertEquals(TrustTier.DIAGNOSTIC, OuraEventTag.SLEEP_PHASE.tier)
+        assertEquals(TrustTier.DIAGNOSTIC, OuraEventTag.SLEEP_PHASE_ALT.tier)
+        assertEquals(TrustTier.TIER_B, OuraEventTag.SLEEP_PHASE_INFO.tier)
+        assertEquals("SLEEP_PHASE_INFO", OuraEventTag.SLEEP_PHASE_INFO.tagName)
     }
 
     @Test

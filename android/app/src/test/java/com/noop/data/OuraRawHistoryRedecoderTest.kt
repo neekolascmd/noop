@@ -66,4 +66,32 @@ class OuraRawHistoryRedecoderTest {
         assertEquals(1, decoded.withheldEvents)
         assertTrue(decoded.batch.isEmpty)
     }
+
+    @Test
+    fun pageDecoderReplaysCompleteSleepPhaseSeriesAtomically() {
+        val anchor = OuraTimeAnchor(
+            ringTimestamp = 1_000L,
+            utcMilliseconds = 1_700_000_000_000L,
+            factorMillisecondsPerTick = 100L,
+        )
+        val row = StoredOuraRawHistoryRecord(
+            archiveId = 1,
+            tag = OuraEventTag.SLEEP_PHASE.raw,
+            ringTimestamp = 900L,
+            payload = byteArrayOf(0x07, 0x1B),
+            firstSeenAtUnixMs = 1,
+            timeAnchor = anchor,
+        )
+
+        val decoded = OuraRawHistoryPageDecoder.decode(listOf(row), OuraRingGen.GEN3)
+        assertEquals(0, decoded.withheldEvents)
+        assertEquals(1, decoded.batch.events.size)
+        val event = decoded.batch.events.single()
+        assertEquals("OURA_SLEEP_PHASE_SERIES", event.kind)
+        assertEquals(1_699_999_990L, event.ts)
+        assertTrue(event.payloadJSON.contains("\"source_tag\":78"))
+        assertTrue(event.payloadJSON.contains("\"header\":7"))
+        assertTrue(event.payloadJSON.contains("\"phase_codes\":[0,1,2,3]"))
+        assertTrue(!event.payloadJSON.contains("cadence_seconds"))
+    }
 }

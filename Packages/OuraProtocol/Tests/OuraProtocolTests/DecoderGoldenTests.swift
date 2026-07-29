@@ -185,15 +185,17 @@ final class DecoderGoldenTests: XCTestCase {
     // MARK: - 0x4E sleep phase (2-bit codes MSB-first; header byte skipped)
 
     func testSleepPhase0x4E() {
-        // header 0x00, phase byte 0x6C = bits 01 10 11 00 -> light, deep, rem, awake.
-        let rec = record("4e0602000100006c")
-        let phases = OuraDecoders.decodeSleepPhase(rec)
-        XCTAssertEqual(phases, [
-            OuraSleepPhase(ringTimestamp: rt, index: 0, stage: .light),
-            OuraSleepPhase(ringTimestamp: rt, index: 1, stage: .deep),
-            OuraSleepPhase(ringTimestamp: rt, index: 2, stage: .rem),
-            OuraSleepPhase(ringTimestamp: rt, index: 3, stage: .awake),
-        ])
+        // header 0x00, phase byte 0x1B = bits 00 01 10 11 -> deep, light, rem, awake.
+        let rec = record("4e0602000100001b")
+        XCTAssertEqual(
+            OuraDecoders.decodeSleepPhase(rec),
+            OuraSleepPhaseSeries(
+                ringTimestamp: rt,
+                sourceTag: 0x4E,
+                header: 0,
+                stages: [.deep, .light, .rem, .awake]
+            )
+        )
     }
 
     // MARK: - 0x6B motion period (2-bit MOTION_STATE codes; 2 header bytes skipped)

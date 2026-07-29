@@ -21,7 +21,7 @@ import com.noop.protocol.WhoopEvent
  *   - the ring's open 0x5D HRV tag is recorded as an `OURA_HRV` diagnostic event carrying ITS RAW
  *     decoded fields (time_ms/b1/b2) ONLY, never a fabricated rmssd_ms (the int8 b1/b2 byte->ms
  *     scale is not Tier-A; NOOP's scoring RMSSD comes from `rr`, not this tag);
- *   - the open sleep-phase tags become `OURA_SLEEP_PHASE` events folded into a sleep session.
+ *   - the open sleep-phase tags become diagnostic ordered-series events; cadence is not guessed.
  *
  * Each event carries a ring-clock `ringTimestamp` (not wall-clock). To stay pure and avoid baking a
  * clock model in here, the caller supplies an [anchor] resolving a ring timestamp to wall-clock unix
@@ -34,8 +34,11 @@ object OuraStreamMapping {
     /** The event `kind` recorded for the ring's own open HRV (0x5D) tag. Must match Swift exactly. */
     const val EVENT_HRV = "OURA_HRV"
 
-    /** The event `kind` recorded for the ring's own open sleep-phase (0x49.../0x58) tags. */
-    const val EVENT_SLEEP_PHASE = "OURA_SLEEP_PHASE"
+    /**
+     * The event `kind` for one complete diagnostic sleep-phase record. The new name intentionally
+     * avoids legacy `OURA_SLEEP_PHASE` rows that stored only the record's first code.
+     */
+    const val EVENT_SLEEP_PHASE = "OURA_SLEEP_PHASE_SERIES"
 
     /** Verified 0x6A measurements; the unnamed state is preserved raw, never promoted to a stage. */
     const val EVENT_SLEEP_PERIOD = "OURA_SLEEP_PERIOD"
@@ -141,14 +144,18 @@ object OuraStreamMapping {
                 }
 
                 is OuraEvent.SleepPhaseEvent -> {
+                    if (ev.value.stages.isEmpty()) continue
                     val ts = anchor(ev.value.ringTimestamp) ?: continue
                     out.events.add(
                         WhoopEvent(
                             ts = ts,
                             kind = EVENT_SLEEP_PHASE,
                             payload = linkedMapOf<String, Any?>(
-                                "phase" to ev.value.stage.raw,
-                                "index" to ev.value.index,
+                                "source_tag" to ev.value.sourceTag,
+                                "header" to ev.value.header,
+                                "ring_timestamp" to ev.value.ringTimestamp,
+                                "phase_codes" to ev.value.stages.map { it.raw },
+                                "codebook" to "0=deep,1=light,2=rem,3=awake",
                             ),
                         ),
                     )

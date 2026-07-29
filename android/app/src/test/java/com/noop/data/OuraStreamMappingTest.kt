@@ -4,7 +4,7 @@ import com.noop.oura.OuraEvent
 import com.noop.oura.OuraHR
 import com.noop.oura.OuraHRV
 import com.noop.oura.OuraIBI
-import com.noop.oura.OuraSleepPhase
+import com.noop.oura.OuraSleepPhaseSeries
 import com.noop.oura.OuraSleepStage
 import com.noop.oura.OuraSpO2
 import com.noop.oura.OuraSpO2CalibrationProfile
@@ -66,24 +66,35 @@ class OuraStreamMappingTest {
     }
 
     @Test
-    fun sleepPhaseBecomesOuraSleepPhaseEvent() {
+    fun sleepPhaseBecomesOneAtomicSeriesWithoutInventingCadence() {
         val s = OuraStreamMapping.streams(
             listOf(
-                OuraEvent.SleepPhaseEvent(OuraSleepPhase(ringTimestamp = 2, index = 0, stage = OuraSleepStage.DEEP)),
-                OuraEvent.SleepPhaseEvent(OuraSleepPhase(ringTimestamp = 3, index = 1, stage = OuraSleepStage.REM)),
+                OuraEvent.SleepPhaseEvent(
+                    OuraSleepPhaseSeries(
+                        ringTimestamp = 2,
+                        sourceTag = 0x4E,
+                        header = 7,
+                        stages = listOf(
+                            OuraSleepStage.DEEP,
+                            OuraSleepStage.LIGHT,
+                            OuraSleepStage.REM,
+                            OuraSleepStage.AWAKE,
+                        ),
+                    ),
+                ),
             ),
             anchor,
         )
-        assertEquals(2, s.events.size)
-        val deep = s.events[0]
-        assertEquals(OuraStreamMapping.EVENT_SLEEP_PHASE, deep.kind)
-        assertEquals("OURA_SLEEP_PHASE", deep.kind)
-        assertEquals(2, deep.payload["phase"])           // OuraSleepStage.DEEP.raw == 2
-        assertEquals(0, deep.payload["index"])
-        assertEquals(3, s.events[1].payload["phase"])     // REM.raw == 3
-        // PARITY: the payload is exactly { phase, index } - the Swift twin emits no phase_name, so neither
-        // does Kotlin. Pin it so a re-added phase_name key breaks this test.
-        assertNull(deep.payload["phase_name"])
+        assertEquals(1, s.events.size)
+        val series = s.events.single()
+        assertEquals(OuraStreamMapping.EVENT_SLEEP_PHASE, series.kind)
+        assertEquals("OURA_SLEEP_PHASE_SERIES", series.kind)
+        assertEquals(0x4E, series.payload["source_tag"])
+        assertEquals(7, series.payload["header"])
+        assertEquals(2L, series.payload["ring_timestamp"])
+        assertEquals(listOf(0, 1, 2, 3), series.payload["phase_codes"])
+        assertEquals("0=deep,1=light,2=rem,3=awake", series.payload["codebook"])
+        assertNull(series.payload["cadence_seconds"])
     }
 
     @Test

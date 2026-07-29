@@ -571,9 +571,10 @@ public final class OuraDriver {
             // rather than guess the partial layout. Per OURA_PROTOCOL.md s6.13.
             return []
 
-        // --- Tier A: Sleep phase (2-bit codes are verified) ---
+        // --- Diagnostic sleep phase: codebook/order are known; cadence is not production-qualified ---
         case .sleepPhase, .sleepPhaseAlt:
-            return (OuraDecoders.decodeSleepPhase(record) ?? []).map { OuraEvent.sleepPhase($0) }
+            guard let series = OuraDecoders.decodeSleepPhase(record) else { return [] }
+            return [.sleepPhase(series)]
         case .sleepPeriod:
             guard let period = OuraDecoders.decodeSleepPeriod(record) else { return [] }
             return [.sleepPeriod(period)]
@@ -658,7 +659,10 @@ public final class OuraDriver {
             return []
 
         // --- Tier B (only reached when allowTierB == true; otherwise dropped above) ---
-        case .sleepSummary1, .sleepSummaryB, .sleepSummaryC, .sleepSummaryD, .sleepSummaryE, .sleepSummaryF:
+        case .sleepPhaseInfo:
+            return [.tierB(OuraTierBSummary(tag: record.type, ringTimestamp: record.ringTimestamp,
+                                            rawPayload: record.payload, kind: "sleep_phase_info"))]
+        case .sleepSummary1, .sleepSummaryC, .sleepSummaryD, .sleepSummaryE, .sleepSummaryF:
             return [.tierB(OuraTierBSummary(tag: record.type, ringTimestamp: record.ringTimestamp,
                                             rawPayload: record.payload, kind: "sleep_summary"))]
         case .activityInfo:

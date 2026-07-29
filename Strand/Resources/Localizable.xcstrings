@@ -66556,36 +66556,36 @@
         }
       }
     },
-    "Overnight sleep staging, resting heart rate, skin-temperature trend, motion and battery, read straight off the ring.": {
+    "Overnight sleep windows, resting heart rate, skin-temperature trend and battery, read straight off the ring. Sleep stages remain experimental.": {
       "localizations": {
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Nächtliche Schlafphasen, Ruheherzfrequenz, Hauttemperatur-Trend, Bewegung und Akku, direkt vom Ring gelesen."
+            "value": "Nächtliche Schlaffenster, Ruheherzfrequenz, Hauttemperatur-Trend und Akku, direkt vom Ring gelesen. Schlafphasen bleiben experimentell."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Fases del sueño nocturno, frecuencia cardíaca en reposo, tendencia de temperatura de la piel, movimiento y batería, leídos directamente del anillo."
+            "value": "Ventanas de sueño nocturno, frecuencia cardíaca en reposo, tendencia de temperatura de la piel y batería, leídas directamente del anillo. Las fases del sueño siguen siendo experimentales."
           }
         },
         "it": {
           "stringUnit": {
             "state": "translated",
-            "value": "Fasi del sonno notturno, frequenza cardiaca a riposo, andamento della temperatura cutanea, movimento e batteria, letti direttamente dall'anello."
+            "value": "Finestre del sonno notturno, frequenza cardiaca a riposo, andamento della temperatura cutanea e batteria, letti direttamente dall'anello. Le fasi del sonno restano sperimentali."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "夜间睡眠分期、静息心率、皮肤温度趋势、运动和电量，直接从戒指读取。"
+            "value": "夜间睡眠时段、静息心率、皮肤温度趋势和电量，直接从戒指读取。睡眠分期仍为实验性功能。"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "夜間睡眠分期、靜息心率、皮膚溫度趨勢、運動與電量，直接從戒指讀取。"
+            "value": "夜間睡眠時段、靜息心率、皮膚溫度趨勢與電量，直接從戒指讀取。睡眠分期仍為實驗性功能。"
           }
         }
       }

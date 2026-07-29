@@ -673,9 +673,10 @@ class OuraDriver(
                 // rather than guess the partial layout. Per OURA_PROTOCOL.md s6.13.
                 emptyList()
 
-            // --- Tier A: Sleep phase (2-bit codes are verified) ---
+            // --- Diagnostic sleep phase: codebook/order are known; cadence is not production-qualified ---
             OuraEventTag.SLEEP_PHASE, OuraEventTag.SLEEP_PHASE_ALT ->
-                (OuraDecoders.decodeSleepPhase(record) ?: emptyList()).map { OuraEvent.SleepPhaseEvent(it) }
+                OuraDecoders.decodeSleepPhase(record)?.let { listOf(OuraEvent.SleepPhaseEvent(it)) }
+                    ?: emptyList()
             OuraEventTag.SLEEP_PERIOD ->
                 OuraDecoders.decodeSleepPeriod(record)?.let { listOf(OuraEvent.SleepPeriodEvent(it)) } ?: emptyList()
             OuraEventTag.BEDTIME_PERIOD ->
@@ -736,7 +737,16 @@ class OuraDriver(
             }
 
             // --- Tier B (only reached when allowTierB == true; otherwise dropped above) ---
-            OuraEventTag.SLEEP_SUMMARY_1, OuraEventTag.SLEEP_SUMMARY_B, OuraEventTag.SLEEP_SUMMARY_C,
+            OuraEventTag.SLEEP_PHASE_INFO ->
+                listOf(
+                    OuraEvent.TierB(
+                        OuraTierBSummary(
+                            tag = record.type, ringTimestamp = record.ringTimestamp,
+                            rawPayload = record.payload, kind = "sleep_phase_info",
+                        ),
+                    ),
+                )
+            OuraEventTag.SLEEP_SUMMARY_1, OuraEventTag.SLEEP_SUMMARY_C,
             OuraEventTag.SLEEP_SUMMARY_D, OuraEventTag.SLEEP_SUMMARY_E, OuraEventTag.SLEEP_SUMMARY_F ->
                 listOf(
                     OuraEvent.TierB(
