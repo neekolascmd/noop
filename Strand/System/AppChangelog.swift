@@ -119,7 +119,7 @@ enum AppChangelog {
             title: "Local Oura ring support: use your Oura ring with no Oura app (beta)",
             date: "June 2026",
             items: [
-                "**Local Oura ring support (beta).** NOOP can now read an Oura ring directly over Bluetooth, fully on-device, so you can use the ring with no Oura app, no account and no cloud. It reads heart rate, HRV, SpO2, skin temperature and sleep stages off the ring and runs NOOP's own Charge and Rest scoring, not Oura's. Works on Oura Ring 3, 4 and 5, with per-generation capabilities.",
+                "**Local Oura ring support (beta).** NOOP can now read an Oura ring directly over Bluetooth, fully on-device, so you can use the ring with no Oura app, no account and no cloud. It reads qualified raw signals and sleep windows locally, then runs NOOP's own Charge and Rest scoring—not Oura's. Sleep stages and SpO₂ remain experimental and generation-specific.",
                 "**How setup works.** Pairing factory-resets the ring and adopts it locally, which is recoverable: if NOOP cannot take it over, you just re-pair it in the Oura app. This is early beta and may not work on every ring yet, so there is also an Advanced bring-your-own-key path and a file-import fallback.",
             ]),
         Release(

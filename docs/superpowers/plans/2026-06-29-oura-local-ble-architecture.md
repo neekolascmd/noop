@@ -25,9 +25,9 @@ Swift modules under `Sources/OuraProtocol/`:
 - `Framing.swift` — encode command frame `2f <opcode-lo> <opcode-hi> [payload]`; reassemble notification fragments → complete records (open_oura cheatsheet; ringverse BLE.md).
 - `Auth.swift` — pure crypto state machine: `GetAuthNonce` (`2f012b`), accept 15-byte nonce, AES-128/ECB/PKCS7-pad with the install key, build `Authenticate` (`2f112d` + ciphertext); `InstallKey` (opcode `0x24`, 16-byte key, post-factory-reset). Key injected, never hardcoded (brief; open_ring PROTOCOL.md).
 - `Commands.swift` — opcode builders incl. Ring-3 live-HR enable (relue): `2f0220` → `2f032202 03` → `2f032602 02`; subscribe-events / battery / fetch-buffered (relue heartbeat-monitoring.md; open_oura).
-- `EventTags.swift` — tag dictionary enum: hr=0x55, ibi=0x44, ibiAmp=0x60, hrvRmssd=0x5d, spo2=0x6F/0x70/0x77, temp=0x46/0x75, sleepPhase∈{0x49,0x4B,0x4C,0x4E,0x4F,0x58}, ppg, motion, battery, met (ringverse oura/BLE.md; open_ring).
+- `EventTags.swift` — tag dictionary enum: hr=0x55, ibi=0x44, ibiAmp=0x60, hrvRmssd=0x5d, spo2=0x6F/0x70/0x77, temp=0x46/0x75, sleepPhase∈{0x4E,0x5A}, sleepPhaseInfo=0x4B, ppg, motion, battery, met (ringverse oura/BLE.md; open_ring).
 - `Decoders.swift` — pure per-tag byte→value decoders; each returns nil on a malformed/short record (open_ring PROTOCOL.md layouts).
-- `OuraEvents.swift` — decoded structs the driver emits (OuraHR/OuraIBI/OuraHRV/OuraSpO2/OuraTemp/OuraSleepPhase/OuraBattery).
+- `OuraEvents.swift` — decoded structs the driver emits (OuraHR/OuraIBI/OuraHRV/OuraSpO2/OuraTemp/OuraSleepPhaseSeries/OuraBattery).
 - `RingGen.swift` — `enum OuraRingGen { gen3, gen4, gen5 }` + per-gen caps/MTU/command-set + best-effort `recognise(advertisedName:)`/`from(model:)` (open_oura ring-5/ring-3; open_ring ring-4).
 - `OuraDriver.swift` — public transport-agnostic state machine: `nextStep(after:) -> [Command]` (scan→auth→enable→stream) + `ingest(record:) -> [OuraEvent]`. Holds NO BLE handle; this is what makes the protocol headless-testable.
 - `Sources/oura-decode/main.swift` — CLI replaying captured raw records → decoded events (mirrors whoop-decode).
@@ -63,10 +63,12 @@ Decoded events map onto the EXISTING `Streams` and persist under the ring's devi
 - HRV 0x5d → `events:[WhoopEvent(kind:"OURA_HRV", payload:["time_ms":…,"b1":…,"b2":…])]` raw units-neutral fields only (the b1/b2 byte to ms scale is not Tier-A, so no fabricated `rmssd_ms`); NOOP's scoring RMSSD comes from the `rr` IBI stream, never Oura's readiness.
 - SpO2 0x6F/0x70/0x77 → `spo2:[SpO2Sample(raw_adc)]`.
 - Temp 0x46/0x75 → `skinTemp:[SkinTempSample(raw_adc)]`.
-- Sleep-phase tags → `events:[WhoopEvent(kind:"OURA_SLEEP_PHASE", payload:["phase":…])]` folded into a `sleepSession` for that deviceId → SleepStager/SleepStageTotals → the `sleepPerf` composite fed to recovery.
+- Sleep-phase tags → one atomic diagnostic `OURA_SLEEP_PHASE_SERIES` event per source record. Preserve
+  source tag/header/ring timestamp/ordered codes; do not assign per-code timestamps or fold into
+  `sleepSession.stagesJSON` until hardware proves cadence and chronological direction.
 - Battery → `battery:[BatterySample]` + live onBattery.
 
-`recovery(hrv: ourRMSSD, sleepPerf: ourSleepComposite, hrvBaseline:…)` = NOOP Charge; strain from the HR stream = NOOP Rest/strain — identical to a WHOOP day because DayOwnerResolver/AnalyticsEngine key off (deviceId, streams, sleepSession). Missing inputs leave sub-scores nil (honest), never faked. Android twin extends protocol/Streams.kt/StreamBatch with spo2/skinTemp/events (DAO inserts already exist) + a Kotlin OuraStreamMapping; sleep-phase events fold into the existing sleepSession Room table.
+`recovery(hrv: ourRMSSD, sleepPerf: ourSleepComposite, hrvBaseline:…)` = NOOP Charge; strain from the HR stream = NOOP Rest/strain — identical to a WHOOP day because DayOwnerResolver/AnalyticsEngine key off (deviceId, streams, sleepSession). Missing inputs leave sub-scores nil (honest), never faked. Android twin extends protocol/Streams.kt/StreamBatch with spo2/skinTemp/events (DAO inserts already exist) + a Kotlin OuraStreamMapping; diagnostic phase series remain events until their cadence is hardware-qualified.
 
 ## 5. Ring-gen (3/4/5) identity + per-gen capability
 
@@ -97,4 +99,3 @@ Decoded events map onto the EXISTING `Streams` and persist under the ring's devi
 **Phase G — cleanup.** G1 delete OuraProbeSource.swift/.kt + wizard refs once D/F land; keep the Oura file-import lane (StrandImport/OuraExportParser.swift) as documented fallback. G2 update ATTRIBUTION.md/protocol docs to cite RE resources facts-only.
 
 **Verification (per build-env memory):** Phases A/B/C via SPM `swift test` (OuraProtocol, WhoopStore) + Android JVM tests; D/E/F via the live-sim screenshot harness; central build-verify of all three platforms once at the end (no per-lane gradle).
-

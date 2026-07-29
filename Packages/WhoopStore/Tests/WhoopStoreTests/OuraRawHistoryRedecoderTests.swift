@@ -87,4 +87,31 @@ final class OuraRawHistoryRedecoderTests: XCTestCase {
         XCTAssertEqual(decoded.withheldEvents, 1)
         XCTAssertTrue(decoded.streams.isEmpty)
     }
+
+    func testPageDecoderReplaysCompleteSleepPhaseSeriesAtomically() {
+        let anchor = OuraTimeAnchor(
+            ringTimestamp: 1_000,
+            utcMilliseconds: 1_700_000_000_000,
+            factorMillisecondsPerTick: 100
+        )
+        let row = StoredOuraRawHistoryRecord(
+            archiveId: 1,
+            tag: OuraEventTag.sleepPhase.rawValue,
+            ringTimestamp: 900,
+            payload: Data([0x07, 0x1B]),
+            firstSeenAtUnixMs: 1,
+            timeAnchor: anchor
+        )
+
+        let decoded = OuraRawHistoryPageDecoder.decode([row], ringGen: .gen3)
+        XCTAssertEqual(decoded.withheldEvents, 0)
+        XCTAssertEqual(decoded.streams.events.count, 1)
+        let event = decoded.streams.events[0]
+        XCTAssertEqual(event.kind, "OURA_SLEEP_PHASE_SERIES")
+        XCTAssertEqual(event.ts, 1_699_999_990)
+        XCTAssertEqual(event.payload["source_tag"], .int(0x4E))
+        XCTAssertEqual(event.payload["header"], .int(7))
+        XCTAssertEqual(event.payload["phase_codes"], .intArray([0, 1, 2, 3]))
+        XCTAssertNil(event.payload["cadence_seconds"])
+    }
 }

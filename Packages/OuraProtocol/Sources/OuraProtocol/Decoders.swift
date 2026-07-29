@@ -402,27 +402,30 @@ public enum OuraDecoders {
 
     // MARK: - Sleep phase, 2-bit codes (0x4E / 0x5A; s6.12)
 
-    /// Decode the 0x4E/0x5A sleep_phase_details: byte6 = header; phase codes are 2-bit, 4 per byte
-    /// (bits [7:6][5:4][3:2][1:0]); codes 0=awake,1=light,2=deep,3=REM. Per OURA_PROTOCOL.md s6.12.
-    /// Returns nil on a short body. The header byte is skipped; phase bytes follow.
-    public static func decodeSleepPhase(_ rec: OuraRecord) -> [OuraSleepPhase]? {
+    /// Decode one complete 0x4E/0x5A sleep_phase record: byte6 = header; phase codes are 2-bit,
+    /// 4 per byte (bits [7:6][5:4][3:2][1:0]), with 0=deep,1=light,2=REM,3=awake.
+    /// The codebook is corroborated by Oura's public API and the native enum recovered by [oura-rs].
+    /// Cadence/direction are deliberately not inferred. Returns nil on a short body.
+    public static func decodeSleepPhase(_ rec: OuraRecord) -> OuraSleepPhaseSeries? {
         let b = rec.payload
         // body[0] is the header (spec offset 6); phase codes begin at body[1].
         guard b.count >= 2 else { return nil }
-        var out: [OuraSleepPhase] = []
-        var index = 0
+        var stages: [OuraSleepStage] = []
         for k in 1..<b.count {
             let byte = b[k]
             // MSB-first within the byte: [7:6] is the first code.
             for shift in stride(from: 6, through: 0, by: -2) {
                 let code = Int((byte >> UInt8(shift)) & 0x03)
                 if let stage = OuraSleepStage(rawValue: code) {
-                    out.append(OuraSleepPhase(ringTimestamp: rec.ringTimestamp, index: index, stage: stage))
-                    index += 1
+                    stages.append(stage)
                 }
             }
         }
-        return out.isEmpty ? nil : out
+        guard !stages.isEmpty else { return nil }
+        return OuraSleepPhaseSeries(ringTimestamp: rec.ringTimestamp,
+                                    sourceTag: rec.type,
+                                    header: b[0],
+                                    stages: stages)
     }
 
     // MARK: - Sleep period measurements (0x6A; s6.12)

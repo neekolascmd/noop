@@ -184,21 +184,29 @@ public struct OuraFeatureStatus: Equatable, Sendable, Codable {
     public var isSpO2Automatic: Bool? { feature == 0x04 ? mode == 0x01 : nil }
 }
 
-/// Sleep phase code (OURA_PROTOCOL.md s6.12): 2-bit codes 0=awake, 1=light, 2=deep, 3=REM.
+/// Native `SleepPhase_OSSAv1` code (OURA_PROTOCOL.md s6.12). The values also match Oura's public
+/// five-minute API representation minus one: 0=deep, 1=light, 2=REM, 3=awake.
 public enum OuraSleepStage: Int, Sendable, Equatable, Codable {
-    case awake = 0
+    case deep = 0
     case light = 1
-    case deep = 2
-    case rem = 3
+    case rem = 2
+    case awake = 3
 }
 
-/// One decoded sleep-phase code in order within a 0x4E/0x5A record (OURA_PROTOCOL.md s6.12).
-public struct OuraSleepPhase: Equatable, Sendable, Codable {
+/// One complete, ordered 0x4E/0x5A sleep-phase record. Keeping the record atomic is important:
+/// individual codes share one ring timestamp and therefore collide under the event store's
+/// `(deviceId, ts, kind)` natural key. Cadence is intentionally absent until hardware qualifies it.
+public struct OuraSleepPhaseSeries: Equatable, Sendable, Codable {
     public let ringTimestamp: UInt32
-    public let index: Int          // position within the record's phase sequence
-    public let stage: OuraSleepStage
-    public init(ringTimestamp: UInt32, index: Int, stage: OuraSleepStage) {
-        self.ringTimestamp = ringTimestamp; self.index = index; self.stage = stage
+    public let sourceTag: UInt8
+    public let header: UInt8
+    public let stages: [OuraSleepStage]
+    public init(ringTimestamp: UInt32, sourceTag: UInt8, header: UInt8,
+                stages: [OuraSleepStage]) {
+        self.ringTimestamp = ringTimestamp
+        self.sourceTag = sourceTag
+        self.header = header
+        self.stages = stages
     }
 }
 
@@ -355,7 +363,7 @@ public enum OuraEvent: Equatable, Sendable {
     case spo2Ratio(OuraSpO2RatioRecord, calibrationProfile: OuraSpO2CalibrationProfile?)
     case temp(OuraTemp)
     case battery(OuraBattery)
-    case sleepPhase(OuraSleepPhase)
+    case sleepPhase(OuraSleepPhaseSeries)
     case sleepPeriod(OuraSleepPeriod)
     case bedtimePeriod(OuraBedtimePeriod)
     case motion(OuraMotion)

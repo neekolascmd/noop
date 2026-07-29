@@ -13,7 +13,7 @@ import kotlinx.coroutines.ensureActive
 
 /** Bump only when retained TLVs can yield new durable information; independent of app releases. */
 object OuraRawHistoryDecoderRevision {
-    const val CURRENT = 1
+    const val CURRENT = 2
 }
 
 data class OuraRawHistoryRedecodeReport(

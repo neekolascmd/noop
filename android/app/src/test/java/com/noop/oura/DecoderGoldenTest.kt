@@ -211,17 +211,21 @@ class DecoderGoldenTest {
 
     @Test
     fun testSleepPhase0x4E() {
-        // header 0x00, phase byte 0x6C = bits 01 10 11 00 -> light, deep, rem, awake.
-        val rec = record("4e0602000100006c")
-        val phases = OuraDecoders.decodeSleepPhase(rec)
+        // header 0x00, phase byte 0x1B = bits 00 01 10 11 -> deep, light, rem, awake.
+        val rec = record("4e0602000100001b")
         assertEquals(
-            listOf(
-                OuraSleepPhase(ringTimestamp = rt, index = 0, stage = OuraSleepStage.LIGHT),
-                OuraSleepPhase(ringTimestamp = rt, index = 1, stage = OuraSleepStage.DEEP),
-                OuraSleepPhase(ringTimestamp = rt, index = 2, stage = OuraSleepStage.REM),
-                OuraSleepPhase(ringTimestamp = rt, index = 3, stage = OuraSleepStage.AWAKE),
+            OuraSleepPhaseSeries(
+                ringTimestamp = rt,
+                sourceTag = 0x4E,
+                header = 0,
+                stages = listOf(
+                    OuraSleepStage.DEEP,
+                    OuraSleepStage.LIGHT,
+                    OuraSleepStage.REM,
+                    OuraSleepStage.AWAKE,
+                ),
             ),
-            phases,
+            OuraDecoders.decodeSleepPhase(rec),
         )
     }
 

@@ -21,15 +21,17 @@ import OuraProtocol
 /// signal that could not be decoded never reaches this layer (the decoders return nil upstream), so a
 /// missing stream stays empty here, never faked (Huami precedent).
 ///
-/// Tier-B (UNVERIFIED) events are dropped: only Tier-A decoded signals map into `Streams`, so an
-/// unverified summary can never silently feed scoring.
+/// Tier-B (UNVERIFIED) events are dropped. Tier-A signals may enter production streams; explicitly
+/// named diagnostic events (sleep-phase series and raw SpO2 ratio/PI) are durable evidence but have
+/// no scoring consumer. An unverified summary can therefore never silently feed scoring.
 public enum OuraStreamMapping {
     /// WhoopEvent.kind for the ring's own HRV 0x5D tag. The payload carries the RAW decoded fields
     /// (`time_ms`/`b1`/`b2`) only, never a fabricated `rmssd_ms` (the b1/b2 byte -> ms scale is not
     /// Tier-A; see OURA_PROTOCOL.md s6.9). Must match the Kotlin twin (OuraStreamMapping.kt) exactly.
     public static let hrvEventKind = "OURA_HRV"
-    /// WhoopEvent.kind for a decoded sleep-phase code (2-bit: awake/light/deep/rem).
-    public static let sleepPhaseEventKind = "OURA_SLEEP_PHASE"
+    /// WhoopEvent.kind for one complete diagnostic sleep-phase record. The new name intentionally
+    /// does not collide with legacy `OURA_SLEEP_PHASE` rows that stored only the record's first code.
+    public static let sleepPhaseEventKind = "OURA_SLEEP_PHASE_SERIES"
     /// Verified 0x6A measurements, preserved without interpreting its unnamed 0/1/2 state as stages.
     public static let sleepPeriodEventKind = "OURA_SLEEP_PERIOD"
     /// Lossless raw `0x8B` record alongside any explicitly calibrated estimate.
@@ -42,7 +44,7 @@ public enum OuraStreamMapping {
     ///   - `.hrv`        (0x5D HRV tag, raw int8 b1/b2)  → `events:[WhoopEvent(kind: OURA_HRV)]`
     ///   - `.spo2`       (0x6F/0x70/0x77)              → `spo2:[SpO2Sample(raw_adc)]`
     ///   - `.temp`       (0x46/0x75)                    → `skinTemp:[SkinTempSample(raw_adc)]`
-    ///   - `.sleepPhase` (0x4E/0x5A 2-bit codes)        → `events:[WhoopEvent(kind: OURA_SLEEP_PHASE)]`
+    ///   - `.sleepPhase` (0x4E/0x5A ordered codes)      → one diagnostic series event per source record
     ///   - `.battery`                                   → `battery:[BatterySample]`
     /// Every other event case (`.motion`, `.state`, `.timeSync`, `.rtcBeacon`, `.debugText`, `.tierB`,
     /// `.activityInfo`) is intentionally not folded into a durable stream here. In particular the 0x50
@@ -126,9 +128,13 @@ public enum OuraStreamMapping {
                 out.skinTemp.append(SkinTempSample(ts: ts, raw: Int((v.celsius * 100).rounded()), unit: "centi_c"))
 
             case .sleepPhase(let v):
+                guard !v.stages.isEmpty else { continue }
                 out.events.append(WhoopEvent(ts: ts, kind: sleepPhaseEventKind, payload: [
-                    "phase": .int(v.stage.rawValue),
-                    "index": .int(v.index),
+                    "source_tag": .int(Int(v.sourceTag)),
+                    "header": .int(Int(v.header)),
+                    "ring_timestamp": .int(Int(v.ringTimestamp)),
+                    "phase_codes": .intArray(v.stages.map(\.rawValue)),
+                    "codebook": .string("0=deep,1=light,2=rem,3=awake"),
                 ]))
 
             case .sleepPeriod(let v):

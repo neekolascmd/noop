@@ -101,18 +101,25 @@ final class OuraStreamMappingTests: XCTestCase {
         XCTAssertEqual(s.skinTemp[0].ts, ts)
     }
 
-    // MARK: - Sleep phase -> events[OURA_SLEEP_PHASE]
+    // MARK: - Sleep phase -> one diagnostic ordered-series event
 
-    func testSleepPhaseMapsToEventWithPhaseCode() {
+    func testSleepPhaseMapsOneSourceRecordAtomicallyWithoutInventingCadence() {
         let s = OuraStreamMapping.streams(from: [
-            .sleepPhase(OuraSleepPhase(ringTimestamp: 100, index: 0, stage: .deep)),
-            .sleepPhase(OuraSleepPhase(ringTimestamp: 100, index: 1, stage: .rem)),
+            .sleepPhase(OuraSleepPhaseSeries(
+                ringTimestamp: 100, sourceTag: 0x4E, header: 7,
+                stages: [.deep, .light, .rem, .awake]
+            )),
         ], at: ts)
-        XCTAssertEqual(s.events.count, 2)
-        XCTAssertTrue(s.events.allSatisfy { $0.kind == OuraStreamMapping.sleepPhaseEventKind })
-        XCTAssertEqual(s.events.map { $0.payload["phase"] }, [.int(2), .int(3)])
-        XCTAssertEqual(s.events.map { $0.payload["index"] }, [.int(0), .int(1)])
-        XCTAssertEqual(s.events.map { $0.ts }, [ts, ts])
+        XCTAssertEqual(s.events.count, 1)
+        let event = s.events[0]
+        XCTAssertEqual(event.kind, "OURA_SLEEP_PHASE_SERIES")
+        XCTAssertEqual(event.payload["source_tag"], .int(0x4E))
+        XCTAssertEqual(event.payload["header"], .int(7))
+        XCTAssertEqual(event.payload["ring_timestamp"], .int(100))
+        XCTAssertEqual(event.payload["phase_codes"], .intArray([0, 1, 2, 3]))
+        XCTAssertEqual(event.payload["codebook"], .string("0=deep,1=light,2=rem,3=awake"))
+        XCTAssertNil(event.payload["cadence_seconds"])
+        XCTAssertEqual(event.ts, ts)
     }
 
     func testSleepPeriodPreservesVerifiedFieldsWithoutInventingStages() {
@@ -178,7 +185,9 @@ final class OuraStreamMappingTests: XCTestCase {
             .hrv(OuraHRV(ringTimestamp: 1, timeMs: 0, b1: 40, b2: 1)),
             .spo2(OuraSpO2(ringTimestamp: 1, value: 96, unit: "percent")),
             .temp(OuraTemp(ringTimestamp: 1, celsius: 34.0)),
-            .sleepPhase(OuraSleepPhase(ringTimestamp: 1, index: 0, stage: .light)),
+            .sleepPhase(OuraSleepPhaseSeries(
+                ringTimestamp: 1, sourceTag: 0x4E, header: 0, stages: [.light]
+            )),
             .battery(OuraBattery(percent: 88)),
         ], at: ts)
         XCTAssertEqual(s.hr.count, 1)

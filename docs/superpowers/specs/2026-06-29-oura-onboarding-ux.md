@@ -68,7 +68,8 @@ Below it, a single `StrandCard` split into two columns titled with `.strandOverl
 **WHAT YOU GET**
 - Your ring talks to NOOP only, fully offline, no Oura account.
 - Live heart rate, and HRV when the ring can measure it.
-- Overnight sleep staging, resting heart rate, skin-temperature trend, motion and battery, read straight off the ring.
+- Overnight sleep windows, resting heart rate, skin-temperature trend and battery, read straight off the
+  ring. Sleep stages remain experimental.
 - NOOP's own Charge, Effort and Rest, computed on your device from published methods.
 
 **WHAT YOU LOSE**

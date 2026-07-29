@@ -146,7 +146,9 @@ func describe(_ e: OuraEvent) -> String {
         return "SPO2_RATIO_PI samples=\(v.samples.count) profile=\(profile?.rawValue ?? "none") rt=\(v.ringTimestamp)"
     case .temp(let v): return "TEMP \(v.celsius)C rt=\(v.ringTimestamp)"
     case .battery(let v): return "BATTERY \(v.percent)% mv=\(v.voltageMv.map(String.init) ?? "-")"
-    case .sleepPhase(let v): return "SLEEP_PHASE [\(v.index)]=\(v.stage) rt=\(v.ringTimestamp)"
+    case .sleepPhase(let v):
+        return "SLEEP_PHASE_SERIES tag=0x\(String(v.sourceTag, radix: 16)) header=\(v.header) "
+            + "codes=\(v.stages.map(\.rawValue)) rt=\(v.ringTimestamp)"
     case .sleepPeriod(let v): return "SLEEP_PERIOD state=\(v.sleepState) motion=\(v.motionCount) rt=\(v.ringTimestamp)"
     case .bedtimePeriod(let v): return "BEDTIME_PERIOD start=\(v.startRingTimestamp) end=\(v.endRingTimestamp)"
     case .motion(let v): return "MOTION [\(v.index)]=\(v.state) rt=\(v.ringTimestamp)"

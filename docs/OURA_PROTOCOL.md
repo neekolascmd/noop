@@ -15,6 +15,9 @@ platform-specific; see the [hardware graduation gate](HARDWARE_SUPPORT.md#oura-g
   calibration facts and Ring 5 overnight evidence, facts only).
 - **[relue]** - relue/oura_ring_reverse `docs/.../heartbeat_replication_guide.md` and `heartbeat_complete_flow.md` (no-license; Ring 3 live-HR).
 - **[oura-rs]** - Th0rgal/open_oura `crates/oura-protocol/src/events.rs` (no-license Rust clean-room decoder; facts cited only, no code copied). Its event tags marked `"_status": "unvalidated"` are treated the same as our Tier B - plausible, not ground-truth-confirmed.
+- **[oura-openapi]** - Oura's official API v2
+  [OpenAPI schema](https://cloud.ouraring.com/v2/static/json/openapi-1.37.json). Its `sleep_phase_5_min` field defines
+  `1=deep, 2=light, 3=REM, 4=awake`; this corroborates the native zero-based codebook, not BLE cadence.
 
 > **CONFLICT NOTE (resolution rule):** The relue archive file `event_data_definition.md` describes events as **protobuf varint** records (e.g. `0x55` SLEEP_HR with field tags). This contradicts the **byte-for-byte verified TLV framing** in [open_ring] and [ringverse]. The TLV/bit-packed model from [open_ring]/[ringverse] is authoritative for our decoders; the protobuf description is treated as unverified/likely AI-fabricated and is NOT used. Where a layout is only attested by a single no-license, AI-generated doc, it is marked **(UNVERIFIED)** and our decoder must gate it behind a fixture test before trusting it.
 
@@ -433,7 +436,20 @@ out-of-range values are withheld rather than allowed to corrupt HRV/recovery. Se
 - This is the primary UTC anchor (§5.5). [open_ring][ringverse]
 
 ### 6.12 Sleep architecture
-- **`0x4E` / `0x5A` `sleep_phase_details`** (≥19 B): byte6 = header; phase codes are **2-bit**, 4 per byte (bits `[7:6][5:4][3:2][1:0]`); codes **0=awake, 1=light, 2=deep, 3=REM**. [ringverse]
+- **`0x4B` is `sleep_phase_information`, not a sleep-summary variant.** Its body layout has no
+  repository-owned fixture, so NOOP inventories/archives it and keeps any typed interpretation Tier B.
+  [ringverse][oura-rs]
+- **`0x4E` / `0x5A` sleep-phase records:** after one header byte, phase codes are **2-bit**, 4 per
+  byte, MSB-first (`[7:6]`, `[5:4]`, `[3:2]`, `[1:0]`). The native zero-based codebook is
+  **0=deep, 1=light, 2=REM, 3=awake**; Oura's official public API independently exposes the same order
+  as characters `1` through `4`. [ringverse][oura-rs][oura-openapi]
+  - NOOP preserves each source record atomically as one `OURA_SLEEP_PHASE_SERIES` diagnostic event
+    containing the source tag, header, ring timestamp, and ordered code array. The previous per-code
+    representation collided under the event table's `(deviceId, ts, kind)` key and could retain only
+    the first code.
+  - **Cadence and chronological direction remain unqualified.** The normalized event deliberately has
+    no `cadence_seconds`, never becomes `sleepSession.stagesJSON`, and cannot feed Rest/recovery. The exact
+    original TLV remains in the bounded local raw archive for later hardware-backed replay.
 - **`0x6A` `sleep_period_info_2`** (10-byte body): average HR `uint8 × 0.5`, HR trend `int8 / 16`,
   two index bytes `/16`, breathing `uint8 / 8`, breathing variation `uint8 / 8`, motion count `0...120`,
   unnamed state `0...2`, and CV `uint16 LE / 65536`. The state codes are preserved raw and are **not**
@@ -509,8 +525,8 @@ out-of-range values are withheld rather than allowed to corrupt HRV/recovery. Se
 ### 7.3 NOOP decoder build guidance
 1. **Single TLV parser** (§2.3) for all generations - the framing is generation-invariant. Branch only on: MTU clamp (203 vs 247) and Gen-4/5 extra-char presence (discover but ignore in v1).
 2. **Generation detection:** read product info (`0x18 03 18 00 10`) → hardware id (`ORE_06` on the tested Ring 4), and firmware (`0x08`). Map to Gen 3/4/5 to set MTU and pick verified-vs-unverified layout confidence.
-3. **Trust tiers in the decoder:** Tier A (hardware-backed, may feed production metrics) = TLV framing, auth, GetEvents cursor, live-HR `0x02`, `0x60` IBI, `0x46`/`0x69`/`0x75` temp, Ring 4 `0x6F` percentage SpO2 plus raw `0x77` DC, `0x6A` raw sleep-period measurements, `0x76` bedtime bounds, `0x42` time-sync, `0x0D` battery, `0x45`/`0x53` state, `0x6B` motion. The corrected `0x80` layout is also Tier A: external real Ring 5 captures contain more than 1,100 coherent beats and validate the split-bitfield layout; a repository-owned capture remains useful corroboration, not a production gate. Diagnostic = decoded investigation evidence that cannot feed production metrics; `0x8B` raw ratio/PI and its explicitly labelled simple-calibration evidence remain here until the available Ring 4 emits a local fixture and passes reference-sensor comparison. Tier B (UNVERIFIED, fixture-gate before use) items = sleep summaries/stage cadence, `0x50/0x51/0x52` activity-MET, `0x7E/0x7F` steps, legacy `0x70`/`0x7B` on Ring 4, the protobuf `0x55/0x59` interpretation (do **not** ship).
-4. **HRV/sleep:** consume `0x5D` HRV, preserve `0x6A` without naming its states, and use `0x76` for stage-less sleep bounds. `0x4E` phase bits remain experimental until a real Ring 4 fixture proves cadence/direction; `0x5A` is not a canonical pinned Ring 4 tag. Never read Oura feature `0x06` (encrypted API).
+3. **Trust tiers in the decoder:** Tier A (hardware-backed, may feed production metrics) = TLV framing, auth, GetEvents cursor, live-HR `0x02`, `0x60` IBI, `0x46`/`0x69`/`0x75` temp, Ring 4 `0x6F` percentage SpO2 plus raw `0x77` DC, `0x6A` raw sleep-period measurements, `0x76` bedtime bounds, `0x42` time-sync, `0x0D` battery, `0x45`/`0x53` state, `0x6B` motion. The corrected `0x80` layout is also Tier A: external real Ring 5 captures contain more than 1,100 coherent beats and validate the split-bitfield layout; a repository-owned capture remains useful corroboration, not a production gate. Diagnostic = decoded investigation evidence that cannot feed production metrics; `0x8B` raw ratio/PI and its explicitly labelled simple-calibration evidence remain here until the available Ring 4 emits a local fixture and passes reference-sensor comparison. The atomic `0x4E`/`0x5A` phase series is also diagnostic: packing/order and the stage codebook are corroborated, while cadence/direction are not. Tier B (UNVERIFIED, fixture-gate before use) items = sleep summaries, the `0x4B` body layout, sleep-stage cadence, `0x50/0x51/0x52` activity-MET, `0x7E/0x7F` steps, legacy `0x70`/`0x7B` on Ring 4, the protobuf `0x55/0x59` interpretation (do **not** ship).
+4. **HRV/sleep:** consume `0x5D` HRV, preserve `0x6A` without naming its states, and use `0x76` for stage-less sleep bounds. Preserve `0x4E`/`0x5A` as atomic diagnostic series, but do not timestamp individual codes or stage a night until a real fixture proves cadence/direction. Never read Oura feature `0x06` (encrypted API).
 
 ### 7.4 Passive record inventory and local raw archive
 
@@ -542,6 +558,10 @@ own verified `0x42`/`0x85` records; a regressing `0x41` ring-start opens a new s
 carried across a proven clock reset. Records that still lack safe UTC remain raw and are withheld rather
 than stamped with arrival time. Bump the decoder revision—not the app version—when a new clean-room mapping
 can recover additional retained data.
+
+Decoder revision 2 corrects the native phase codebook and replays each retained `0x4E`/`0x5A` record as
+one atomic `OURA_SLEEP_PHASE_SERIES` diagnostic event. The new kind intentionally does not collide with
+legacy `OURA_SLEEP_PHASE` rows that may contain only the first code. Neither event kind feeds scoring.
 
 The `oura-decode` CLI uses the same inventory while replaying an opt-in capture. It counts reassembled TLVs,
 not capture fragments, so a split record or several records packed into one notification cannot create a

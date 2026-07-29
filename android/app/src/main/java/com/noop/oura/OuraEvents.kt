@@ -113,12 +113,15 @@ data class OuraFeatureStatus(
     val isSpO2Automatic: Boolean? get() = if (feature == 0x04) mode == 0x01 else null
 }
 
-/** Sleep phase code (OURA_PROTOCOL.md s6.12): 2-bit codes 0=awake, 1=light, 2=deep, 3=REM. */
+/**
+ * Native `SleepPhase_OSSAv1` code (OURA_PROTOCOL.md s6.12). Values also match Oura's public
+ * five-minute API representation minus one: 0=deep, 1=light, 2=REM, 3=awake.
+ */
 enum class OuraSleepStage(val raw: Int) {
-    AWAKE(0),
+    DEEP(0),
     LIGHT(1),
-    DEEP(2),
-    REM(3);
+    REM(2),
+    AWAKE(3);
 
     companion object {
         private val byRaw = entries.associateBy { it.raw }
@@ -126,8 +129,17 @@ enum class OuraSleepStage(val raw: Int) {
     }
 }
 
-/** One decoded sleep-phase code in order within a 0x4E/0x5A record (OURA_PROTOCOL.md s6.12). */
-data class OuraSleepPhase(val ringTimestamp: Long, val index: Int, val stage: OuraSleepStage)
+/**
+ * One complete, ordered 0x4E/0x5A sleep-phase record. Individual codes share one ring timestamp and
+ * would collide under the event store's `(deviceId, ts, kind)` natural key. Cadence stays absent until
+ * a hardware capture qualifies it.
+ */
+data class OuraSleepPhaseSeries(
+    val ringTimestamp: Long,
+    val sourceTag: Int,
+    val header: Int,
+    val stages: List<OuraSleepStage>,
+)
 
 /** One verified `0x6A` sleep-period record. Open on-device measurements, not encrypted Oura scores. */
 data class OuraSleepPeriod(
@@ -253,7 +265,7 @@ sealed class OuraEvent {
     ) : OuraEvent()
     data class Temp(val value: OuraTemp) : OuraEvent()
     data class Battery(val value: OuraBattery) : OuraEvent()
-    data class SleepPhaseEvent(val value: OuraSleepPhase) : OuraEvent()
+    data class SleepPhaseEvent(val value: OuraSleepPhaseSeries) : OuraEvent()
     data class SleepPeriodEvent(val value: OuraSleepPeriod) : OuraEvent()
     data class BedtimePeriodEvent(val value: OuraBedtimePeriod) : OuraEvent()
     data class MotionEvent(val value: OuraMotion) : OuraEvent()
