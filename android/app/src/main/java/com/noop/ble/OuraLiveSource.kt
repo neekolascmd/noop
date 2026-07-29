@@ -34,6 +34,7 @@ import com.noop.oura.OuraGatt
 import com.noop.oura.OuraCommands
 import com.noop.oura.OuraDecoders
 import com.noop.oura.OuraOuterFrame
+import com.noop.oura.OuraRecord
 import com.noop.oura.OuraRecordInventory
 import com.noop.oura.OuraReassembler
 import com.noop.oura.OuraRingGen
@@ -70,6 +71,7 @@ import java.util.concurrent.ConcurrentHashMap
  *   - [liveSink]  pushes the ring's live HR (bpm) + R-R (ms) into whatever the UI observes (the
  *                 [SourceCoordinator] wires it to the same live state a WHOOP/strap reading uses).
  *   - [persist]   wired by the app to `repository.insert(StreamBatch, deviceId)` for the active ring.
+ *   - [persistRawHistory] archives complete history TLVs before any cursor ACK.
  *   - [log]       the SAME exportable strap log (issue #421); every line is prefixed "Oura: ".
  *   - [onBattery] surfaces the ring's battery percent the same place a strap's does.
  *
@@ -99,6 +101,8 @@ class OuraLiveSource(
     private val authKey: () -> IntArray?,
     /** Await persistence under [deviceId]. History ACKs depend on true; live pushes remain best-effort. */
     private val persist: suspend (StreamBatch, String) -> Boolean = { _, _ -> true },
+    /** Await bounded storage of complete reassembled history TLVs before any cursor may advance. */
+    private val persistRawHistory: suspend (List<OuraRecord>, String) -> Boolean = { _, _ -> true },
     /** Await a verified 0x76 bedtime-window upsert before acknowledging its history batch. */
     private val persistSleepSession: suspend (Long, Long) -> Boolean = { _, _ -> true },
     /** Diagnostic sink for the connect/auth/stream lifecycle - the SAME exportable strap log (#421).
@@ -475,6 +479,10 @@ class OuraLiveSource(
      * this uncommitted in-memory batch so the unchanged durable cursor can refetch it safely.
      */
     private val pendingAnchorEvents = ArrayList<Pair<OuraEvent, Long>>()
+    /** Unknown/Tier-B records are intentionally retained too, for future local clean-room re-decodes. */
+    private val pendingRawHistoryRecords = ArrayList<OuraRecord>()
+    private var pendingRawHistoryWireBytes = 0L
+    private var rawHistoryOverflowed = false
 
     /**
      * Whether decoded events came from a secure live push or the GetEvents TLV stream. Both paths emit
@@ -693,9 +701,74 @@ class OuraLiveSource(
      * detect the regression and reset to an honest, explicit 0 rather than feed the ring a now-meaningless
      * reference. Kotlin twin of Swift's `handleHistorySummary`.
      */
-    private fun handleHistorySummary(summary: com.noop.oura.GetEventsSummary): Unit = guardedCallback("history-summary") {
-        val d = driver ?: return@guardedCallback
-        if (historyPersistenceInFlight) return@guardedCallback
+    private fun handleHistorySummary(summary: com.noop.oura.GetEventsSummary): Unit =
+        guardedCallback("history-summary") {
+            val d = driver ?: return@guardedCallback
+            if (historyPersistenceInFlight) return@guardedCallback
+            persistRawHistoryThenContinue(d, summary)
+        }
+
+    /**
+     * Archive the raw page on IO before evaluating any cursor branch. A late TLV that lands while Room
+     * yields remains as a tail and is archived in another pass; the continuation runs only once the queue
+     * is empty. Partial writes are exact-key idempotent and an error leaves the durable cursor unchanged.
+     */
+    private fun persistRawHistoryThenContinue(
+        d: OuraDriver,
+        summary: com.noop.oura.GetEventsSummary,
+    ) {
+        if (historyPersistenceInFlight) return
+        if (rawHistoryOverflowed) {
+            abortHistoryAfterPersistenceFailure("raw-history page exceeded the bounded memory window")
+            return
+        }
+        if (pendingRawHistoryRecords.isEmpty()) {
+            continueHistorySummaryAfterRawArchive(d, summary)
+            return
+        }
+        val snapshot = pendingRawHistoryRecords.toList()
+        val epoch = historyPersistenceEpoch
+        historyPersistenceInFlight = true
+        persistenceScope.launch {
+            var succeeded = true
+            for (chunk in snapshot.chunked(RAW_HISTORY_PERSIST_CHUNK_SIZE)) {
+                if (!runCatching { persistRawHistory(chunk, deviceId) }.getOrDefault(false)) {
+                    succeeded = false
+                    break
+                }
+            }
+            handler.post {
+                guardedCallback("raw-history-persistence-complete") {
+                    if (historyPersistenceEpoch != epoch) return@guardedCallback
+                    if (driver !== d || d.phase != OuraDriverPhase.FetchingHistory) {
+                        historyPersistenceInFlight = false
+                        return@guardedCallback
+                    }
+                    if (!succeeded || pendingRawHistoryRecords.size < snapshot.size) {
+                        abortHistoryAfterPersistenceFailure("raw-history persistence failed")
+                        return@guardedCallback
+                    }
+                    pendingRawHistoryRecords.subList(0, snapshot.size).clear()
+                    pendingRawHistoryWireBytes =
+                        (pendingRawHistoryWireBytes - snapshot.sumOf { it.totalLength.toLong() })
+                            .coerceAtLeast(0)
+                    historyPersistenceInFlight = false
+                    if (pendingRawHistoryRecords.isNotEmpty()) {
+                        persistRawHistoryThenContinue(d, summary)
+                    } else {
+                        continueHistorySummaryAfterRawArchive(d, summary)
+                    }
+                }
+            }
+        }
+    }
+
+    /** Existing UTC-anchor/cursor state machine, reached only after the raw archive is durable. */
+    private fun continueHistorySummaryAfterRawArchive(
+        d: OuraDriver,
+        summary: com.noop.oura.GetEventsSummary,
+    ): Unit = guardedCallback("history-summary-after-raw") {
+        if (driver !== d || historyPersistenceInFlight) return@guardedCallback
         val committedCursor = d.activeHistoryHighWater
         // A non-empty response below the requested durable cursor is positive reset evidence. Clear cursor
         // and anchor together, end this uncommitted pass, and let the next poll recover read-only from zero.
@@ -845,6 +918,7 @@ class OuraLiveSource(
         historyPersistenceInFlight = false
         log("Oura: $reason; saved cursor unchanged and history will retry")
         pendingAnchorEvents.clear()
+        clearPendingRawHistory()
         resetProvisionalHistorySearch()
         finishHistoryInventory("persistence-failed")
         advance(OuraTransition.HistoryCursorAdvanced(cursor = historyCursor, moreData = false))
@@ -961,6 +1035,7 @@ class OuraLiveSource(
         loggedSyncStateWriteFailure = false
         loggedTierBKinds.clear()
         pendingAnchorEvents.clear()
+        clearPendingRawHistory()
         // Cursor + primary time mapping were loaded atomically before driver construction above.
         // connectGatt can throw (SecurityException if BLUETOOTH_CONNECT was revoked mid-session,
         // IllegalArgumentException on a stale device) - never let that crash the app; a failed start
@@ -1118,9 +1193,13 @@ class OuraLiveSource(
 
     /** Drop an uncommitted in-memory history batch. The unchanged cursor makes the batch refetchable. */
     private fun discardUncommittedHistory() = guardedCallback("discard-uncommitted-history") {
-        if (pendingAnchorEvents.isEmpty()) return@guardedCallback
-        log("Oura: discarded ${pendingAnchorEvents.size} uncommitted history sample(s); saved cursor unchanged")
+        if (pendingAnchorEvents.isEmpty() && pendingRawHistoryRecords.isEmpty() && !rawHistoryOverflowed) {
+            return@guardedCallback
+        }
+        log("Oura: discarded ${pendingAnchorEvents.size} decoded sample(s) and " +
+            "${pendingRawHistoryRecords.size} raw record(s); saved cursor unchanged")
         pendingAnchorEvents.clear()
+        clearPendingRawHistory()
     }
 
     // MARK: - Scan callback
@@ -1654,8 +1733,27 @@ class OuraLiveSource(
         }
     }
 
+    private fun captureRawHistoryRecord(record: OuraRecord) {
+        if (rawHistoryOverflowed) return
+        val nextBytes = pendingRawHistoryWireBytes + record.totalLength
+        if (pendingRawHistoryRecords.size >= MAX_PENDING_RAW_HISTORY_RECORDS ||
+            nextBytes > MAX_PENDING_RAW_HISTORY_WIRE_BYTES) {
+            rawHistoryOverflowed = true
+            return
+        }
+        pendingRawHistoryRecords.add(record)
+        pendingRawHistoryWireBytes = nextBytes
+    }
+
+    private fun clearPendingRawHistory() {
+        pendingRawHistoryRecords.clear()
+        pendingRawHistoryWireBytes = 0
+        rawHistoryOverflowed = false
+    }
+
     /** Keep protocol mutation, durable-anchor export, and reset invalidation ordered for every TLV record. */
     private fun ingestRecord(d: OuraDriver, record: com.noop.oura.OuraRecord, origin: EventOrigin) {
+        if (origin == EventOrigin.HISTORY) captureRawHistoryRecord(record)
         val events = d.ingest(record)
         if (origin == EventOrigin.HISTORY) {
             historyInventory.observe(record, emittedEventCount = events.size)
@@ -1892,6 +1990,11 @@ class OuraLiveSource(
 
         /** Ring 4/Saga needs one write per worst-case connection-latency window (15 ms × (20 + 1)). */
         private const val MIN_WRITE_SPACING_MS = 350L
+
+        /** Transport RAM stays bounded even if a malformed peer never sends a settled page summary. */
+        private const val MAX_PENDING_RAW_HISTORY_RECORDS = 100_000
+        private const val MAX_PENDING_RAW_HISTORY_WIRE_BYTES = 32L * 1_024 * 1_024
+        private const val RAW_HISTORY_PERSIST_CHUNK_SIZE = 2_048
 
         /** The SetAuthKey-response OUTER opcode (`0x25`) and its OK status byte (`0x00`). The ring replies
          *  `25 01 00` to a successful `0x24` key install (OURA_PROTOCOL.md s3.2). */

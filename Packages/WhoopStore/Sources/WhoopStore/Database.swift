@@ -480,6 +480,33 @@ extension WhoopStore {
                 columns: ["deviceId", "endUnixNs"]
             )
         }
+
+        // v25: retain complete Oura history TLVs before typed decoding. Unknown and Tier-B records stay
+        // available for later, fully-local reprocessing as the clean-room protocol map improves. Exact
+        // record equality is a UNIQUE BLOB index, so a cursor retry/refetch is idempotent without relying
+        // on a collision-prone digest. OuraRawHistoryStore enforces a 128 MiB wire-byte cap per device.
+        migrator.registerMigration("v25-oura-raw-history") { db in
+            try db.create(table: "ouraRawHistory") { t in
+                t.autoIncrementedPrimaryKey("archiveId")
+                t.column("deviceId", .text).notNull()
+                t.column("ringTimestamp", .integer).notNull()
+                t.column("tag", .integer).notNull()
+                t.column("payload", .blob).notNull()
+                t.column("wireByteSize", .integer).notNull()
+                t.column("firstSeenAtUnixMs", .integer).notNull()
+            }
+            try db.create(
+                index: "idx_ouraRawHistory_exact",
+                on: "ouraRawHistory",
+                columns: ["deviceId", "ringTimestamp", "tag", "payload"],
+                unique: true
+            )
+            try db.create(
+                index: "idx_ouraRawHistory_device_seen",
+                on: "ouraRawHistory",
+                columns: ["deviceId", "firstSeenAtUnixMs", "archiveId"]
+            )
+        }
         return migrator
     }
 }

@@ -82,6 +82,7 @@ class SourceCoordinatorAdoptionTest {
             owners.entries.removeIf { it.value.deviceId == deviceId }
         }
         override suspend fun deleteWaveformsFor(deviceId: String) {}
+        override suspend fun deleteOuraRawHistoryFor(deviceId: String) {}
     }
 
     private fun registryWith(dao: FakeRegistryDao) = DeviceRegistry(

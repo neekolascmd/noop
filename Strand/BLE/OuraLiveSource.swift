@@ -163,6 +163,8 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     private let live: LiveState
     private let deviceId: String
     private let persist: (Streams) async -> Bool
+    /// Archives complete reassembled history TLVs before typed decoding/cursor commit.
+    private let persistRawHistory: ([OuraRecord]) async -> Bool
     /// Persists a verified 0x76 bedtime window as a stage-less sleep session.
     private let persistSleepSession: (Int, Int) async -> Bool
     private let log: (String) -> Void
@@ -355,6 +357,10 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     /// real page; persistence below maps/writes it in small chunks before the cursor is committed.
     private let provisionalHistoryEventLimit = 100_000
     private let historyPersistenceChunkSize = 2_048
+    /// Serializes the summary's raw+decoded durability barrier; no cursor transition can overlap it.
+    private var historyPersistenceInFlight = false
+    /// Invalidates an awaited persistence continuation after stop/disconnect/a replacement BLE session.
+    private var historyPersistenceEpoch: UInt64 = 0
     /// Continue a bounded read-only anchor search after provisional RAM fills. Nothing is ACKed; once a
     /// real 0x42 appears, every skipped page is refetched from the durable cursor before persistence.
     private var anchorBootstrapSkippedHistory = false
@@ -524,6 +530,9 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         // firmware actually emitted (including unknown tags) for the exported strap log.
         var events: [OuraEvent] = []
         for record in reassembler.feed(bytes) {
+            if origin == .history, feedsLive {
+                captureRawHistoryRecord(record)
+            }
             let decoded = driver.ingest(record: record)
             if origin == .history {
                 historyInventory.observe(record, emittedEventCount: decoded.count)
@@ -573,7 +582,24 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     /// rather than feed the ring a now-meaningless reference.
     private func handleHistorySummary(_ summary: (cursor: UInt32, moreData: Bool)) async {
         historyCaptureRecorder.flush()
-        guard let driver else { return }
+        guard let driver, !historyPersistenceInFlight else { return }
+        let persistenceEpoch = historyPersistenceEpoch
+        historyPersistenceInFlight = true
+        defer {
+            if historyPersistenceEpoch == persistenceEpoch {
+                historyPersistenceInFlight = false
+            }
+        }
+        // Raw TLVs need no UTC anchor, but they share the cursor durability barrier: archive every complete
+        // record (including a late tail received while SQLite yielded) before any branch can ACK/advance.
+        // Exact-record uniqueness makes a partial success followed by refetch harmless.
+        guard await persistPendingRawHistoryDurably() else {
+            guard self.driver.map({ $0 === driver }) == true else { return }
+            abortHistoryAfterPersistenceFailure()
+            return
+        }
+        guard historyPersistenceEpoch == persistenceEpoch,
+              self.driver.map({ $0 === driver }) == true else { return }
         let committedCursor = driver.activeHistoryHighWater
         let parkedBatchIsWithinLimit = !provisionalHistoryOverflowed
             && pendingAnchorEvents.count <= provisionalHistoryEventLimit
@@ -656,6 +682,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     private func abortHistoryAfterPersistenceFailure() {
         log("Oura: WARNING history persistence failed; saved cursor unchanged and batch will retry")
         pendingAnchorEvents.removeAll()
+        clearPendingRawHistory()
         resetProvisionalHistorySearch()
         finishHistoryInventory(outcome: "persistence-failed")
         advance(.historyCursorAdvanced(cursor: historyCursor, moreData: false))
@@ -669,6 +696,13 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     /// sleep-phase) are stamped with their REAL ring-time-anchored UTC (s5.5) when an anchor is available,
     /// so last night's data is never mis-recorded as happening right now.
     private var buffer: [(events: [OuraEvent], ts: Int)] = []
+    /// Complete history TLVs awaiting the same durability barrier as the decoded page. Unknown and Tier-B
+    /// records live here too, so later decoder improvements can replay them without another ring fetch.
+    private var pendingRawHistoryRecords: [OuraRecord] = []
+    private var pendingRawHistoryWireBytes = 0
+    private var rawHistoryOverflowed = false
+    private let maximumPendingRawHistoryRecords = 100_000
+    private let maximumPendingRawHistoryWireBytes = 32 * 1_024 * 1_024
     private var lastFlush: Date = .init()
     private let flushCount = 30
     private let flushInterval: TimeInterval = 30
@@ -690,6 +724,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     ///   - authKeyStatus: supplies the status of the latest key read when available. This lets a denied or
     ///     locked Keychain read surface recovery guidance without claiming the ring needs a factory reset.
     ///   - persist: wired by the app to `store.insert(_, deviceId:)`. Called on the main actor.
+    ///   - persistRawHistory: wired to the bounded raw Oura archive. Only complete history TLVs reach it.
     ///   - log: connect-lifecycle diagnostics sink, wired at the composition root to the same strap log
     ///     `BLEManager` writes to (issue #421). Every line is prefixed "Oura: ". Defaults to a no-op.
     ///   - onBattery: fired with the ring's battery percent (0-100). Default no-op.
@@ -705,6 +740,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 authKey: @escaping () -> Data?,
                 authKeyStatus: @escaping () -> OSStatus? = { nil },
                 persist: @escaping (Streams) async -> Bool = { _ in true },
+                persistRawHistory: @escaping ([OuraRecord]) async -> Bool = { _ in true },
                 persistSleepSession: @escaping (Int, Int) async -> Bool = { _, _ in true },
                 log: @escaping (String) -> Void = { _ in },
                 onBattery: @escaping (Int) -> Void = { _ in },
@@ -718,6 +754,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         self.authKeyStatus = authKeyStatus
         self.cachedAuthKey = initialAuthKey?.count == OuraKeyStore.keyLength ? initialAuthKey : nil
         self.persist = persist
+        self.persistRawHistory = persistRawHistory
         self.persistSleepSession = persistSleepSession
         self.log = log
         self.onBattery = onBattery
@@ -809,6 +846,8 @@ public final class OuraLiveSource: NSObject, ObservableObject {
 
     /// Tear down: cancel the connection, stop scanning, flush, clear all transient state. Idempotent.
     public func stop() {
+        historyPersistenceEpoch &+= 1
+        historyPersistenceInFlight = false
         // A deliberate teardown (device switch / removal) must NOT auto-reconnect: mark it intentional and
         // drop the reconnect target so any pending backoff bails and no fresh one is scheduled (#912).
         intentionalDisconnect = true
@@ -1179,12 +1218,57 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         return true
     }
 
+    /// Persist every complete raw record observed before the settled summary. The loop absorbs a late TLV
+    /// that arrives while the actor awaits SQLite, preventing a cursor commit from outrunning the archive.
+    private func persistPendingRawHistoryDurably() async -> Bool {
+        guard feedsLive else {
+            clearPendingRawHistory()
+            return true
+        }
+        guard !rawHistoryOverflowed else { return false }
+        while !pendingRawHistoryRecords.isEmpty {
+            let snapshot = pendingRawHistoryRecords
+            for chunkStart in stride(from: 0, to: snapshot.count, by: historyPersistenceChunkSize) {
+                let chunkEnd = min(chunkStart + historyPersistenceChunkSize, snapshot.count)
+                guard await persistRawHistory(Array(snapshot[chunkStart..<chunkEnd])) else { return false }
+            }
+            guard pendingRawHistoryRecords.count >= snapshot.count else { return false }
+            pendingRawHistoryRecords.removeFirst(snapshot.count)
+            pendingRawHistoryWireBytes = max(
+                0,
+                pendingRawHistoryWireBytes - snapshot.reduce(0) { $0 + $1.totalLength }
+            )
+        }
+        return true
+    }
+
+    private func captureRawHistoryRecord(_ record: OuraRecord) {
+        guard !rawHistoryOverflowed else { return }
+        let nextBytes = pendingRawHistoryWireBytes + record.totalLength
+        guard pendingRawHistoryRecords.count < maximumPendingRawHistoryRecords,
+              nextBytes <= maximumPendingRawHistoryWireBytes else {
+            rawHistoryOverflowed = true
+            return
+        }
+        pendingRawHistoryRecords.append(record)
+        pendingRawHistoryWireBytes = nextBytes
+    }
+
+    private func clearPendingRawHistory() {
+        pendingRawHistoryRecords.removeAll()
+        pendingRawHistoryWireBytes = 0
+        rawHistoryOverflowed = false
+    }
+
     /// Drop history that cannot be mapped to UTC at session teardown. The count is useful diagnostics and
     /// contains no biometric value; missing rows are more honest than confidently wrong timestamps.
     private func discardUnanchoredHistory() {
-        guard !pendingAnchorEvents.isEmpty else { return }
-        log("Oura: withheld \(pendingAnchorEvents.count) uncommitted history sample(s) for safe refetch")
+        guard !pendingAnchorEvents.isEmpty || !pendingRawHistoryRecords.isEmpty || rawHistoryOverflowed else {
+            return
+        }
+        log("Oura: withheld \(pendingAnchorEvents.count) decoded sample(s) and \(pendingRawHistoryRecords.count) raw record(s) for safe refetch")
         pendingAnchorEvents.removeAll()
+        clearPendingRawHistory()
     }
 
     // MARK: - Live ingest
@@ -1466,6 +1550,8 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
     }
 
     public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        historyPersistenceEpoch &+= 1
+        historyPersistenceInFlight = false
         log("Oura: connected - discovering services")
         failedReconnectAttempts = 0   // a real connection clears the reconnect backoff (#912)
         peripheral.delegate = self
@@ -1515,6 +1601,7 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         loggedAnchor = false
         loggedTierBKinds.removeAll()
         pendingAnchorEvents.removeAll()   // a fresh session must never replay a stale-anchor guess
+        clearPendingRawHistory()
         historyInventory = OuraRecordInventory()
         pendingInstallKey = nil
         adoptPhase = .idle
@@ -1542,6 +1629,8 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
 
     public func centralManager(_ central: CBCentralManager,
                                didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+        historyPersistenceEpoch &+= 1
+        historyPersistenceInFlight = false
         if let error = error {
             log("Oura: disconnected - \(error.localizedDescription)")
         } else {

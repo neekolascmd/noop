@@ -1,6 +1,7 @@
 package com.noop.data
 
 import android.content.Context
+import com.noop.oura.OuraRecord
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlin.math.roundToInt
@@ -281,6 +282,59 @@ class WhoopRepository(private val dao: WhoopDao) {
     }
 
     suspend fun waveformPayloadBytes(deviceId: String): Long = dao.waveformPayloadBytes(deviceId)
+
+    /**
+     * Persist complete history TLVs before typed decoding. Only the Oura transport's reassembled history
+     * boundary calls this; pairing/auth/live secure frames never enter this API.
+     */
+    suspend fun insertOuraRawHistoryRecords(
+        records: List<OuraRecord>,
+        deviceId: String,
+        firstSeenAtUnixMs: Long = System.currentTimeMillis(),
+        limits: OuraRawHistoryRetentionLimits = OuraRawHistoryRetentionLimits.PRODUCTION,
+    ): Int {
+        if (records.isEmpty()) return 0
+        require(deviceId.isNotEmpty()) { "Oura raw-history device id is empty" }
+        require(firstSeenAtUnixMs >= 0) { "invalid Oura first-seen timestamp" }
+        require(limits.maxWireBytesPerDevice > 0) { "invalid Oura raw-history retention limit" }
+        records.forEach(OuraRawHistoryStoreContract::validate)
+        val rows = records.map {
+            OuraRawHistoryEntity(
+                deviceId = deviceId,
+                ringTimestamp = it.ringTimestamp,
+                tag = it.type,
+                payload = ByteArray(it.payload.size) { index -> it.payload[index].toByte() },
+                wireByteSize = it.totalLength.toLong(),
+                firstSeenAtUnixMs = firstSeenAtUnixMs,
+            )
+        }
+        return dao.insertOuraRawHistoryRowsBounded(
+            rows = rows,
+            deviceId = deviceId,
+            maxWireBytes = limits.maxWireBytesPerDevice,
+        )
+    }
+
+    suspend fun ouraRawHistoryRecords(
+        deviceId: String,
+        afterArchiveId: Long = 0,
+        limit: Int = 20_000,
+    ): List<StoredOuraRawHistoryRecord> {
+        val boundedLimit = limit.coerceIn(0, 50_000)
+        if (deviceId.isEmpty() || afterArchiveId < 0 || boundedLimit == 0) return emptyList()
+        return dao.ouraRawHistoryRows(deviceId, afterArchiveId, boundedLimit).map {
+            StoredOuraRawHistoryRecord(
+                archiveId = it.archiveId,
+                tag = it.tag,
+                ringTimestamp = it.ringTimestamp,
+                payload = it.payload,
+                firstSeenAtUnixMs = it.firstSeenAtUnixMs,
+            )
+        }
+    }
+
+    suspend fun ouraRawHistoryWireBytes(deviceId: String): Long =
+        dao.ouraRawHistoryWireBytes(deviceId)
 
     /** #836 — cheap whole-history raw-HR change fingerprint `"count:maxTs"`. The idle 15-min rescore (the
      *  AppViewModel backstop) skips when this is unchanged since the last completed run. Any HR insert/delete

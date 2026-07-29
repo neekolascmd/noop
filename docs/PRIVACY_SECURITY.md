@@ -174,7 +174,7 @@ is a Room/SQLite database in the app's private storage; the rest of this section
 describes the GRDB/SQLite store shared by the macOS and iOS apps.)
 
 The schema is defined by a versioned `DatabaseMigrator` in
-`Packages/WhoopStore/Sources/WhoopStore/Database.swift` (currently schema version 9).
+`Packages/WhoopStore/Sources/WhoopStore/Database.swift` (currently schema version 25).
 It holds exactly the kinds of data you would expect from the features:
 
 - **Decoded biometric streams** (durable): `hrSample`, `rrInterval`, `spo2Sample`,
@@ -186,6 +186,8 @@ It holds exactly the kinds of data you would expect from the features:
   this database, never transmitted. They are self-tracking notes, not clinical records (see
   `DISCLAIMER.md` §5).
 - **A transient raw outbox** (`rawBatch`): compressed raw BLE frames, **prunable**.
+- **Bounded local research archives**: Polar ECG/PPG chunks (`waveformChunk`) and complete Oura
+  history TLVs (`ouraRawHistory`) for future on-device clean-room decoder passes.
 - **Device records** (`device`): strap id, MAC, name, first/last-seen timestamps.
 
 The database is opened in WAL journal mode with `synchronous = NORMAL` and a busy
