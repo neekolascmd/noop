@@ -316,6 +316,7 @@ fun SettingsScreen(vm: AppViewModel) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val live by vm.live.collectAsStateWithLifecycle()
+    val activeDeviceName by vm.activeDeviceName.collectAsStateWithLifecycle()
 
     // The profile store is stable for the lifetime of this screen; a version counter
     // forces recomposition after each mutating write (SharedPreferences isn't reactive).
@@ -1489,7 +1490,8 @@ fun SettingsScreen(vm: AppViewModel) {
         SettingsSection(
             icon = Icons.Filled.Science,
             title = "Diagnostics",
-            blurb = "A read-only export of the decoded sensor streams NOOP already stores. Works on any strap. Nothing is written to your device, and nothing is uploaded.",
+            blurb = "A read-only export of the decoded sensor streams NOOP already stores for " +
+                "${activeDeviceName ?: "the active device"}. Nothing is written to the device, and nothing is uploaded.",
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 // --- Experimental sleep staging (V2) — opt-in, default OFF, every model. (V7 Pillar 3b) ---
@@ -1539,10 +1541,17 @@ fun SettingsScreen(vm: AppViewModel) {
                     leadingIcon = Icons.Filled.Upload,
                     kind = NoopButtonKind.Secondary,
                     fullWidth = true,
-                    onClick = { scope.launch { RawSensorExport.export(context, vm.repo) } },
+                    onClick = {
+                        scope.launch {
+                            val exportDeviceId = vm.deviceRegistry.activeDeviceId() ?: vm.activeStrapId
+                            RawSensorExport.export(context, vm.repo, exportDeviceId)
+                        }
+                    },
                 )
                 Text(
-                    "Saves the last 24h of decoded sensor samples (heart rate, R-R, motion, steps and any 5/MG deep streams you've unlocked) as one CSV you can share, for tinkering with your own data. Nothing leaves the phone unless you share it.",
+                    "Saves the last 24h of decoded sensor samples for ${activeDeviceName ?: "the active device"} " +
+                        "(heart rate, R-R, motion, steps and device-specific decoded streams) as one CSV you can share, " +
+                        "for tinkering with your own data. Nothing leaves the phone unless you share it.",
                     style = NoopType.caption,
                     color = Palette.textTertiary,
                 )

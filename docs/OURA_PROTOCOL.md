@@ -450,6 +450,10 @@ out-of-range values are withheld rather than allowed to corrupt HRV/recovery. Se
   - **Cadence and chronological direction remain unqualified.** The normalized event deliberately has
     no `cadence_seconds`, never becomes `sleepSession.stagesJSON`, and cannot feed Rest/recovery. The exact
     original TLV remains in the bounded local raw archive for later hardware-backed replay.
+  - For overnight qualification, **Settings → Diagnostics → Export raw sensor data** now scopes the
+    last-24-hour CSV to the registry's active physical device and includes `device_id` on every row.
+    An active Oura ring therefore exports its `OURA_SLEEP_PHASE_SERIES` records instead of silently
+    querying the legacy `my-whoop` namespace; rows from another paired device cannot bleed into the file.
 - **`0x6A` `sleep_period_info_2`** (10-byte body): average HR `uint8 × 0.5`, HR trend `int8 / 16`,
   two index bytes `/16`, breathing `uint8 / 8`, breathing variation `uint8 / 8`, motion count `0...120`,
   unnamed state `0...2`, and CV `uint16 LE / 65536`. The state codes are preserved raw and are **not**

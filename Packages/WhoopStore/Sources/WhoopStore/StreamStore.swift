@@ -174,10 +174,11 @@ extension WhoopStore {
 
     /// Long-format CSV column order. One stream's columns are filled per row; the rest stay blank.
     private static let rawCSVHeader =
-        "unix_s,iso_utc,stream,hr_bpm,rr_ms,grav_x,grav_y,grav_z,step_counter," +
+        "unix_s,iso_utc,device_id,stream,hr_bpm,rr_ms,grav_x,grav_y,grav_z,step_counter," +
         "ppg_bpm,ppg_conf,spo2_red,spo2_ir,skintemp_raw,resp_raw,band_sleep_state,event_kind,event_payload"
 
-    /// One assembled CSV line: the 16 columns AFTER the `unix_s,iso_utc` prefix, joined with commas.
+    /// One assembled CSV line: the 16 columns AFTER the `unix_s,iso_utc,device_id` prefix, joined with
+    /// commas.
     /// `cols[0]` is the `stream` name; `cols[1...15]` are the per-stream value slots, only the ones
     /// that belong to this row's stream are non-empty.
     private struct RawCSVRow {
@@ -312,7 +313,7 @@ extension WhoopStore {
         buf.reserveCapacity(72 * 1024)
         for row in rows {
             let isoStr = iso.string(from: Date(timeIntervalSince1970: TimeInterval(row.ts)))
-            buf += "\(row.ts),\(isoStr),"
+            buf += "\(row.ts),\(isoStr),\(WhoopStore.csvField(deviceId)),"
             buf += row.cols.joined(separator: ",")
             buf += "\n"
             if buf.utf8.count >= 64 * 1024 {

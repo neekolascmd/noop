@@ -1300,7 +1300,7 @@ struct SettingsView: View {
         SettingsSection(
             icon: "doc.text.magnifyingglass",
             title: "Diagnostics",
-            blurb: "A read-only export of the decoded sensor streams NOOP already stores. Works on any strap. Nothing is written to your device, and nothing is uploaded."
+            blurb: "A read-only export of the decoded sensor streams NOOP already stores for \(model.activeDeviceDisplayName). Nothing is written to your \(model.activeDeviceNoun), and nothing is uploaded."
         ) {
             VStack(alignment: .leading, spacing: NoopMetrics.rowSpacing) {
                 // MARK: Export raw sensor data (CSV) — a read-only diagnostic over the decoded streams
@@ -1328,7 +1328,7 @@ struct SettingsView: View {
                 }
                 #endif
 
-                Text("Dumps the last 24 hours of decoded per-sample sensor streams (heart rate, R-R, motion, steps, SpO₂, skin temperature, respiration, events) to a single CSV. All on \(Platform.deviceNounPhrase), nothing uploaded. Share it to help prototype and test sleep, activity and strength algorithms.")
+                Text("Dumps the last 24 hours of decoded per-sample sensor streams for \(model.activeDeviceDisplayName) (heart rate, R-R, motion, steps, SpO₂, skin temperature, respiration, events) to a single CSV. All on \(Platform.deviceNounPhrase), nothing uploaded. Share it to help prototype and test sleep, activity and strength algorithms.")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1425,10 +1425,11 @@ struct SettingsView: View {
         showBackupAlert = true
     }
 
-    /// Export the last 24h of decoded sensor streams for the connected strap to a CSV, then save (macOS
-    /// NSSavePanel) or share (iOS share sheet) — the same pattern as exportPuffinCaptures(). The store
-    /// handle and the strap deviceId both come from the app's single "my-whoop" id.
+    /// Export the last 24h of decoded sensor streams for the active device to a CSV, then save (macOS
+    /// NSSavePanel) or share (iOS share sheet) — the same pattern as exportPuffinCaptures(). The active
+    /// registry id is captured at tap time so Oura and other sources never fall back to "my-whoop".
     private func exportRawSensorCSV() {
+        let exportDeviceId = model.deviceRegistry?.activeDeviceId ?? model.repo.deviceId
         rawCsvBusy = true
         Task {
             let since = Date().timeIntervalSince1970 - 24 * 60 * 60
@@ -1442,7 +1443,7 @@ struct SettingsView: View {
                 return
             }
             do {
-                let url = try await store.exportRawCSV(deviceId: model.deviceId, since: since)
+                let url = try await store.exportRawCSV(deviceId: exportDeviceId, since: since)
                 await MainActor.run {
                     rawCsvBusy = false
                     lastRawCsvURL = url
