@@ -164,7 +164,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     private let deviceId: String
     private let persist: (Streams) async -> Bool
     /// Archives complete reassembled history TLVs before typed decoding/cursor commit.
-    private let persistRawHistory: ([OuraRecord]) async -> Bool
+    private let persistRawHistory: ([OuraRecord], OuraTimeAnchor?) async -> Bool
     /// Persists a verified 0x76 bedtime window as a stage-less sleep session.
     private let persistSleepSession: (Int, Int) async -> Bool
     private let log: (String) -> Void
@@ -593,7 +593,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         // Raw TLVs need no UTC anchor, but they share the cursor durability barrier: archive every complete
         // record (including a late tail received while SQLite yielded) before any branch can ACK/advance.
         // Exact-record uniqueness makes a partial success followed by refetch harmless.
-        guard await persistPendingRawHistoryDurably() else {
+        guard await persistPendingRawHistoryDurably(using: driver) else {
             guard self.driver.map({ $0 === driver }) == true else { return }
             abortHistoryAfterPersistenceFailure()
             return
@@ -740,7 +740,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 authKey: @escaping () -> Data?,
                 authKeyStatus: @escaping () -> OSStatus? = { nil },
                 persist: @escaping (Streams) async -> Bool = { _ in true },
-                persistRawHistory: @escaping ([OuraRecord]) async -> Bool = { _ in true },
+                persistRawHistory: @escaping ([OuraRecord], OuraTimeAnchor?) async -> Bool = { _, _ in true },
                 persistSleepSession: @escaping (Int, Int) async -> Bool = { _, _ in true },
                 log: @escaping (String) -> Void = { _ in },
                 onBattery: @escaping (Int) -> Void = { _ in },
@@ -1220,7 +1220,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
 
     /// Persist every complete raw record observed before the settled summary. The loop absorbs a late TLV
     /// that arrives while the actor awaits SQLite, preventing a cursor commit from outrunning the archive.
-    private func persistPendingRawHistoryDurably() async -> Bool {
+    private func persistPendingRawHistoryDurably(using driver: OuraDriver) async -> Bool {
         guard feedsLive else {
             clearPendingRawHistory()
             return true
@@ -1228,9 +1228,13 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         guard !rawHistoryOverflowed else { return false }
         while !pendingRawHistoryRecords.isEmpty {
             let snapshot = pendingRawHistoryRecords
+            let timeAnchor = driver.currentSessionTimeAnchor
             for chunkStart in stride(from: 0, to: snapshot.count, by: historyPersistenceChunkSize) {
                 let chunkEnd = min(chunkStart + historyPersistenceChunkSize, snapshot.count)
-                guard await persistRawHistory(Array(snapshot[chunkStart..<chunkEnd])) else { return false }
+                guard await persistRawHistory(
+                    Array(snapshot[chunkStart..<chunkEnd]),
+                    timeAnchor
+                ) else { return false }
             }
             guard pendingRawHistoryRecords.count >= snapshot.count else { return false }
             pendingRawHistoryRecords.removeFirst(snapshot.count)

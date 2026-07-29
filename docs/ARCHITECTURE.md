@@ -311,6 +311,9 @@ the Metric Explorer and correlations), indexed by `(deviceId, key, day)`.
 research-toggle frames. Decoded data is always committed *before* raw is queued, so pruning raw
 (`PrunePolicy`: 24h window / 50MB cap) can never lose a metric. `waveformChunk` retains bounded Polar
 ECG/PPG, while `ouraRawHistory` retains exact, complete history TLVs for future local decoder passes.
+Oura archive rows optionally retain the validated ring-clock/UTC anchor from their settled page and a
+decoder revision. The bounded offline re-decoder writes idempotent typed rows before advancing that
+revision, so a newer clean-room mapping can recover old nights without BLE or cloud access.
 `cursors` holds durable watermarks such as `strap_trim`.
 
 `deviceId` is the per-source partition key. The app uses `"my-whoop"` for the strap and

@@ -233,8 +233,8 @@ targets: [
 
 ### Schema
 
-The migrator (`WhoopStore.makeMigrator()`) runs `v1`…`v25`
-(`WhoopStoreInfo.schemaVersion == 25`). On open, the store enables WAL journal
+The migrator (`WhoopStore.makeMigrator()`) runs `v1`…`v26`
+(`WhoopStoreInfo.schemaVersion == 26`). On open, the store enables WAL journal
 mode, `synchronous = NORMAL`, a 16 MB page cache, 256 MB mmap, and a 5-second
 busy timeout so two handles to the same file don't deadlock.
 
@@ -249,7 +249,7 @@ busy timeout so two handles to the same file don't deadlock.
 | `journal`, `workout`, `appleDaily` | journal + workouts + Apple-Health daily | various |
 | `metricSeries` | generic long-format (EAV) metric store | `(deviceId, day, key)` |
 | `waveformChunk` | bounded Polar ECG/PPG chunks | `(deviceId, stream, startUnixNs)` |
-| `ouraRawHistory` | bounded exact Oura history TLVs for local re-decoding | local `archiveId`; exact-record unique index |
+| `ouraRawHistory` | bounded exact Oura history TLVs, validated time anchors, and durable decoder revisions for offline re-decoding | local `archiveId`; exact-record unique index |
 
 ### Key public API
 

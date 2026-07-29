@@ -19,6 +19,7 @@ final class OuraRawHistoryStoreTests: XCTestCase {
         let indexes = try await store.indexNamesForTest(table: "ouraRawHistory")
         XCTAssertTrue(indexes.contains("idx_ouraRawHistory_exact"))
         XCTAssertTrue(indexes.contains("idx_ouraRawHistory_device_seen"))
+        XCTAssertTrue(indexes.contains("idx_ouraRawHistory_device_revision"))
     }
 
     func testExactRefetchIsIdempotentAndReplayable() async throws {
@@ -106,5 +107,48 @@ final class OuraRawHistoryStoreTests: XCTestCase {
         try await store.deleteAllData(deviceId: "oura")
         let bytes = try await store.ouraRawHistoryWireBytes(deviceId: "oura")
         XCTAssertEqual(bytes, 0)
+    }
+
+    func testAnchorEnrichmentAndDecoderRevisionAreDurable() async throws {
+        let store = try await WhoopStore.inMemory()
+        let value = record(ringTimestamp: 10, payload: [1, 2, 3])
+        _ = try await store.insertOuraRawHistoryRecords(
+            [value],
+            deviceId: "oura",
+            firstSeenAtUnixMs: 1
+        )
+        let anchor = OuraTimeAnchor(
+            ringTimestamp: 10,
+            utcMilliseconds: 1_700_000_000_000,
+            factorMillisecondsPerTick: 100
+        )
+        // An exact refetch enriches the existing row instead of adding a duplicate.
+        _ = try await store.insertOuraRawHistoryRecords(
+            [value],
+            deviceId: "oura",
+            firstSeenAtUnixMs: 2,
+            timeAnchor: anchor
+        )
+        var rows = try await store.ouraRawHistoryRecords(deviceId: "oura")
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].timeAnchor, anchor)
+        XCTAssertEqual(rows[0].decodedRevision, 0)
+
+        try await store.markOuraRawHistoryDecoded(
+            archiveIds: [rows[0].archiveId],
+            decoderRevision: 3
+        )
+        rows = try await store.ouraRawHistoryRecords(deviceId: "oura")
+        XCTAssertEqual(rows[0].decodedRevision, 3)
+        let currentRows = try await store.ouraRawHistoryRecordsNeedingDecode(
+            deviceId: "oura",
+            decoderRevision: 3
+        )
+        XCTAssertTrue(currentRows.isEmpty)
+        let nextRevisionRows = try await store.ouraRawHistoryRecordsNeedingDecode(
+            deviceId: "oura",
+            decoderRevision: 4
+        )
+        XCTAssertEqual(nextRevisionRows.count, 1)
     }
 }

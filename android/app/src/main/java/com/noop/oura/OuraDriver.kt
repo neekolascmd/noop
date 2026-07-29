@@ -460,6 +460,18 @@ class OuraDriver(
     /** True while any validated primary or session-only secondary mapping can interpolate ring time. */
     val hasUtcAnchor: Boolean get() = anchorUtcMs != null && anchorRingTime != null
 
+    /**
+     * Validated timestamp mapping for the current session, including legacy and session-only RTC anchors.
+     * Raw archive storage attaches it to settled pages for fully-offline future decoder passes. It is
+     * translation metadata only and never grants Ring 4 cursor/ACK authority.
+     */
+    val currentSessionTimeAnchor: OuraTimeAnchor?
+        get() {
+            val utc = anchorUtcMs ?: return null
+            val ring = anchorRingTime ?: return null
+            return OuraTimeAnchor(ring, utc, anchorFactorMs).takeIf(OuraTimeAnchorMapping::isValid)
+        }
+
     /** Validated anchor suitable for durable reuse: correlated 0x42 or qualified Ring 4 RTC fallback. */
     val currentPrimaryAnchor: OuraTimeAnchor?
         get() = primaryTimeAnchor.takeIf { ringGen == OuraRingGen.GEN4 }
@@ -518,17 +530,8 @@ class OuraDriver(
      * Swift's `unixSeconds(forRingTimestamp:)`. `rt` is the unsigned 32-bit ring timestamp as a Long.
      */
     fun unixSeconds(forRingTimestamp: Long): Long? {
-        val anchorMs = anchorUtcMs ?: return null
-        val anchorRt = anchorRingTime ?: return null
-        val deltaTicks = forRingTimestamp - anchorRt
-        val ms = anchorMs + deltaTicks * anchorFactorMs
-        // #968: a corrupt/misaligned ring timestamp (seen on a full cursor=0 history dump) can convert to
-        // an implausible epoch. Gate the RESULT to the same 2020-2035 plausible window used for anchoring
-        // (was a weak `ms <= 0`), so the caller honestly falls back to arrival time instead of banking a
-        // 1970 or far-future sample. Byte-identical to the Swift twin.
-        val seconds = ms / 1000
-        if (seconds < MIN_PLAUSIBLE_EPOCH_SECONDS || seconds > MAX_PLAUSIBLE_EPOCH_SECONDS) return null
-        return seconds
+        val anchor = currentSessionTimeAnchor ?: return null
+        return OuraTimeAnchorMapping.unixSeconds(forRingTimestamp, anchor)
     }
 
     /**

@@ -507,6 +507,25 @@ extension WhoopStore {
                 columns: ["deviceId", "firstSeenAtUnixMs", "archiveId"]
             )
         }
+
+        // v26: make the raw archive independently re-decodable. Each row may carry the validated
+        // ring-clock anchor that was available when its history page settled; migrated rows remain NULL
+        // and are backfilled from their own 0x42/0x85 records. `decodedRevision` is advanced only after
+        // idempotent typed writes succeed, so a crash retries safely and a future decoder revision can
+        // reprocess the same retained bytes without reconnecting the ring.
+        migrator.registerMigration("v26-oura-raw-redecode") { db in
+            try db.alter(table: "ouraRawHistory") { t in
+                t.add(column: "anchorUtcMilliseconds", .integer)
+                t.add(column: "anchorRingTimestamp", .integer)
+                t.add(column: "anchorFactorMillisecondsPerTick", .integer)
+                t.add(column: "decodedRevision", .integer).notNull().defaults(to: 0)
+            }
+            try db.create(
+                index: "idx_ouraRawHistory_device_revision",
+                on: "ouraRawHistory",
+                columns: ["deviceId", "decodedRevision", "archiveId"]
+            )
+        }
         return migrator
     }
 }

@@ -405,10 +405,14 @@ final class SourceCoordinator: ObservableObject {
                     return false
                 }
             },
-            persistRawHistory: { [storeHandle] records in
+            persistRawHistory: { [storeHandle] records, timeAnchor in
                 guard let store = await storeHandle() else { return false }
                 do {
-                    _ = try await store.insertOuraRawHistoryRecords(records, deviceId: id)
+                    _ = try await store.insertOuraRawHistoryRecords(
+                        records,
+                        deviceId: id,
+                        timeAnchor: timeAnchor
+                    )
                     return true
                 } catch {
                     return false
@@ -429,6 +433,28 @@ final class SourceCoordinator: ObservableObject {
             log: straplog,
             onBattery: { [live] pct in live.setBattery(Double(pct)) },
             adoptIntent: adoptIntent)
+        // Decoder revisions are independent of BLE and app releases. Re-run retained TLVs in the
+        // background on every Oura activation; already-current rows make this a cheap no-op, while a
+        // new revision backfills old local data without requiring the ring or an Oura account.
+        Task { [storeHandle, straplog] in
+            guard let store = await storeHandle() else { return }
+            do {
+                let report = try await store.redecodeOuraRawHistory(
+                    deviceId: id,
+                    ringGen: ringGen
+                )
+                if report.decodedRecords > 0 {
+                    straplog(
+                        "Oura: offline archive replay decoded \(report.decodedRecords) record(s), " +
+                        "inserted \(report.insertedRows) row(s), withheld \(report.withheldEvents)"
+                    )
+                }
+            } catch is CancellationError {
+                // Unmarked pages remain retryable on the next Oura activation.
+            } catch {
+                straplog("Oura: offline archive replay paused; retained records will retry")
+            }
+        }
         if adoptIntent { straplog("Oura: adopt consent granted - this session may install NOOP's key") }
         if let pid = peripheralId(for: id), let uuid = UUID(uuidString: pid) {
             source.connect(uuid)

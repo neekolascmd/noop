@@ -159,10 +159,10 @@ final class DecoderGoldenTests: XCTestCase {
     // MARK: - 0x42 time sync (generation-specific)
 
     func testTimeSync0x42() {
-        // epoch 1719662400000 ms, tz byte 2 -> 3600 s.
-        let rec = record("420d0200010000d2dd639001000002")
+        // Hardware-observed Gen 3 layout: epoch 1719662400 seconds, tz byte 2 -> 3600 s.
+        let rec = record("420d0200010040f77f660000000002")
         let ts = OuraDecoders.decodeTimeSync(rec)
-        XCTAssertEqual(ts, OuraTimeSync(ringTimestamp: rt, epochMs: 1_719_662_400_000, tzOffsetSeconds: 3600))
+        XCTAssertEqual(ts, OuraTimeSync(ringTimestamp: rt, epochMs: 1_719_662_400, tzOffsetSeconds: 3600))
     }
 
     func testRing4TimeSync0x42UsesCompressedEpochAndTokenFactor() {

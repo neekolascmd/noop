@@ -24,6 +24,19 @@ class OuraRawHistoryStoreTest {
             ),
             WhoopDatabase.OURA_RAW_HISTORY_MIGRATION_SQL,
         )
+        assertEquals(19, WhoopDatabase.MIGRATION_19_20.startVersion)
+        assertEquals(20, WhoopDatabase.MIGRATION_19_20.endVersion)
+        assertEquals(
+            listOf(
+                "ALTER TABLE `ouraRawHistory` ADD COLUMN `anchorUtcMilliseconds` INTEGER",
+                "ALTER TABLE `ouraRawHistory` ADD COLUMN `anchorRingTimestamp` INTEGER",
+                "ALTER TABLE `ouraRawHistory` ADD COLUMN `anchorFactorMillisecondsPerTick` INTEGER",
+                "ALTER TABLE `ouraRawHistory` ADD COLUMN `decodedRevision` INTEGER NOT NULL DEFAULT 0",
+                "CREATE INDEX IF NOT EXISTS `idx_ouraRawHistory_device_revision` " +
+                    "ON `ouraRawHistory` (`deviceId`, `decodedRevision`, `archiveId`)",
+            ),
+            WhoopDatabase.OURA_RAW_REDECODE_MIGRATION_SQL,
+        )
     }
 
     @Test

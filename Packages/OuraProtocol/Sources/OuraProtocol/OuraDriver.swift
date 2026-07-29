@@ -375,6 +375,20 @@ public final class OuraDriver {
     /// fetched cursor provisional until its samples can be dated and durably flushed.
     public var hasUtcAnchor: Bool { anchorUtcMs != nil && anchorRingTime != nil }
 
+    /// The validated mapping currently used to timestamp decoded records, including legacy-generation
+    /// and session-only RTC-beacon anchors. Raw-history storage attaches this metadata to settled pages so
+    /// future decoder revisions can run entirely offline. This is translation state only; unlike
+    /// `currentPrimaryTimeAnchor`, it never grants Ring 4 cursor-commit authority.
+    public var currentSessionTimeAnchor: OuraTimeAnchor? {
+        guard let anchorUtcMs, let anchorRingTime else { return nil }
+        let candidate = OuraTimeAnchor(
+            ringTimestamp: anchorRingTime,
+            utcMilliseconds: anchorUtcMs,
+            factorMillisecondsPerTick: anchorFactorMs
+        )
+        return OuraTimeAnchorMapping.isValid(candidate) ? candidate : nil
+    }
+
     /// The validated durable anchor suitable for atomic persistence with the history cursor. This is a
     /// correlated 0x42 when available, otherwise a recent active-fetch 0x85 fallback on Ring 4.
     public var currentPrimaryTimeAnchor: OuraTimeAnchor? {
@@ -429,16 +443,14 @@ public final class OuraDriver {
     /// (OURA_PROTOCOL.md s5.5). Returns nil when no anchor has arrived yet this session, so the caller
     /// can honestly fall back (e.g. to wall-clock arrival time) instead of guessing.
     public func unixSeconds(forRingTimestamp rt: UInt32) -> Int? {
-        guard let anchorUtcMs, let anchorRingTime else { return nil }
-        let deltaTicks = Int64(rt) - Int64(anchorRingTime)
-        let ms = anchorUtcMs + deltaTicks * anchorFactorMs
-        // #968: a corrupt/misaligned ring timestamp (seen on a full cursor=0 history dump) can convert to
-        // an implausible epoch. Gate the RESULT to the same 2020-2035 plausible window used for anchoring
-        // (was a weak `ms > 0`), so the caller honestly falls back to arrival time instead of banking a
-        // 1970 or far-future sample.
-        let seconds = ms / 1000
-        guard seconds >= Self.minPlausibleEpochSeconds, seconds <= Self.maxPlausibleEpochSeconds else { return nil }
-        return Int(seconds)
+        guard let anchor = currentSessionTimeAnchor,
+              let seconds = OuraTimeAnchorMapping.unixSeconds(
+                forRingTimestamp: rt,
+                using: anchor
+              ) else {
+            return nil
+        }
+        return Int(exactly: seconds)
     }
 
     /// Bounds for a plausible anchor epoch (unix seconds): 2020-01-01 to 2035-01-01. A decoded 0x42/0x85
@@ -475,12 +487,7 @@ public final class OuraDriver {
 
     /// Validate an anchor loaded from durable storage before it is allowed to translate any history.
     public static func isValidTimeAnchor(_ anchor: OuraTimeAnchor) -> Bool {
-        guard anchor.ringTimestamp > 0,
-              anchor.factorMillisecondsPerTick == 1 || anchor.factorMillisecondsPerTick == 100 else {
-            return false
-        }
-        let seconds = anchor.utcMilliseconds / 1000
-        return seconds >= minPlausibleEpochSeconds && seconds <= maxPlausibleEpochSeconds
+        OuraTimeAnchorMapping.isValid(anchor)
     }
 
     // MARK: - Record ingest (decode)

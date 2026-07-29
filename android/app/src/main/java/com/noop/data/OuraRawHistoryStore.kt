@@ -4,6 +4,8 @@ import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
 import com.noop.oura.OuraRecord
+import com.noop.oura.OuraTimeAnchor
+import com.noop.oura.OuraTimeAnchorMapping
 
 /** One complete Oura history TLV retained before typed decoding. */
 data class StoredOuraRawHistoryRecord(
@@ -12,6 +14,8 @@ data class StoredOuraRawHistoryRecord(
     val ringTimestamp: Long,
     val payload: ByteArray,
     val firstSeenAtUnixMs: Long,
+    val timeAnchor: OuraTimeAnchor? = null,
+    val decodedRevision: Int = 0,
 ) {
     val record: OuraRecord
         get() = OuraRecord(
@@ -26,14 +30,18 @@ data class StoredOuraRawHistoryRecord(
             tag == other.tag &&
             ringTimestamp == other.ringTimestamp &&
             payload.contentEquals(other.payload) &&
-            firstSeenAtUnixMs == other.firstSeenAtUnixMs
+            firstSeenAtUnixMs == other.firstSeenAtUnixMs &&
+            timeAnchor == other.timeAnchor &&
+            decodedRevision == other.decodedRevision
 
     override fun hashCode(): Int {
         var result = archiveId.hashCode()
         result = 31 * result + tag
         result = 31 * result + ringTimestamp.hashCode()
         result = 31 * result + payload.contentHashCode()
-        return 31 * result + firstSeenAtUnixMs.hashCode()
+        result = 31 * result + firstSeenAtUnixMs.hashCode()
+        result = 31 * result + (timeAnchor?.hashCode() ?: 0)
+        return 31 * result + decodedRevision
     }
 }
 
@@ -53,6 +61,10 @@ data class StoredOuraRawHistoryRecord(
             value = ["deviceId", "firstSeenAtUnixMs", "archiveId"],
             name = "idx_ouraRawHistory_device_seen",
         ),
+        Index(
+            value = ["deviceId", "decodedRevision", "archiveId"],
+            name = "idx_ouraRawHistory_device_revision",
+        ),
     ],
 )
 data class OuraRawHistoryEntity(
@@ -63,7 +75,19 @@ data class OuraRawHistoryEntity(
     val payload: ByteArray,
     val wireByteSize: Long,
     val firstSeenAtUnixMs: Long,
+    val anchorUtcMilliseconds: Long? = null,
+    val anchorRingTimestamp: Long? = null,
+    val anchorFactorMillisecondsPerTick: Long? = null,
+    val decodedRevision: Int = 0,
 )
+
+val OuraRawHistoryEntity.timeAnchor: OuraTimeAnchor?
+    get() {
+        val utc = anchorUtcMilliseconds ?: return null
+        val ring = anchorRingTimestamp ?: return null
+        val factor = anchorFactorMillisecondsPerTick ?: return null
+        return OuraTimeAnchor(ring, utc, factor).takeIf(OuraTimeAnchorMapping::isValid)
+    }
 
 data class OuraRawHistoryPruneRow(val archiveId: Long, val wireByteSize: Long)
 

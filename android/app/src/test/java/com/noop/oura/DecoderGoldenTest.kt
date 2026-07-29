@@ -180,10 +180,10 @@ class DecoderGoldenTest {
 
     @Test
     fun testTimeSync0x42() {
-        // epoch 1719662400000 ms, tz byte 2 -> 3600 s.
-        val rec = record("420d0200010000d2dd639001000002")
+        // Hardware-observed Gen 3 layout: epoch 1719662400 seconds, tz byte 2 -> 3600 s.
+        val rec = record("420d0200010040f77f660000000002")
         val ts = OuraDecoders.decodeTimeSync(rec)
-        assertEquals(OuraTimeSync(ringTimestamp = rt, epochMs = 1_719_662_400_000L, tzOffsetSeconds = 3600), ts)
+        assertEquals(OuraTimeSync(ringTimestamp = rt, epochMs = 1_719_662_400L, tzOffsetSeconds = 3600), ts)
     }
 
     @Test
