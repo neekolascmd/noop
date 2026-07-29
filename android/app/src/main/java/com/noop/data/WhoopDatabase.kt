@@ -48,8 +48,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         LabMarkerRow::class,
         LiveSessionRow::class,
         WaveformChunkEntity::class,
+        OuraRawHistoryEntity::class,
     ],
-    version = 18,
+    version = 19,
     exportSchema = false,
 )
 abstract class WhoopDatabase : RoomDatabase() {
@@ -455,6 +456,24 @@ abstract class WhoopDatabase : RoomDatabase() {
             }
         }
 
+        /** v18 -> v19: bounded, exact-deduplicated Oura history TLVs; Swift migration v25 twin. */
+        internal val OURA_RAW_HISTORY_MIGRATION_SQL: List<String> = listOf(
+            "CREATE TABLE IF NOT EXISTS `ouraRawHistory` (`archiveId` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                "`deviceId` TEXT NOT NULL, `ringTimestamp` INTEGER NOT NULL, `tag` INTEGER NOT NULL, " +
+                "`payload` BLOB NOT NULL, `wireByteSize` INTEGER NOT NULL, " +
+                "`firstSeenAtUnixMs` INTEGER NOT NULL)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS `idx_ouraRawHistory_exact` " +
+                "ON `ouraRawHistory` (`deviceId`, `ringTimestamp`, `tag`, `payload`)",
+            "CREATE INDEX IF NOT EXISTS `idx_ouraRawHistory_device_seen` " +
+                "ON `ouraRawHistory` (`deviceId`, `firstSeenAtUnixMs`, `archiveId`)",
+        )
+
+        internal val MIGRATION_18_19 = object : Migration(18, 19) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                for (statement in OURA_RAW_HISTORY_MIGRATION_SQL) db.execSQL(statement)
+            }
+        }
+
         private fun build(appContext: Context): WhoopDatabase =
             Room.databaseBuilder(appContext, WhoopDatabase::class.java, DB_NAME)
                 // #1014: replace ONLY the corruption handling of the default open-helper. The
@@ -470,6 +489,7 @@ abstract class WhoopDatabase : RoomDatabase() {
                     MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10,
                     MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14,
                     MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18,
+                    MIGRATION_18_19,
                 )
                 .build()
     }

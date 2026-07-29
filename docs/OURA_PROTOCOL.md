@@ -512,14 +512,25 @@ out-of-range values are withheld rather than allowed to corrupt HRV/recovery. Se
 3. **Trust tiers in the decoder:** Tier A (hardware-backed, may feed production metrics) = TLV framing, auth, GetEvents cursor, live-HR `0x02`, `0x60` IBI, `0x46`/`0x69`/`0x75` temp, Ring 4 `0x6F` percentage SpO2 plus raw `0x77` DC, `0x6A` raw sleep-period measurements, `0x76` bedtime bounds, `0x42` time-sync, `0x0D` battery, `0x45`/`0x53` state, `0x6B` motion. The corrected `0x80` layout is also Tier A: external real Ring 5 captures contain more than 1,100 coherent beats and validate the split-bitfield layout; a repository-owned capture remains useful corroboration, not a production gate. Diagnostic = decoded investigation evidence that cannot feed production metrics; `0x8B` raw ratio/PI and its explicitly labelled simple-calibration evidence remain here until the available Ring 4 emits a local fixture and passes reference-sensor comparison. Tier B (UNVERIFIED, fixture-gate before use) items = sleep summaries/stage cadence, `0x50/0x51/0x52` activity-MET, `0x7E/0x7F` steps, legacy `0x70`/`0x7B` on Ring 4, the protobuf `0x55/0x59` interpretation (do **not** ship).
 4. **HRV/sleep:** consume `0x5D` HRV, preserve `0x6A` without naming its states, and use `0x76` for stage-less sleep bounds. `0x4E` phase bits remain experimental until a real Ring 4 fixture proves cadence/direction; `0x5A` is not a canonical pinned Ring 4 tag. Never read Oura feature `0x06` (encrypted API).
 
-### 7.4 Passive record inventory
+### 7.4 Passive record inventory and local raw archive
 
-Every production history pass now inventories each **complete** TLV before its bytes are discarded.
+Every production history pass inventories each **complete** TLV before typed decoding.
 `OuraRecordInventory` retains only tag/count/wire-size/typed-event-count metadata; it never retains the
 record payload, ring timestamp, device identity, auth key, or biometric value. The terminal strap-log line
 therefore answers which tags a particular firmware actually emitted and which are absent from NOOP's
 dictionary without requiring a packet capture or changing any ring setting. Known lifecycle records that
 intentionally emit no typed value remain distinct from genuinely unknown tags.
+
+The complete history TLV is also retained in NOOP's on-device SQLite database so a later clean-room decoder
+can reprocess already-worn nights. The archive contains only the existing registry device id, tag, 32-bit
+ring timestamp, payload, wire size, and a local first-seen time. It is populated only after TLV reassembly
+on the GetEvents history path: secure live/auth frames, install keys, identifiers extracted from traffic,
+outgoing commands, and incomplete fragments cannot enter the record payload. Exact
+`(deviceId, ringTimestamp, tag, payload)` uniqueness makes refetches
+idempotent. The archive write is awaited before cursor advancement; a failure leaves the saved cursor
+unchanged for safe refetch. Retention is bounded to 128 MiB of original TLV wire bytes per device, oldest
+whole records first, with a 100,000-record/32 MiB transport-RAM guard. Device-data deletion and normal
+local database backup behavior include the table automatically.
 
 The `oura-decode` CLI uses the same inventory while replaying an opt-in capture. It counts reassembled TLVs,
 not capture fragments, so a split record or several records packed into one notification cannot create a

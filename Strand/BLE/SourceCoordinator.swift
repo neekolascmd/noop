@@ -405,6 +405,15 @@ final class SourceCoordinator: ObservableObject {
                     return false
                 }
             },
+            persistRawHistory: { [storeHandle] records in
+                guard let store = await storeHandle() else { return false }
+                do {
+                    _ = try await store.insertOuraRawHistoryRecords(records, deviceId: id)
+                    return true
+                } catch {
+                    return false
+                }
+            },
             persistSleepSession: { [storeHandle] start, end in
                 guard let store = await storeHandle() else { return false }
                 do {

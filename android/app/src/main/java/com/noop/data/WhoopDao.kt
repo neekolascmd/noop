@@ -155,6 +155,52 @@ interface WhoopDao : DeviceRegistryDao {
         return inserted
     }
 
+    // MARK: - Bounded Oura raw-history archive
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertOuraRawHistoryRows(rows: List<OuraRawHistoryEntity>): List<Long>
+
+    @Query("SELECT COALESCE(SUM(wireByteSize), 0) FROM ouraRawHistory WHERE deviceId = :deviceId")
+    suspend fun ouraRawHistoryWireBytes(deviceId: String): Long
+
+    @Query(
+        "SELECT archiveId, wireByteSize FROM ouraRawHistory WHERE deviceId = :deviceId " +
+            "ORDER BY firstSeenAtUnixMs ASC, archiveId ASC"
+    )
+    suspend fun oldestOuraRawHistoryRows(deviceId: String): List<OuraRawHistoryPruneRow>
+
+    @Query("DELETE FROM ouraRawHistory WHERE archiveId = :archiveId")
+    suspend fun deleteOuraRawHistoryRowId(archiveId: Long): Int
+
+    @Query(
+        "SELECT * FROM ouraRawHistory WHERE deviceId = :deviceId AND archiveId > :afterArchiveId " +
+            "ORDER BY archiveId ASC LIMIT :limit"
+    )
+    suspend fun ouraRawHistoryRows(
+        deviceId: String,
+        afterArchiveId: Long,
+        limit: Int,
+    ): List<OuraRawHistoryEntity>
+
+    @Transaction
+    suspend fun insertOuraRawHistoryRowsBounded(
+        rows: List<OuraRawHistoryEntity>,
+        deviceId: String,
+        maxWireBytes: Long,
+    ): Int {
+        val inserted = insertOuraRawHistoryRows(rows).count { it != -1L }
+        val total = ouraRawHistoryWireBytes(deviceId)
+        if (total > maxWireBytes) {
+            val evictions = OuraRawHistoryStoreContract.rowIdsToEvict(
+                oldestFirst = oldestOuraRawHistoryRows(deviceId),
+                totalWireBytes = total,
+                maxWireBytes = maxWireBytes,
+            )
+            for (archiveId in evictions) deleteOuraRawHistoryRowId(archiveId)
+        }
+        return inserted
+    }
+
     // MARK: - Server-derived caches (latest value wins)
 
     @Upsert

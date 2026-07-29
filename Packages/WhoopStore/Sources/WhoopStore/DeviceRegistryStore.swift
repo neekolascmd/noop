@@ -80,6 +80,7 @@ public struct DeviceRegistryStore: Sendable {
         "hrSample", "rrInterval", "spo2Sample", "skinTempSample", "respSample", "gravitySample",
         "stepSample", "ppgHrSample", "event", "battery", "dailyMetric", "sleepSession",
         "journal", "workout", "appleDaily", "metricSeries", "dayOwnership", "waveformChunk",
+        "ouraRawHistory",
     ]
 
     /// Permanently delete every recorded sample/derived row belonging to one device, across all

@@ -288,7 +288,7 @@ shell doesn't re-render on every beat.
 
 ## 7. Storage model (WhoopStore / SQLite)
 
-GRDB drives a migrator (`WhoopStoreInfo.schemaVersion`, currently `11`). The schema groups into four
+GRDB drives a migrator (`WhoopStoreInfo.schemaVersion`, currently `25`). The schema groups into four
 concerns:
 
 **Durable decoded streams** — natural key `(deviceId, ts)`, one row per sample:
@@ -307,10 +307,11 @@ concerns:
 table so *any* scalar metric from *any* source can be queried/compared uniformly (the substrate for
 the Metric Explorer and correlations), indexed by `(deviceId, key, day)`.
 
-**Raw outbox** — `rawBatch`: the compressed, **transient, prunable** record of original frames,
-captured only when the research toggle is on. Decoded data is always committed *before* raw is queued,
-so pruning raw (`PrunePolicy`: 24h window / 50MB cap) can never lose a metric. `cursors` holds durable
-watermarks such as `strap_trim`.
+**Raw archives and outbox** — `rawBatch` is the compressed, **transient, prunable** record of
+research-toggle frames. Decoded data is always committed *before* raw is queued, so pruning raw
+(`PrunePolicy`: 24h window / 50MB cap) can never lose a metric. `waveformChunk` retains bounded Polar
+ECG/PPG, while `ouraRawHistory` retains exact, complete history TLVs for future local decoder passes.
+`cursors` holds durable watermarks such as `strap_trim`.
 
 `deviceId` is the per-source partition key. The app uses `"my-whoop"` for the strap and
 `"apple-health"` for imported Apple Health, so per-source pages and cross-source "consensus" views

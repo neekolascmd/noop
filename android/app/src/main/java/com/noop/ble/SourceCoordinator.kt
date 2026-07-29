@@ -371,6 +371,12 @@ class SourceCoordinator(
                 persist = { batch: StreamBatch, deviceId: String ->
                     runCatching { repo.insert(batch, deviceId); true }.getOrDefault(false)
                 },
+                persistRawHistory = { records, deviceId ->
+                    runCatching {
+                        repo.insertOuraRawHistoryRecords(records, deviceId)
+                        true
+                    }.getOrDefault(false)
+                },
                 persistSleepSession = { start, end ->
                     runCatching {
                         repo.upsertSleepSessions(

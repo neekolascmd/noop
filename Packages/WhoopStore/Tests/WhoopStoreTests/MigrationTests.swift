@@ -51,7 +51,7 @@ final class MigrationTests: XCTestCase {
             let cols = try await store.columnNamesForTest(table: table)
             XCTAssertTrue(cols.contains("synced"), "\(table) missing synced column")
         }
-        XCTAssertEqual(WhoopStoreInfo.schemaVersion, 24)
+        XCTAssertEqual(WhoopStoreInfo.schemaVersion, 25)
     }
 
     /// v13 adds the `userEdited` flag to sleepSession (user-corrected wake times survive re-sync).
@@ -79,7 +79,7 @@ final class MigrationTests: XCTestCase {
         let identifiers = WhoopStoreInfo.migrationIdentifiers
         XCTAssertEqual(WhoopStoreInfo.schemaVersion, identifiers.count)
         XCTAssertEqual(identifiers.first, "v1")
-        XCTAssertEqual(identifiers.last, "v24-waveform-chunk")
+        XCTAssertEqual(identifiers.last, "v25-oura-raw-history")
         XCTAssertEqual(Set(identifiers).count, identifiers.count, "migration identifiers must be unique")
     }
 
