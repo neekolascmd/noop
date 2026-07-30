@@ -598,6 +598,7 @@ object WhoopCsvImporter {
         strain = base.strain ?: fill.strain,
         exerciseCount = base.exerciseCount ?: fill.exerciseCount,
         spo2Pct = base.spo2Pct ?: fill.spo2Pct,
+        spo2Method = if (base.spo2Pct != null) base.spo2Method else fill.spo2Method,
         skinTempDevC = base.skinTempDevC ?: fill.skinTempDevC,
         respRateBpm = base.respRateBpm ?: fill.respRateBpm,
     )

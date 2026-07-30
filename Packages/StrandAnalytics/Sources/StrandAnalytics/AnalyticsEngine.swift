@@ -592,14 +592,50 @@ public enum AnalyticsEngine {
         let oxygenWindows = matched.isEmpty
             ? knownSleepWindows
             : matched.map { (start: $0.start, end: $0.end) }
-        let oxygen = spo2.compactMap { sample -> Double? in
+        let nativeOxygen = spo2.compactMap { sample -> (ts: Int, value: Double)? in
             guard sample.unit == "tenths_percent", sample.ir == 0,
                   (700...1000).contains(sample.red),
                   oxygenWindows.contains(where: { sample.ts >= $0.start && sample.ts <= $0.end })
             else { return nil }
-            return Double(sample.red) / 10.0
+            return (sample.ts, Double(sample.red) / 10.0)
         }
-        let spo2Pct = oxygen.isEmpty ? nil : oxygen.reduce(0, +) / Double(oxygen.count)
+        let estimatedOxygen = spo2.compactMap { sample -> (ts: Int, value: Double)? in
+            guard sample.unit == OuraStreamMapping.estimatedSpO2Unit, sample.ir == 0,
+                  (850...1000).contains(sample.red),
+                  oxygenWindows.contains(where: { sample.ts >= $0.start && sample.ts <= $0.end })
+            else { return nil }
+            return (sample.ts, Double(sample.red) / 10.0)
+        }.sorted { $0.ts < $1.ts }
+        // An Oura Simple night must cover at least 30 minutes and retain at least one record per
+        // 30 seconds on average. This rejects a spot/fragment while allowing ordinary optical gaps.
+        let qualifiedEstimate: [(ts: Int, value: Double)] = {
+            var byWindow = Array(
+                repeating: [(ts: Int, value: Double)](),
+                count: oxygenWindows.count
+            )
+            for sample in estimatedOxygen {
+                guard let index = oxygenWindows.firstIndex(where: {
+                    sample.ts >= $0.start && sample.ts <= $0.end
+                }) else { continue }
+                byWindow[index].append(sample)
+            }
+            return byWindow.flatMap { values -> [(ts: Int, value: Double)] in
+                guard values.count >= 60,
+                      let first = values.first?.ts,
+                      let last = values.last?.ts,
+                      last - first >= 30 * 60,
+                      Double(values.count) / Double(max(last - first, 1)) >= 1.0 / 30.0
+                else { return [] }
+                return values
+            }
+        }()
+        let selectedOxygen = nativeOxygen.isEmpty ? qualifiedEstimate : nativeOxygen
+        let spo2Pct = selectedOxygen.isEmpty
+            ? nil
+            : selectedOxygen.reduce(0.0) { $0 + $1.value } / Double(selectedOxygen.count)
+        let spo2Method = nativeOxygen.isEmpty && !qualifiedEstimate.isEmpty
+            ? "oura_simple_gen4"
+            : nil
 
         // ── Assemble DailyMetric ──────────────────────────────────────────────
         let daily = DailyMetric(
@@ -616,6 +652,7 @@ public enum AnalyticsEngine {
             strain: strain,
             exerciseCount: workouts.count,
             spo2Pct: spo2Pct,
+            spo2Method: spo2Method,
             skinTempDevC: skinTempDevC,
             respRateBpm: respRateDaily,
             steps: stepsTotal,

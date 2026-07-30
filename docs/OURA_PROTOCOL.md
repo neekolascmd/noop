@@ -396,16 +396,23 @@ out-of-range values are withheld rather than allowed to corrupt HRV/recovery. Se
 - Oura's app-side "SpO2 Simple" approximation is `a×R² + b×R + c`, clamped to 85...100%.
   Gen 4 / Oreo uses `(-13.4, -5.1, 105.2)`; Cooper uses `(-12.1, -6.9, 106.3)`. [open_oura-spo2]
 - NOOP preserves every valid app-side result as `calibrated_tenths_percent_samples` plus matching
-  `calibrated_sample_indices` inside the diagnostic event. It does not invent per-sample timestamps,
-  collapse variable-size records to equally weighted means, or promote the estimates to the unlabelled
-  daily oxygen metric / Health Connect before hardware and reference-sensor qualification. PI remains
-  available for later quality research; no undocumented threshold is invented. Gen 3 has no qualified
-  profile. Ring 5's coefficient mapping is unconfirmed, so NOOP applies no automatic Ring 5 profile;
-  the Cooper coefficients remain an explicit research option. Firmware-native `0x6F` percentages remain
-  separately tagged `tenths_percent` and retain precedence as production oxygen readings.
-- Ring 5 has real overnight evidence for `0x8B`; no `0x8B` emission was recorded from the available
-  Ring 4's previous retained bank. Ring 4 support therefore remains software-ready but
-  hardware-unqualified until a fresh overnight inventory records tag `0x8B`. [open_oura-spo2]
+  `calibrated_sample_indices` inside the diagnostic event. It also stores one record-mean sample at the
+  record's real timestamp under the distinct unit `estimated_tenths_percent`. It never invents
+  per-sample timestamps. Offline analytics accepts those rows only inside a known sleep window after
+  at least 60 records span 30 minutes at an average density of one record per 30 seconds or better.
+  The resulting daily value carries `spo2Method=oura_simple_gen4`, is prefixed `≈` and labelled
+  **Oura estimate** in the app, and is excluded from HealthKit, Health Connect, and WHOOP-compatible
+  CSV export. A native `0x6F` percentage always takes precedence and clears the estimate provenance.
+- PI remains available for later quality research; no undocumented threshold is invented. Gen 3 has
+  no qualified profile. Ring 5's coefficient mapping is unconfirmed, so NOOP applies no automatic
+  Ring 5 profile; the Cooper coefficients remain an explicit research option.
+- Re-analysis of the available Ring 4 / FW 2.12.3 opt-in archive found **12,852** complete `0x8B`
+  records carrying **51,397** samples. Payload bodies were 4, 7, 10, or 13 bytes (almost all 13);
+  every body passed the exact `1 + 3n` shape check and record timestamps were unique. Within its
+  independently decoded eight-hour `0x76` bedtime window, 27,285 calibrated samples arrived at about
+  0.95 samples/second and the Oura Simple aggregate was about 97.0%. This qualifies Ring 4 emission,
+  framing, and offline replay—not clinical accuracy. A simultaneous reference sensor is still needed
+  before describing the estimate as measured SpO2. [open_oura-spo2]
 
 ### 6.8 Skin temperature
 - **`0x46` `temp_event`** (10–18 B, even len): up to 7 samples, each **int16 LE ÷ 100 = °C**. [ringverse]
@@ -541,7 +548,7 @@ out-of-range values are withheld rather than allowed to corrupt HRV/recovery. Se
 ### 7.3 NOOP decoder build guidance
 1. **Single TLV parser** (§2.3) for all generations - the framing is generation-invariant. Branch only on: MTU clamp (203 vs 247) and Gen-4/5 extra-char presence (discover but ignore in v1).
 2. **Generation detection:** read product info (`0x18 03 18 00 10`) → hardware id (`ORE_06` on the tested Ring 4), and firmware (`0x08`). Map to Gen 3/4/5 to set MTU and pick verified-vs-unverified layout confidence.
-3. **Trust tiers in the decoder:** Tier A (hardware-backed, may feed production metrics) = TLV framing, auth, GetEvents cursor, live-HR `0x02`, `0x60` IBI, `0x46`/`0x69`/`0x75` temp, Ring 4 `0x6F` percentage SpO2 plus raw `0x77` DC, `0x6A` raw sleep-period measurements, `0x76` bedtime bounds, `0x42` time-sync, `0x0D` battery, `0x45`/`0x53` state, `0x6B` motion. The corrected `0x80` layout is also Tier A: external real Ring 5 captures contain more than 1,100 coherent beats and validate the split-bitfield layout; a repository-owned capture remains useful corroboration, not a production gate. Diagnostic = decoded investigation evidence that cannot feed production metrics; `0x8B` raw ratio/PI and its explicitly labelled simple-calibration evidence remain here until the available Ring 4 emits a local fixture and passes reference-sensor comparison. The atomic `0x4E`/`0x5A` phase series is also diagnostic: packing/order and the stage codebook are corroborated, while cadence/direction are not. Tier B (UNVERIFIED, fixture-gate before use) items = sleep summaries, the `0x4B` body layout, sleep-stage cadence, `0x50/0x51/0x52` activity-MET, `0x7E/0x7F` steps, legacy `0x70`/`0x7B` on Ring 4, the protobuf `0x55/0x59` interpretation (do **not** ship).
+3. **Trust tiers in the decoder:** Tier A (hardware-backed, may feed production metrics) = TLV framing, auth, GetEvents cursor, live-HR `0x02`, `0x60` IBI, `0x46`/`0x69`/`0x75` temp, Ring 4 `0x6F` percentage SpO2 plus raw `0x77` DC, `0x6A` raw sleep-period measurements, `0x76` bedtime bounds, `0x42` time-sync, `0x0D` battery, `0x45`/`0x53` state, `0x6B` motion. The corrected `0x80` layout is also Tier A: external real Ring 5 captures contain more than 1,100 coherent beats and validate the split-bitfield layout; a repository-owned capture remains useful corroboration, not a production gate. Diagnostic / explicitly estimated = Ring 4 `0x8B` emission and wire shape are now hardware-backed; raw ratio/PI stays diagnostic, while the qualified Oura Simple result may feed only the separately labelled `oura_simple_gen4` estimate path until reference-sensor comparison is recorded. The atomic `0x4E`/`0x5A` phase series is also diagnostic: packing/order and the stage codebook are corroborated, while cadence/direction are not. Tier B (UNVERIFIED, fixture-gate before use) items = sleep summaries, the `0x4B` body layout, sleep-stage cadence, `0x50/0x51/0x52` activity-MET, `0x7E/0x7F` steps, legacy `0x70`/`0x7B` on Ring 4, the protobuf `0x55/0x59` interpretation (do **not** ship).
 4. **HRV/sleep:** consume `0x5D` HRV, preserve `0x6A` without naming its states, and use `0x76` for stage-less sleep bounds. Preserve `0x4E`/`0x5A` as atomic diagnostic series, but do not timestamp individual codes or stage a night until a real fixture proves cadence/direction. Never read Oura feature `0x06` (encrypted API).
 
 ### 7.4 Passive record inventory and local raw archive
@@ -575,6 +582,10 @@ carried across a proven clock reset. Records that still lack safe UTC remain raw
 than stamped with arrival time. Bump the decoder revision—not the app version—when a new clean-room mapping
 can recover additional retained data.
 
+Schema v27 adds nullable `dailyMetric.spo2Method` provenance. Existing rows remain nil
+(measured/imported/unknown); only the qualified Ring 4 local estimate is stamped
+`oura_simple_gen4`, so an upgrade cannot silently relabel historical percentages.
+
 Decoder revision 2 corrects the native phase codebook and replays each retained `0x4E`/`0x5A` record as
 one atomic `OURA_SLEEP_PHASE_SERIES` diagnostic event. The new kind intentionally does not collide with
 legacy `OURA_SLEEP_PHASE` rows that may contain only the first code. Neither event kind feeds scoring.
@@ -583,6 +594,11 @@ Decoder revision 3 replays retained Ring 4 `0x47` and `0x72` records as timestam
 `OURA_MOTION_SUMMARY` and `OURA_SLEEP_ACM_PERIOD` diagnostic events. Their clean-room byte layouts and
 wire shapes are hardware-backed, but their unresolved semantic fields remain units-neutral and cannot
 feed scoring. The original TLVs remain available for lossless future re-decoding.
+
+Decoder revision 4 replays retained Ring 4 `0x8B` records into both the lossless
+`OURA_SPO2_RATIO_PI` diagnostic event and one timestamp-honest, estimate-unit record mean. Nightly
+qualification, measured-value precedence, provenance labels, and external-export exclusions are applied
+downstream; raw replay alone never turns the estimate into a firmware or clinical measurement.
 
 The `oura-decode` CLI uses the same inventory while replaying an opt-in capture. It counts reassembled TLVs,
 not capture fragments, so a split record or several records packed into one notification cannot create a

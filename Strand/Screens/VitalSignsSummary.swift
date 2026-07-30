@@ -18,6 +18,8 @@ struct BodyVitalReading: Identifiable {
     let day: String?
     let source: DailyMetricSource?
     let missingCaption: String
+    /// Non-nil only when the displayed percentage is an explicitly-derived local estimate.
+    var methodCaption: String? = nil
     /// Trailing values for this vital (oldest → newest), so the tile can draw a metric-tinted
     /// sparkline with a glowing "now" end-cap like Today's Key-Metrics tiles. Presentation-only:
     /// the resolved value, banding and source are unchanged — this is just the trend for the trail.
@@ -27,7 +29,7 @@ struct BodyVitalReading: Identifiable {
     var id: String { key }
 
     var formattedValue: String? {
-        value.map { "\(format($0)) \(unit)" }
+        value.map { "\(methodCaption == nil ? "" : "≈")\(format($0)) \(unit)" }
     }
 
     /// Colour communicates state: in-range = the metric's category colour,
@@ -47,6 +49,9 @@ struct BodyVitalReading: Identifiable {
         var parts = [Self.dayLabel(day)]
         if let sourceText = Self.sourceLabel(source, key: key) {
             parts.append(sourceText)
+        }
+        if let methodCaption {
+            parts.append(methodCaption)
         }
         parts.append(stateText)
         return parts.joined(separator: " · ")
@@ -120,7 +125,12 @@ enum BodyVitalSigns {
             for source in allowedSources {
                 for row in sourceRows where row.source == source {
                     guard let v = value(row.metric), byDay[row.metric.day] == nil else { continue }
-                    byDay[row.metric.day] = VitalPoint(day: row.metric.day, value: v, source: row.source)
+                    byDay[row.metric.day] = VitalPoint(
+                        day: row.metric.day,
+                        value: v,
+                        source: row.source,
+                        method: key == "spo2" ? row.metric.spo2Method : nil
+                    )
                 }
             }
             return byDay.values.sorted { $0.day < $1.day }
@@ -222,6 +232,9 @@ enum BodyVitalSigns {
                 day: spo2Row?.day,
                 source: spo2Row?.source,
                 missingCaption: String(localized: "No SpO₂ import or Health value"),
+                methodCaption: spo2Row?.method == nil
+                    ? nil
+                    : String(localized: "Oura estimate"),
                 sparkline: trail(spo2Points)
             ),
             BodyVitalReading(
@@ -316,6 +329,7 @@ private struct VitalPoint: Equatable {
     let day: String
     let value: Double
     let source: DailyMetricSource
+    let method: String?
 }
 
 private extension DailyMetricSource {

@@ -1479,7 +1479,8 @@ private fun VitalsSection(
         if (footer) {
             Text(
                 text = "SpO₂, respiratory rate and skin temperature are sleep-window " +
-                    "aggregates from your most recent imported day; resting HR and HRV update daily. " +
+                    "aggregates from your most recent day. Oura Simple values are marked as estimates; " +
+                    "resting HR and HRV update daily. " +
                     "Once NOOP has 14 nights of history, in-range compares each vital to your own " +
                     "baseline (approximate, not medical advice); until then typical adult ranges apply.",
                 style = NoopType.footnote,
@@ -1501,6 +1502,8 @@ private data class Vital(
     val readingDay: String? = null,
     val asOfLabel: String? = null,
     val rangeCaption: String? = null,
+    /** Non-null only for an explicitly-derived local value, never a firmware percentage. */
+    val methodCaption: String? = null,
     /** Personal-baseline banding (population fallback until 14 trusted nights). */
     val banding: VitalBands.Result,
     /** The metric's category colour (used only when in range). */
@@ -1510,7 +1513,9 @@ private data class Vital(
     val sparkline: List<Double> = emptyList(),
 ) {
     /** Value with its unit appended, or null when no data. */
-    val formattedValue: String? = value?.let { "${format(it)} $unit" }
+    val formattedValue: String? = value?.let {
+        "${if (methodCaption == null) "" else "≈"}${format(it)} $unit"
+    }
 
     /** Colour communicates state: in-range = the metric's category colour,
      *  out-of-range = warning amber, no data = tertiary. */
@@ -1522,13 +1527,16 @@ private data class Vital(
 
     /** The in-range caption that stands in for a StatePill inside the fixed-height tile.
      *  The wording says which yardstick judged it: your baseline vs typical ranges. */
-    val stateCaption: String = when {
-        banding.band == VitalBands.Band.NO_DATA -> "No data"
-        banding.basis == VitalBands.Basis.PERSONAL ->
-            if (banding.band == VitalBands.Band.IN_RANGE) "In your range" else "Off your baseline"
-        else ->
-            if (banding.band == VitalBands.Band.IN_RANGE) "In typical range" else "Outside typical range"
-    }
+    val stateCaption: String = listOfNotNull(
+        methodCaption,
+        when {
+            banding.band == VitalBands.Band.NO_DATA -> "No data"
+            banding.basis == VitalBands.Basis.PERSONAL ->
+                if (banding.band == VitalBands.Band.IN_RANGE) "In your range" else "Off your baseline"
+            else ->
+                if (banding.band == VitalBands.Band.IN_RANGE) "In typical range" else "Outside typical range"
+        },
+    ).joinToString(" · ")
 
     val accessibilityText: String =
         formattedValue?.let {
@@ -1639,6 +1647,7 @@ private fun vitalsFor(
             readingDay = todayKey,
             asOfLabel = asOfLabel(todayKey),
             rangeCaption = spo2RangeCaption,
+            methodCaption = d?.spo2Method?.let { "Oura estimate" },
             // Population-only on purpose: an absolute <95% floor is meaningful regardless
             // of personal baseline (no "spo2" MetricCfg exists).
             banding = VitalBands.band(d?.spo2Pct, emptyList(), 95.0..100.0, null),
@@ -1806,6 +1815,7 @@ private data class VitalDetailModel(
     val color: Color,
     val points: List<Pair<String, Double>>,
     val format: (Double) -> String,
+    val estimatedDays: Set<String> = emptySet(),
 )
 
 /** Metric-detail keys that are NOT plain DailyMetric columns but series the engines/importers persist
@@ -1873,6 +1883,8 @@ fun VitalDetailScreen(vm: AppViewModel, key: String) {
         val min = values.minOrNull()
         val max = values.maxOrNull()
         val avg = values.average()
+        val includesEstimate = filteredPoints.any { it.first in detail.estimatedDays }
+        val latestIsEstimate = latest.first in detail.estimatedDays
 
         SectionHeader(detail.title, overline = "Vital Signs", trailing = "${filteredPoints.size} readings")
         NoopCard {
@@ -1881,7 +1893,8 @@ fun VitalDetailScreen(vm: AppViewModel, key: String) {
                     Column(modifier = Modifier.weight(1f)) {
                         Overline("Latest")
                         Text(
-                            text = "${detail.format(latest.second)} ${detail.unit}".trim(),
+                            text = "${if (latestIsEstimate) "≈" else ""}" +
+                                "${detail.format(latest.second)} ${detail.unit}".trim(),
                             style = NoopType.chartValueLarge,
                             color = detail.color,
                         )
@@ -1890,6 +1903,13 @@ fun VitalDetailScreen(vm: AppViewModel, key: String) {
                             style = NoopType.footnote,
                             color = Palette.textTertiary,
                         )
+                        if (includesEstimate) {
+                            Text(
+                                text = "≈ Oura Simple estimate; not a measured oxygen reading",
+                                style = NoopType.footnote,
+                                color = Palette.textTertiary,
+                            )
+                        }
                     }
                 }
                 SegmentedPillControl(
@@ -1928,7 +1948,10 @@ fun VitalDetailScreen(vm: AppViewModel, key: String) {
                         Column(modifier = Modifier.weight(1f)) {
                             Overline(label, color = Palette.textTertiary)
                             Text(
-                                text = metric?.let { "${detail.format(it)} ${detail.unit}".trim() } ?: "—",
+                                text = metric?.let {
+                                    "${if (includesEstimate) "≈" else ""}" +
+                                        "${detail.format(it)} ${detail.unit}".trim()
+                                } ?: "—",
                                 style = NoopType.bodyNumber,
                                 color = Palette.textPrimary,
                             )
@@ -2082,6 +2105,7 @@ private fun buildVitalDetail(
         color = Palette.metricCyan,
         points = days.mapNotNull { it.spo2Pct?.let { value -> it.day to value } },
         format = { String.format(Locale.US, "%.0f", it) },
+        estimatedDays = days.filter { it.spo2Method != null }.mapTo(mutableSetOf()) { it.day },
     )
     "rhr" -> VitalDetailModel(
         key = key,

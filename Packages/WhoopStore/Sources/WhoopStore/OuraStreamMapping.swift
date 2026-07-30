@@ -25,6 +25,9 @@ import OuraProtocol
 /// named diagnostic events (sleep-phase series and raw SpO2 ratio/PI) are durable evidence but have
 /// no scoring consumer. An unverified summary can therefore never silently feed scoring.
 public enum OuraStreamMapping {
+    /// Oura's app-side Ring 4 / Oreo quadratic, kept distinct from a firmware percentage.
+    public static let estimatedSpO2Unit = "estimated_tenths_percent"
+
     /// WhoopEvent.kind for the ring's own HRV 0x5D tag. The payload carries the RAW decoded fields
     /// (`time_ms`/`b1`/`b2`) only, never a fabricated `rmssd_ms` (the b1/b2 byte -> ms scale is not
     /// Tier-A; see OURA_PROTOCOL.md s6.9). Must match the Kotlin twin (OuraStreamMapping.kt) exactly.
@@ -113,11 +116,23 @@ public enum OuraStreamMapping {
                     if !calibrated.isEmpty {
                         payload["calibrated_sample_indices"] = .intArray(calibrated.map(\.0))
                         payload["calibrated_tenths_percent_samples"] = .intArray(calibrated.map(\.1))
+                        // Retain one explicitly-labelled estimate per real record timestamp. Almost every
+                        // qualified Ring 4 record carries four one-second optical samples, but partial
+                        // boundary records exist and the per-sample clock has no independent timestamp.
+                        // A record mean avoids inventing timestamps or primary-key collisions while making
+                        // the locally reproducible Oura Simple result available to offline analytics.
+                        let meanTenths = Int(
+                            (Double(calibrated.reduce(0) { $0 + $1.1 }) /
+                             Double(calibrated.count)).rounded()
+                        )
+                        out.spo2.append(SpO2Sample(
+                            ts: ts, red: meanTenths, ir: 0, unit: estimatedSpO2Unit
+                        ))
                     }
                 }
-                // Keep app-side estimates out of the production SpO2 stream: that stream feeds the
-                // unlabelled daily metric and Android Health Connect. The explicitly profiled sample
-                // array remains available in this diagnostic event until hardware/reference qualification.
+                // The raw and calibrated arrays remain available for lossless future re-analysis. The
+                // SpO2 row above carries an estimate-specific unit; analytics keeps measured percentages
+                // authoritative and propagates explicit provenance to every user-facing daily value.
                 out.events.append(WhoopEvent(ts: ts, kind: spo2RatioEventKind, payload: payload))
 
             case .temp(let v):

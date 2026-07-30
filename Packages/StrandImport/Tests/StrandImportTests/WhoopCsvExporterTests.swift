@@ -48,6 +48,19 @@ final class WhoopCsvExporterTests: XCTestCase {
         XCTAssertEqual(r.cycleStart, Date(timeIntervalSince1970: 1_780_272_000))
     }
 
+    func testOuraEstimateDoesNotMasqueradeAsMeasuredSpO2InWhoopCSV() {
+        let day = DailyMetric(
+            day: "2026-07-30", totalSleepMin: 420, efficiency: 92.3,
+            deepMin: 95, remMin: 115, lightMin: 210, disturbances: nil,
+            restingHr: 52, avgHrv: 68.4, recovery: 72, strain: 12.5,
+            exerciseCount: nil, spo2Pct: 96.8, spo2Method: "oura_simple_gen4"
+        )
+        let csv = WhoopCsvExporter.cyclesCSV(days: [day], series: [:])
+        let rows = WhoopExportImporter().parseCycles(CSVTable(text: csv))
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertNil(rows[0].bloodOxygenPct)
+    }
+
     func testWorkoutSportWithCommaQuoteNewlineSurvives() throws {
         let w = WorkoutRow(startTs: 1_750_000_000, endTs: 1_750_003_600,
                            sport: "Run, \"tempo\"\nintervals", source: "whoop",

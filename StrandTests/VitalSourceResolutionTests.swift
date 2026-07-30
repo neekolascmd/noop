@@ -67,6 +67,26 @@ final class VitalSourceResolutionTests: XCTestCase {
         XCTAssertEqual(spo2?.source, .whoopImport)
     }
 
+    func testOuraEstimateIsVisiblyLabelled() {
+        let readings = BodyVitalSigns.readings(
+            sourceRows: [
+                SourcedDailyMetric(
+                    metric: daily(
+                        day: "2026-06-12",
+                        spo2Pct: 96.8,
+                        spo2Method: "oura_simple_gen4"
+                    ),
+                    source: .noopComputed
+                )
+            ],
+            temperatureUnit: .celsius
+        )
+
+        let spo2 = readings.first { $0.key == "spo2" }
+        XCTAssertEqual(spo2?.formattedValue, "≈97 %")
+        XCTAssertTrue(spo2?.stateCaption.contains("Oura estimate") == true)
+    }
+
     func testAppleHealthDoesNotFillSkinTemperature() {
         let readings = BodyVitalSigns.readings(
             sourceRows: [
@@ -119,6 +139,7 @@ final class VitalSourceResolutionTests: XCTestCase {
         recovery: Double? = nil,
         strain: Double? = nil,
         spo2Pct: Double? = nil,
+        spo2Method: String? = nil,
         skinTempDevC: Double? = nil,
         respRateBpm: Double? = nil,
         steps: Int? = nil
@@ -137,6 +158,7 @@ final class VitalSourceResolutionTests: XCTestCase {
             strain: strain,
             exerciseCount: nil,
             spo2Pct: spo2Pct,
+            spo2Method: spo2Method,
             skinTempDevC: skinTempDevC,
             respRateBpm: respRateBpm,
             steps: steps,

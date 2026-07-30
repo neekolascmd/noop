@@ -96,8 +96,8 @@ class OuraRawHistoryRedecoderTest {
     }
 
     @Test
-    fun pageDecoderRevisionThreeRecoversMotionDiagnostics() {
-        assertEquals(3, OuraRawHistoryDecoderRevision.CURRENT)
+    fun pageDecoderRevisionFourRecoversMotionAndSpO2Diagnostics() {
+        assertEquals(4, OuraRawHistoryDecoderRevision.CURRENT)
         val anchor = OuraTimeAnchor(
             ringTimestamp = 1_000L,
             utcMilliseconds = 1_700_000_000_000L,
@@ -124,14 +124,32 @@ class OuraRawHistoryRedecoderTest {
             firstSeenAtUnixMs = 1,
             timeAnchor = anchor,
         )
+        val spo2 = StoredOuraRawHistoryRecord(
+            archiveId = 3,
+            tag = OuraEventTag.SPO2_RATIO_PI.raw,
+            ringTimestamp = 800L,
+            payload = byteArrayOf(0x00, 0x30, 0x00, 0x80.toByte(), 0x33, 0x33, 0x40),
+            firstSeenAtUnixMs = 1,
+            timeAnchor = anchor,
+        )
 
-        val decoded = OuraRawHistoryPageDecoder.decode(listOf(motion, sleepAcm), OuraRingGen.GEN4)
+        val decoded = OuraRawHistoryPageDecoder.decode(listOf(motion, sleepAcm, spo2), OuraRingGen.GEN4)
         assertEquals(0, decoded.withheldEvents)
         assertEquals(
-            listOf(OuraStreamMapping.EVENT_MOTION_SUMMARY, OuraStreamMapping.EVENT_SLEEP_ACM_PERIOD),
+            listOf(
+                OuraStreamMapping.EVENT_MOTION_SUMMARY,
+                OuraStreamMapping.EVENT_SLEEP_ACM_PERIOD,
+                OuraStreamMapping.EVENT_SPO2_RATIO_PI,
+            ),
             decoded.batch.events.map { it.kind },
         )
         assertEquals(1_699_999_990L, decoded.batch.events[0].ts)
         assertEquals(1_699_999_970L, decoded.batch.events[1].ts)
+        assertEquals(1_699_999_980L, decoded.batch.events[2].ts)
+        assertEquals(1, decoded.batch.spo2.size)
+        assertEquals(1_699_999_980L, decoded.batch.spo2.single().ts)
+        assertEquals(932, decoded.batch.spo2.single().red)
+        assertEquals(0, decoded.batch.spo2.single().ir)
+        assertEquals(OuraStreamMapping.ESTIMATED_SPO2_UNIT, decoded.batch.spo2.single().unit)
     }
 }

@@ -178,7 +178,8 @@ object WhoopCsvExporter {
                     // is WHOOP-format and a NOOP→NOOP round-trip is lossless (import scales back ×100/21).
                     // Divide by the SAME 100.0/21.0 constant the importer multiplies by (and that Swift's
                     // whoopDayStrainFromEffort uses) so the byte output matches macOS/iOS exactly.
-                    num(d.spo2Pct), num(d.strain?.let { it / (100.0 / 21.0) }),
+                    num(d.spo2Pct.takeIf { d.spo2Method == null }),
+                    num(d.strain?.let { it / (100.0 / 21.0) }),
                     "", "", "",            // energy / max HR / avg HR — not on the Android daily row
                     "", "",                // sleep/wake onset live in sleeps.csv
                     num(s["sleep_performance"]), num(d.respRateBpm), num(d.totalSleepMin),

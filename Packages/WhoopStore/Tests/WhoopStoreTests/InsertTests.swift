@@ -60,4 +60,23 @@ final class InsertTests: XCTestCase {
         let nb = try await store.insert(sampleStreams(), deviceId: "b")
         XCTAssertEqual(nb.hr, 2)   // same ts/bpm but different deviceId → not a conflict
     }
+
+    func testMeasuredSpO2ReplacesEstimateAtSameTimestampButEstimateCannotReplaceMeasured() async throws {
+        let store = try await WhoopStore.inMemory()
+        let estimate = Streams(spo2: [
+            SpO2Sample(ts: 1_000, red: 965, ir: 0, unit: OuraStreamMapping.estimatedSpO2Unit),
+        ])
+        let measured = Streams(spo2: [
+            SpO2Sample(ts: 1_000, red: 972, ir: 0, unit: "tenths_percent"),
+        ])
+
+        _ = try await store.insert(estimate, deviceId: "ring")
+        _ = try await store.insert(measured, deviceId: "ring")
+        _ = try await store.insert(estimate, deviceId: "ring")
+
+        let rows = try await store.spo2Samples(deviceId: "ring", from: 0, to: 2_000, limit: 10)
+        XCTAssertEqual(rows, [
+            SpO2Sample(ts: 1_000, red: 972, ir: 0, unit: "tenths_percent"),
+        ])
+    }
 }

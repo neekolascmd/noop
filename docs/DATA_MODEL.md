@@ -61,7 +61,7 @@ single `DatabaseQueue` and applies these PRAGMAs before any query runs:
 
 `WhoopStore` is an `actor`: all GRDB calls run on the actor's serial executor (off the main
 thread) through the `syncRead` / `syncWrite` helpers. The reported schema version is
-`WhoopStoreInfo.schemaVersion = 26`.
+`WhoopStoreInfo.schemaVersion = 27`.
 
 ---
 
@@ -116,6 +116,7 @@ Migrations are registered in `Packages/WhoopStore/Sources/WhoopStore/Database.sw
 | **v24** | Adds bounded dense Polar ECG/PPG waveform chunks. |
 | **v25** | Adds the bounded, exact-deduplicated Oura raw-history TLV archive. |
 | **v26** | Adds validated per-row Oura time anchors and durable decoder revisions for bounded, fully-offline raw-history re-decoding. |
+| **v27** | Adds nullable `dailyMetric.spo2Method` provenance so a labelled local Oura estimate cannot masquerade as a measured/imported percentage. |
 
 `WhoopStoreInfo.schemaVersion` is derived from the production migrator's registered identifiers,
 so the public version marker and diagnostics cannot silently lag behind `Database.swift`.
@@ -245,8 +246,10 @@ dedupe. Reads decode it back into `[String: ParsedValue]` with a shared, reused 
 
 ### Type-47 biometric streams *(v3)*
 
-These four mirror the original streams (per-row natural key `(deviceId, ts)`, `DO NOTHING`
-inserts, identical range-read shape).
+These four mirror the original streams (per-row natural key `(deviceId, ts)`, idempotent
+inserts, identical range-read shape). An SpO2 timestamp collision is the one precedence rule:
+a firmware `tenths_percent` row may replace an estimate/raw row, while an estimate cannot replace
+an existing firmware percentage.
 
 #### `spo2Sample` — pulse oximetry raw ADC
 
@@ -256,6 +259,7 @@ inserts, identical range-read shape).
 | `ts` | INTEGER NOT NULL | Unix seconds. Part of PK. |
 | `red` | INTEGER NOT NULL | Red LED raw ADC. |
 | `ir` | INTEGER NOT NULL | IR LED raw ADC. |
+| `unit` | TEXT NOT NULL DEFAULT `raw_adc` | *(v23)* Explicit scale such as `tenths_percent` or `estimated_tenths_percent`. |
 | `synced` | INTEGER NOT NULL DEFAULT 0 | *(v5, vestigial)* |
 
 **Primary key:** `(deviceId, ts)`.
@@ -393,11 +397,12 @@ per-day rollup behind the dashboard. **Natural key `(deviceId, day)`** where `da
 | `strain` | DOUBLE | v4 | Day strain. |
 | `exerciseCount` | INTEGER | v4 | Number of exercises. |
 | `spo2Pct` | DOUBLE | v7 | Mean SpO2 (%) during sleep. |
+| `spo2Method` | TEXT | v27 | Nil for measured/imported/unknown; `oura_simple_gen4` for the explicitly-labelled local estimate. |
 | `skinTempDevC` | DOUBLE | v7 | Skin-temperature deviation (°C) from baseline. |
 | `respRateBpm` | DOUBLE | v7 | Mean respiration rate (breaths/min) during sleep. |
 
 **Primary key:** `(deviceId, day)`. Read by lexicographic `day` range, oldest first. The
-`DailyMetric` struct's `init` defaults the three v7 fields to `nil` so older callers stay
+`DailyMetric` struct's `init` defaults the v7/v27 fields to `nil` so older callers stay
 source-compatible.
 
 ### `journal` *(v8)*

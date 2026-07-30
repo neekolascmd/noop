@@ -2150,7 +2150,9 @@ struct TodayView: View {
             return withUnit(d?.respRateBpm.map { String(format: "%.1f", $0) }
                             ?? sparks["resp_rate"]?.last.map { String(format: "%.1f", $0) } ?? "—")
         case .bloodOxygen:
-            return d?.spo2Pct.map { String(format: "%.0f%%", $0) } ?? "—"
+            return d?.spo2Pct.map {
+                "\(d?.spo2Method == nil ? "" : "≈")\(String(format: "%.0f%%", $0))"
+            } ?? "—"
         case .skinTemp:
             // Stored as a deviation from baseline (°C); show it signed so +/- reads honestly.
             return d?.skinTempDevC.map { String(format: "%+.1f°", $0) } ?? "—"
@@ -3244,10 +3246,16 @@ struct TodayView: View {
         case .bloodOxygen:
             let spo2 = carriedVital(unit: "SpO₂", today: d?.spo2Pct,
                                     prior: { $0.spo2Pct }, format: { String(format: "%.0f%%", $0) })
+            let sourceRow = d?.spo2Pct != nil ? d : lastScoredRecoveryDay
+            let isEstimate = sourceRow?.spo2Method != nil
+            let caption = [
+                spo2.caption,
+                isEstimate ? String(localized: "Oura estimate") : nil,
+            ].compactMap { $0 }.joined(separator: " · ")
             StatTile(
                 label: "Blood Oxygen",
-                value: spo2.value,
-                caption: spo2.caption,
+                value: isEstimate && spo2.value != "—" ? "≈\(spo2.value)" : spo2.value,
+                caption: caption,
                 accent: spo2.value == "—" ? StrandPalette.textPrimary : StrandPalette.metricCyan,
                 sparkline: sparks["spo2"],
                 sparkColor: StrandPalette.metricCyan

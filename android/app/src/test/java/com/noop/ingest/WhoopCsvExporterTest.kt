@@ -71,6 +71,20 @@ class WhoopCsvExporterTest {
     }
 
     @Test
+    fun ouraEstimateDoesNotMasqueradeAsMeasuredSpO2InWhoopCsv() {
+        val day = DailyMetric(
+            deviceId = "ring",
+            day = "2026-07-30",
+            spo2Pct = 96.8,
+            spo2Method = "oura_simple_gen4",
+        )
+        val table = CsvTable.fromData(
+            WhoopCsvExporter.cyclesCsv(listOf(day), emptyMap()).toByteArray()
+        )
+        assertEquals("", table.rows.single()["blood_oxygen_pct"].orEmpty())
+    }
+
+    @Test
     fun workoutSportWithCommaQuoteNewlineSurvives() {
         val w = WorkoutRow(
             deviceId = "my-whoop", startTs = 1_750_000_000L, endTs = 1_750_003_600L,

@@ -5,7 +5,7 @@ import WhoopProtocol
 /// Increment this only when a clean-room Oura decoder or durable mapping changes in a way that can
 /// recover new information from already-retained TLVs. It is intentionally independent of app version.
 public enum OuraRawHistoryDecoderRevision {
-    public static let current = 3
+    public static let current = 4
 }
 
 public struct OuraRawHistoryRedecodeReport: Equatable, Sendable {

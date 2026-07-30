@@ -71,7 +71,14 @@ final class OuraStreamMappingTests: XCTestCase {
         let s = OuraStreamMapping.streams(from: [
             .spo2Ratio(raw, calibrationProfile: .gen4Oreo),
         ], at: ts)
-        XCTAssertTrue(s.spo2.isEmpty)
+        XCTAssertEqual(s.spo2, [
+            SpO2Sample(
+                ts: ts,
+                red: 932,
+                ir: 0,
+                unit: OuraStreamMapping.estimatedSpO2Unit
+            ),
+        ])
         XCTAssertEqual(s.events.count, 1)
         XCTAssertEqual(s.events[0].kind, OuraStreamMapping.spo2RatioEventKind)
         XCTAssertEqual(s.events[0].payload["ratio_q14"], .intArray([0x3000, 0x3333]))

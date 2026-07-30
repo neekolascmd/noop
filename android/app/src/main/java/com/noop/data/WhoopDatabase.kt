@@ -50,7 +50,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         WaveformChunkEntity::class,
         OuraRawHistoryEntity::class,
     ],
-    version = 20,
+    version = 21,
     exportSchema = false,
 )
 abstract class WhoopDatabase : RoomDatabase() {
@@ -490,6 +490,16 @@ abstract class WhoopDatabase : RoomDatabase() {
             }
         }
 
+        /** v20 -> v21: nullable provenance for explicitly-derived Oura oxygen estimates. */
+        internal const val SPO2_METHOD_MIGRATION_SQL =
+            "ALTER TABLE `dailyMetric` ADD COLUMN `spo2Method` TEXT"
+
+        internal val MIGRATION_20_21 = object : Migration(20, 21) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(SPO2_METHOD_MIGRATION_SQL)
+            }
+        }
+
         private fun build(appContext: Context): WhoopDatabase =
             Room.databaseBuilder(appContext, WhoopDatabase::class.java, DB_NAME)
                 // #1014: replace ONLY the corruption handling of the default open-helper. The
@@ -505,7 +515,7 @@ abstract class WhoopDatabase : RoomDatabase() {
                     MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10,
                     MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14,
                     MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18,
-                    MIGRATION_18_19, MIGRATION_19_20,
+                    MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21,
                 )
                 .build()
     }
