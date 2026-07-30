@@ -450,6 +450,11 @@ out-of-range values are withheld rather than allowed to corrupt HRV/recovery. Se
   byte, MSB-first (`[7:6]`, `[5:4]`, `[3:2]`, `[1:0]`). The native zero-based codebook is
   **0=deep, 1=light, 2=REM, 3=awake**; Oura's official public API independently exposes the same order
   as characters `1` through `4`. [ringverse][oura-rs][oura-openapi]
+  - The offline account-export importer decodes the official `sleep_phase_5_min` field separately:
+    each character is one chronological five-minute epoch from `bedtime_start`, the last epoch is
+    clipped to `bedtime_end`, and adjacent equal stages are merged. This produces an honest imported
+    hypnogram and a future official-app reference timeline; it does **not** qualify direct BLE cadence
+    or direction.
   - NOOP preserves each source record atomically as one `OURA_SLEEP_PHASE_SERIES` diagnostic event
     containing the source tag, header, ring timestamp, and ordered code array. The previous per-code
     representation collided under the event table's `(deviceId, ts, kind)` key and could retain only

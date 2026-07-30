@@ -25,7 +25,8 @@ import java.util.zip.ZipInputStream
  * so the three brands decode the same on every platform.
  *
  *   • Oura   : the Account -> Export Data per-category files (CSV, `;`-delimited; or an older JSON
- *              variant): sleep periods (durations/HRV/RHR/breath; a `deleted` type is skipped), daily
+ *              variant): sleep periods (official 5-minute stages when present, durations/HRV/RHR/breath;
+ *              a `deleted` type is skipped), daily
  *              readiness (RHR, temperature deviation, score), daily activity (steps/calories/distance),
  *              daily SpO2 (`spo2_percentage.average`), VO2max (`vo2_max`). Field names verified against a
  *              REAL Oura export schema (issue #862). The many health types NOOP doesn't model
@@ -73,6 +74,7 @@ object WearableExportImporter {
         "readiness_score", "sleep_score", "respiratory_rate", "temperature_deviation",
         "active_calories", "total_calories", "equivalent_walking_distance",
         "vo2_max", "spo2_percentage", "breathing_disturbance_index", "contributors",
+        "sleep_phase_5_min",
     )
     // Filename fragments that mark an Oura per-category CSV export (lowercased, substring match).
     private val OURA_CSV_FILENAMES = listOf("heartrate", "heart_rate", "readiness", "sleep_periods")
@@ -392,7 +394,12 @@ object WearableExportImporter {
                             avgHr = null,
                             lowestHr = rhr?.takeIf { it > 0 }?.toInt(),
                             avgHrvMs = d.avgHrvMs, respRateBpm = resp,
-                            sleepScore = null, stagesJson = null,
+                            sleepScore = null,
+                            stagesJson = ouraStagesJson(
+                                cells.cell("sleep_phase_5_min"),
+                                start,
+                                end,
+                            ),
                         ),
                     )
                 }
@@ -432,8 +439,52 @@ object WearableExportImporter {
             totalSleepMin = min("total_sleep_duration"), efficiencyPct = s.posDbl("efficiency"),
             avgHr = s.posInt("average_heart_rate"), lowestHr = s.posInt("lowest_heart_rate"),
             avgHrvMs = s.posDbl("average_hrv"), respRateBpm = s.posDbl("average_breath"),
-            sleepScore = null, stagesJson = null,
+            sleepScore = null,
+            stagesJson = ouraStagesJson(s.strOpt("sleep_phase_5_min"), start, end),
         )
+    }
+
+    /**
+     * Decode Oura's official `sleep_phase_5_min` string. Each character is one chronological
+     * five-minute epoch from bedtime_start: 1=deep, 2=light, 3=REM, 4=awake. The last epoch is clipped
+     * to bedtime_end and adjacent equal stages are merged.
+     *
+     * A malformed/oversized field is ignored while the rest of its sleep row continues to import.
+     */
+    private fun ouraStagesJson(raw: String?, start: Long, end: Long): String? {
+        if (raw.isNullOrEmpty() || end <= start || raw.length > 288) return null
+        val span = end - start
+        val maxEpochs = minOf(288L, span / 300L + if (span % 300L == 0L) 0L else 1L)
+        if (raw.length.toLong() > maxEpochs || raw.any { it !in '1'..'4' }) return null
+
+        fun stage(code: Char): String = when (code) {
+            '1' -> "deep"
+            '2' -> "light"
+            '3' -> "rem"
+            else -> "wake" // validated as '4' above
+        }
+
+        val stages = JSONArray()
+        raw.forEachIndexed { index, code ->
+            val epochStart = start + index * 300L
+            val epochEnd = minOf(end, epochStart + 300L)
+            if (epochEnd <= epochStart) return@forEachIndexed
+
+            val name = stage(code)
+            val previous = stages.optJSONObject(stages.length() - 1)
+            if (previous != null &&
+                previous.optString("stage") == name &&
+                previous.optLong("end") == epochStart
+            ) {
+                previous.put("end", epochEnd)
+            } else {
+                stages.put(JSONObject()
+                    .put("start", epochStart)
+                    .put("end", epochEnd)
+                    .put("stage", name))
+            }
+        }
+        return stages.takeIf { it.length() > 0 }?.toString()
     }
 
     private fun categoryArray(root: JSONObject, key: String): JSONArray? {

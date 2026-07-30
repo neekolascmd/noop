@@ -134,7 +134,7 @@
       "id": "oura-normal-export",
       "brand": "oura",
       "files": {
-        "oura.json": "{\"sleep\":[{\"day\":\"2026-06-01\",\"bedtime_start\":\"2026-05-31T23:15:00+00:00\",\"bedtime_end\":\"2026-06-01T06:30:00+00:00\",\"total_sleep_duration\":25200,\"deep_sleep_duration\":5400,\"light_sleep_duration\":13800,\"rem_sleep_duration\":6000,\"awake_time\":900,\"efficiency\":92,\"lowest_heart_rate\":48,\"average_hrv\":65,\"average_breath\":14.2}],\"daily_readiness\":[{\"day\":\"2026-06-01\",\"score\":81,\"temperature_deviation\":-0.2,\"contributors\":{\"resting_heart_rate\":49}}],\"daily_activity\":[{\"day\":\"2026-06-01\",\"steps\":8421,\"active_calories\":520}]}"
+      "oura.json": "{\"sleep\":[{\"day\":\"2026-06-01\",\"bedtime_start\":\"2026-05-31T23:15:00+00:00\",\"bedtime_end\":\"2026-06-01T06:30:00+00:00\",\"total_sleep_duration\":25200,\"deep_sleep_duration\":5400,\"light_sleep_duration\":13800,\"rem_sleep_duration\":6000,\"awake_time\":900,\"efficiency\":92,\"lowest_heart_rate\":48,\"average_hrv\":65,\"average_breath\":14.2,\"sleep_phase_5_min\":\"112344\"}],\"daily_readiness\":[{\"day\":\"2026-06-01\",\"score\":81,\"temperature_deviation\":-0.2,\"contributors\":{\"resting_heart_rate\":49}}],\"daily_activity\":[{\"day\":\"2026-06-01\",\"steps\":8421,\"active_calories\":520}]}"
       },
       "expected": {
         "dayCount": 1,
@@ -153,11 +153,14 @@
         "firstSleep": {
           "totalSleepMin": 420,
           "deepMin": 90,
-          "remMin": 100,
-          "lowestHr": 48,
-          "avgHrvMs": 65,
-          "respRateBpm": 14.2
-        }
+        "remMin": 100,
+        "lowestHr": 48,
+        "avgHrvMs": 65,
+        "respRateBpm": 14.2,
+        "stageCount": 4,
+        "firstStage": "deep",
+        "firstStageDurationSec": 600
+      }
       }
     },
     {

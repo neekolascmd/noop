@@ -43,6 +43,17 @@ final class SharedWearableImportGoldenTests: XCTestCase {
                 try assertMetric(sleep.remMin, sleepExpected["remMin"], tolerance, id)
                 try assertMetric(sleep.avgHrvMs, sleepExpected["avgHrvMs"], tolerance, id)
                 try assertMetric(sleep.respRateBpm, sleepExpected["respRateBpm"], tolerance, id)
+                if let count = sleepExpected["stageCount"] as? NSNumber {
+                    XCTAssertEqual(sleep.stages.count, count.intValue, id)
+                }
+                if let stage = sleepExpected["firstStage"] as? String {
+                    let first = try XCTUnwrap(sleep.stages.first, id)
+                    XCTAssertEqual(first.stage, stage, id)
+                    if let duration = sleepExpected["firstStageDurationSec"] as? NSNumber {
+                        XCTAssertEqual(first.end.timeIntervalSince(first.start), duration.doubleValue,
+                                       accuracy: tolerance, id)
+                    }
+                }
             }
         }
     }

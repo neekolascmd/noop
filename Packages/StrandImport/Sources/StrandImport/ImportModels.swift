@@ -486,9 +486,9 @@ public enum WearableBrand: String, Sendable, Equatable, CaseIterable {
 }
 
 /// One contiguous sleep-stage interval reconstructed from a wearable export's hypnogram, when
-/// the export carried per-segment staging (Fitbit `levels.data`, Garmin `sleepLevels`). Oura's
-/// account export gives stage DURATIONS but not a per-segment timeline, so its sessions carry the
-/// duration breakdown without a stage list — honest: we never synthesize a fake hypnogram.
+/// the export carried per-segment staging (Oura `sleep_phase_5_min`, Fitbit `levels.data`, or Garmin
+/// `sleepLevels`). Missing per-epoch data stays missing — we never synthesize a fake hypnogram from
+/// duration totals.
 public struct WearableSleepStageInterval: Sendable, Equatable {
     /// Normalized stage name written into the stage JSON: "deep" / "light" / "rem" / "wake".
     public var stage: String
@@ -504,7 +504,7 @@ public struct WearableSleepStageInterval: Sendable, Equatable {
 
 /// One sleep session imported from a wearable export. Durations are MINUTES (as NOOP's
 /// `DailyMetric` / sleep model use). A field is nil when the export didn't carry it — never
-/// fabricated. `stages` is empty when the export gave only a duration breakdown (Oura).
+/// fabricated. `stages` is empty when the export gave only a duration breakdown.
 public struct WearableSleepSession: Sendable, Equatable {
     public var start: Date          // bedtime / sleep onset (UTC)
     public var end: Date            // wake (UTC)

@@ -87,7 +87,7 @@ Everything runs **offline**. The only feature that ever uses the network is the 
 | **Bluetooth FTMS gym equipment** | Live treadmill, bike, rower, or cross-trainer metrics; Android setup is serialized and automatically reconnects | No per-model hardware report yet. |
 | **Amazfit / Zepp / Mi Band live HR** | Experimental standard-HR or auth-free Huami-characteristic streaming on Android; serialized setup and automatic reconnect | Encrypted Huami pairing/history still needs clean-room implementation and hardware captures. |
 | **Xiaomi Smart Band 8 / 9 / 10** | Offline Mi Fitness SQLite import (one real Band 10 export verified) | Bands 8/9 need own exports; live BLE sync planned. |
-| **Oura / Fitbit / Garmin exports** | Offline wellness-export import with shared Swift/Kotlin fixtures | Capture fresh exports per vendor app version. |
+| **Oura / Fitbit / Garmin exports** | Offline wellness-export import with shared Swift/Kotlin fixtures; Oura's official `sleep_phase_5_min` becomes a chronological hypnogram when present | Capture fresh exports per vendor app version. |
 
 ### Planned
 
