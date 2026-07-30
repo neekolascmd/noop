@@ -1849,6 +1849,18 @@ class OuraLiveSource(
             is OuraEvent.Hrv -> enqueueAnchoredOrPark(e, e.value.ringTimestamp, d)
             is OuraEvent.SleepPhaseEvent -> enqueueAnchoredOrPark(e, e.value.ringTimestamp, d)
             is OuraEvent.SleepPeriodEvent -> enqueueAnchoredOrPark(e, e.value.ringTimestamp, d)
+            is OuraEvent.MotionSummaryEvent -> {
+                if (loggedTierBKinds.add("motion_summary")) {
+                    log("Oura: motion-summary history decoded")
+                }
+                enqueueAnchoredOrPark(e, e.value.ringTimestamp, d)
+            }
+            is OuraEvent.SleepAcmPeriodEvent -> {
+                if (loggedTierBKinds.add("sleep_acm_period")) {
+                    log("Oura: sleep accelerometer history decoded")
+                }
+                enqueueAnchoredOrPark(e, e.value.ringTimestamp, d)
+            }
             is OuraEvent.BedtimePeriodEvent -> {
                 if (d.phase == OuraDriverPhase.FetchingHistory || !persistResolvedBedtimePeriod(e.value, d)) {
                     pendingAnchorEvents.add(e to e.value.ringTimestamp)
@@ -1896,7 +1908,7 @@ class OuraLiveSource(
                     log("Oura: unverified activity history observed (not persisted)")
                 }
             }
-            // Motion / state / rtcBeacon / debugText: not a durable Streams row (see OuraStreamMapping).
+            // Packed motion / state / debugText are not durable Streams rows.
             else -> Unit
         }
     }

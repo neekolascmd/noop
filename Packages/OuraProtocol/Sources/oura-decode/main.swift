@@ -152,6 +152,11 @@ func describe(_ e: OuraEvent) -> String {
     case .sleepPeriod(let v): return "SLEEP_PERIOD state=\(v.sleepState) motion=\(v.motionCount) rt=\(v.ringTimestamp)"
     case .bedtimePeriod(let v): return "BEDTIME_PERIOD start=\(v.startRingTimestamp) end=\(v.endRingTimestamp)"
     case .motion(let v): return "MOTION [\(v.index)]=\(v.state) rt=\(v.ringTimestamp)"
+    case .motionSummary(let v):
+        return "MOTION_SUMMARY orient=\(v.orientation) seconds=\(v.motionSeconds) "
+            + "axes=[\(v.averageX),\(v.averageY),\(v.averageZ)] rt=\(v.ringTimestamp)"
+    case .sleepAcmPeriod(let v):
+        return "SLEEP_ACM_PERIOD values=\(v.values) rt=\(v.ringTimestamp)"
     case .state(let v): return "STATE code=\(v.stateCode) text=\(v.text ?? "-") rt=\(v.ringTimestamp)"
     case .timeSync(let v): return "TIME_SYNC epochMs=\(v.epochMs) tz=\(v.tzOffsetSeconds)s"
     case .rtcBeacon(let v): return "RTC_BEACON unix=\(v.unixSeconds)"

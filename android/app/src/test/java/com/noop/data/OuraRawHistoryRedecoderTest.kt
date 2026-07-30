@@ -94,4 +94,44 @@ class OuraRawHistoryRedecoderTest {
         assertTrue(event.payloadJSON.contains("\"phase_codes\":[0,1,2,3]"))
         assertTrue(!event.payloadJSON.contains("cadence_seconds"))
     }
+
+    @Test
+    fun pageDecoderRevisionThreeRecoversMotionDiagnostics() {
+        assertEquals(3, OuraRawHistoryDecoderRevision.CURRENT)
+        val anchor = OuraTimeAnchor(
+            ringTimestamp = 1_000L,
+            utcMilliseconds = 1_700_000_000_000L,
+            factorMillisecondsPerTick = 100L,
+        )
+        val motion = StoredOuraRawHistoryRecord(
+            archiveId = 1,
+            tag = OuraEventTag.MOTION.raw,
+            ringTimestamp = 900L,
+            payload = byteArrayOf(
+                0xB1.toByte(), 0x01, 0xFE.toByte(), 0x7F, 0x85.toByte(), 0x06,
+            ),
+            firstSeenAtUnixMs = 1,
+            timeAnchor = anchor,
+        )
+        val sleepAcm = StoredOuraRawHistoryRecord(
+            archiveId = 2,
+            tag = OuraEventTag.SLEEP_ACM_PERIOD.raw,
+            ringTimestamp = 700L,
+            payload = byteArrayOf(
+                0x80.toByte(), 0x02, 0x00, 0x03, 0xFF.toByte(), 0x04,
+                0x00, 0x50, 0xFF.toByte(), 0x0F, 0x00, 0xA8.toByte(),
+            ),
+            firstSeenAtUnixMs = 1,
+            timeAnchor = anchor,
+        )
+
+        val decoded = OuraRawHistoryPageDecoder.decode(listOf(motion, sleepAcm), OuraRingGen.GEN4)
+        assertEquals(0, decoded.withheldEvents)
+        assertEquals(
+            listOf(OuraStreamMapping.EVENT_MOTION_SUMMARY, OuraStreamMapping.EVENT_SLEEP_ACM_PERIOD),
+            decoded.batch.events.map { it.kind },
+        )
+        assertEquals(1_699_999_990L, decoded.batch.events[0].ts)
+        assertEquals(1_699_999_970L, decoded.batch.events[1].ts)
+    }
 }

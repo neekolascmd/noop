@@ -1350,6 +1350,20 @@ public final class OuraLiveSource: NSObject, ObservableObject {
             case .sleepPeriod(let v):
                 parkHistoryEvent(e, ringTimestamp: v.ringTimestamp)
 
+            case .motionSummary(let v):
+                if !loggedTierBKinds.contains("motion_summary") {
+                    loggedTierBKinds.insert("motion_summary")
+                    log("Oura: motion-summary history decoded")
+                }
+                parkHistoryEvent(e, ringTimestamp: v.ringTimestamp)
+
+            case .sleepAcmPeriod(let v):
+                if !loggedTierBKinds.contains("sleep_acm_period") {
+                    loggedTierBKinds.insert("sleep_acm_period")
+                    log("Oura: sleep accelerometer history decoded")
+                }
+                parkHistoryEvent(e, ringTimestamp: v.ringTimestamp)
+
             case .bedtimePeriod(let period):
                 if !loggedFirstBedtime {
                     loggedFirstBedtime = true
@@ -1397,7 +1411,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 }
 
             default:
-                break   // motion / state / debugText: not a durable Streams row (see OuraStreamMapping)
+                break   // packed motion/state/debugText are not durable Streams rows
             }
         }
     }

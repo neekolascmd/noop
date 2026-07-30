@@ -114,4 +114,39 @@ final class OuraRawHistoryRedecoderTests: XCTestCase {
         XCTAssertEqual(event.payload["phase_codes"], .intArray([0, 1, 2, 3]))
         XCTAssertNil(event.payload["cadence_seconds"])
     }
+
+    func testPageDecoderRevisionThreeRecoversMotionDiagnostics() {
+        XCTAssertEqual(OuraRawHistoryDecoderRevision.current, 3)
+        let anchor = OuraTimeAnchor(
+            ringTimestamp: 1_000,
+            utcMilliseconds: 1_700_000_000_000,
+            factorMillisecondsPerTick: 100
+        )
+        let motion = StoredOuraRawHistoryRecord(
+            archiveId: 1,
+            tag: OuraEventTag.motion.rawValue,
+            ringTimestamp: 900,
+            payload: Data([0xB1, 0x01, 0xFE, 0x7F, 0x85, 0x06]),
+            firstSeenAtUnixMs: 1,
+            timeAnchor: anchor
+        )
+        let sleepAcm = StoredOuraRawHistoryRecord(
+            archiveId: 2,
+            tag: OuraEventTag.sleepAcmPeriod.rawValue,
+            ringTimestamp: 700,
+            payload: Data([0x80, 0x02, 0x00, 0x03, 0xFF, 0x04,
+                           0x00, 0x50, 0xFF, 0x0F, 0x00, 0xA8]),
+            firstSeenAtUnixMs: 1,
+            timeAnchor: anchor
+        )
+
+        let decoded = OuraRawHistoryPageDecoder.decode([motion, sleepAcm], ringGen: .gen4)
+        XCTAssertEqual(decoded.withheldEvents, 0)
+        XCTAssertEqual(decoded.streams.events.map(\.kind), [
+            OuraStreamMapping.motionSummaryEventKind,
+            OuraStreamMapping.sleepAcmPeriodEventKind,
+        ])
+        XCTAssertEqual(decoded.streams.events[0].ts, 1_699_999_990)
+        XCTAssertEqual(decoded.streams.events[1].ts, 1_699_999_970)
+    }
 }

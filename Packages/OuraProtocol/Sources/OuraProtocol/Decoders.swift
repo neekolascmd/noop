@@ -486,6 +486,50 @@ public enum OuraDecoders {
         return out.isEmpty ? nil : out
     }
 
+    /// Decode the hardware-observed 4/5/6-byte `0x47 motion_events` shapes. The first byte packs
+    /// orientation and seconds-with-motion, followed by three signed axis averages scaled by 8.
+    /// Optional bytes expose six-bit low/high intensity values plus their otherwise-unresolved bit-7
+    /// flags. Bit 6 is reserved by the native parser; a set reserved bit is rejected as a mismatched
+    /// layout rather than silently misdecoded.
+    public static func decodeMotionSummary(_ rec: OuraRecord) -> OuraMotionSummary? {
+        let b = rec.payload
+        guard (4...6).contains(b.count) else { return nil }
+        if b.count >= 5, b[4] & 0x40 != 0 { return nil }
+        if b.count >= 6, b[5] & 0x40 != 0 { return nil }
+        return OuraMotionSummary(
+            ringTimestamp: rec.ringTimestamp,
+            orientation: Int(b[0] >> 5),
+            motionSeconds: Int(b[0] & 0x1F),
+            averageX: Int(Int8(bitPattern: b[1])) * 8,
+            averageY: Int(Int8(bitPattern: b[2])) * 8,
+            averageZ: Int(Int8(bitPattern: b[3])) * 8,
+            lowIntensity: b.count >= 5 ? Int(b[4] & 0x3F) : nil,
+            lowIntensityFlag: b.count >= 5 ? b[4] & 0x80 != 0 : nil,
+            highIntensity: b.count >= 6 ? Int(b[5] & 0x3F) : nil,
+            highIntensityFlag: b.count >= 6 ? b[5] & 0x80 != 0 : nil
+        )
+    }
+
+    /// Decode the exact 12-byte `0x72 sleep_acm_period` body into six units-neutral fixed-point MAD
+    /// statistics. Values 0...2 use `whole + fraction/255`; values 3...5 use a 4-bit whole part and
+    /// 12-bit fraction divided by 4095. Exact shape is required so a future firmware extension cannot
+    /// be mistaken for this hardware-qualified layout.
+    public static func decodeSleepAcmPeriod(_ rec: OuraRecord) -> OuraSleepAcmPeriod? {
+        let b = rec.payload
+        guard b.count == 12 else { return nil }
+        var values: [Double] = []
+        values.reserveCapacity(6)
+        for offset in stride(from: 0, through: 4, by: 2) {
+            values.append(Double(b[offset + 1]) + Double(b[offset]) / 255.0)
+        }
+        for offset in stride(from: 6, through: 10, by: 2) {
+            let fraction = Int(b[offset]) | (Int(b[offset + 1] & 0x0F) << 8)
+            let whole = Int(b[offset + 1] >> 4)
+            values.append(Double(whole) + Double(fraction) / 4095.0)
+        }
+        return OuraSleepAcmPeriod(ringTimestamp: rec.ringTimestamp, values: values)
+    }
+
     // MARK: - Activity info (0x50; s6.13) - Tier B, third-party formula
 
     /// Decode the 0x50 activity_info record: byte0 = a `state` code (activity-category; meaning

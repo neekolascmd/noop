@@ -46,6 +46,12 @@ object OuraStreamMapping {
     /** Lossless raw `0x8B` record alongside any explicitly calibrated estimate. */
     const val EVENT_SPO2_RATIO_PI = "OURA_SPO2_RATIO_PI"
 
+    /** Ring 4 hardware-backed `0x47` motion fields, retained as units-labelled diagnostics. */
+    const val EVENT_MOTION_SUMMARY = "OURA_MOTION_SUMMARY"
+
+    /** Six units-neutral fixed-point values from `0x72 sleep_acm_period`. */
+    const val EVENT_SLEEP_ACM_PERIOD = "OURA_SLEEP_ACM_PERIOD"
+
     /**
      * Fold a batch of decoded [events] into a protocol [Streams] for one flush. [anchor] maps a
      * ring-clock timestamp to wall-clock unix seconds (null => drop the sample). Pure: no BLE, no DB,
@@ -177,17 +183,52 @@ object OuraStreamMapping {
                     )
                 }
 
+                is OuraEvent.MotionSummaryEvent -> {
+                    val ts = anchor(ev.value.ringTimestamp) ?: continue
+                    val payload = linkedMapOf<String, Any?>(
+                        "orientation" to ev.value.orientation,
+                        "motion_seconds" to ev.value.motionSeconds,
+                        "average_x_x8" to ev.value.averageX,
+                        "average_y_x8" to ev.value.averageY,
+                        "average_z_x8" to ev.value.averageZ,
+                        "axis_unit" to "raw_x8",
+                    )
+                    ev.value.lowIntensity?.let { payload["low_intensity"] = it }
+                    ev.value.lowIntensityFlag?.let { payload["low_intensity_flag"] = it }
+                    ev.value.highIntensity?.let { payload["high_intensity"] = it }
+                    ev.value.highIntensityFlag?.let { payload["high_intensity_flag"] = it }
+                    out.events.add(WhoopEvent(ts, EVENT_MOTION_SUMMARY, payload))
+                }
+
+                is OuraEvent.SleepAcmPeriodEvent -> {
+                    val ts = anchor(ev.value.ringTimestamp) ?: continue
+                    if (ev.value.values.size != 6) continue
+                    out.events.add(
+                        WhoopEvent(
+                            ts,
+                            EVENT_SLEEP_ACM_PERIOD,
+                            linkedMapOf(
+                                "mad_0" to ev.value.values[0],
+                                "mad_1" to ev.value.values[1],
+                                "mad_2" to ev.value.values[2],
+                                "mad_3" to ev.value.values[3],
+                                "mad_4" to ev.value.values[4],
+                                "mad_5" to ev.value.values[5],
+                                "unit" to "fixed_point_raw",
+                            ),
+                        ),
+                    )
+                }
+
                 is OuraEvent.Battery -> {
                     // Live battery percent. No ring timestamp on a battery reading (it is a command
                     // response), so it is stamped by the live source's `onBattery` path, not persisted
                     // as a tied-to-ts row here. Leave the batch's battery list empty (honest: no faked ts).
                 }
 
-                // Motion / state / time-sync / rtc / debug / TierB / ActivityInfo never map onto a
-                // scored stream. In particular the 0x50 activity/MET decode (PR #960) NEVER mints a
-                // `steps` row: the formula is third-party and unvalidated (Tier B, OURA_PROTOCOL.md
-                // s6.13), and MET is not a step count - fabricating one would break the honest-data
-                // invariant and the per-source day-owner rules.
+                // Packed motion / state / time-sync / rtc / debug / TierB / ActivityInfo never map
+                // onto a scored stream. The hardware-backed summary records above are diagnostic
+                // events only. In particular, 0x50 activity/MET NEVER mints a steps row.
                 else -> Unit
             }
         }

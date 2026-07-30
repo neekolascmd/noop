@@ -132,6 +132,35 @@ final class OuraStreamMappingTests: XCTestCase {
         XCTAssertNil(s.events.first?.payload["phase"])
     }
 
+    func testMotionDiagnosticsPersistExactUnitsNeutralFields() {
+        let s = OuraStreamMapping.streams(from: [
+            .motionSummary(OuraMotionSummary(
+                ringTimestamp: 100, orientation: 5, motionSeconds: 17,
+                averageX: 8, averageY: -16, averageZ: 1016,
+                lowIntensity: 5, lowIntensityFlag: true,
+                highIntensity: 6, highIntensityFlag: false
+            )),
+            .sleepAcmPeriod(OuraSleepAcmPeriod(
+                ringTimestamp: 101,
+                values: [2.5, 3, 5, 5, 1, 10.5]
+            )),
+        ], at: ts)
+        XCTAssertEqual(s.events.map(\.kind), [
+            OuraStreamMapping.motionSummaryEventKind,
+            OuraStreamMapping.sleepAcmPeriodEventKind,
+        ])
+        XCTAssertEqual(s.events[0].payload["orientation"], .int(5))
+        XCTAssertEqual(s.events[0].payload["motion_seconds"], .int(17))
+        XCTAssertEqual(s.events[0].payload["average_y_x8"], .int(-16))
+        XCTAssertEqual(s.events[0].payload["axis_unit"], .string("raw_x8"))
+        XCTAssertEqual(s.events[0].payload["low_intensity_flag"], .bool(true))
+        XCTAssertEqual(s.events[1].payload["mad_0"], .double(2.5))
+        XCTAssertEqual(s.events[1].payload["mad_5"], .double(10.5))
+        XCTAssertEqual(s.events[1].payload["unit"], .string("fixed_point_raw"))
+        XCTAssertTrue(s.steps.isEmpty)
+        XCTAssertTrue(s.gravity.isEmpty)
+    }
+
     // MARK: - Battery -> battery:[BatterySample]
 
     func testBatteryMapsToBatterySample() {
@@ -156,7 +185,7 @@ final class OuraStreamMappingTests: XCTestCase {
 
     // MARK: - Honest-data invariant: Tier-B + non-stream events never land in Streams
 
-    func testTierBAndDiagnosticEventsAreDropped() {
+    func testTierBAndNonDurableEventsAreDropped() {
         let s = OuraStreamMapping.streams(from: [
             .tierB(OuraTierBSummary(tag: 0x6A, ringTimestamp: 100, rawPayload: [1, 2, 3], kind: "sleep_summary")),
             .motion(OuraMotion(ringTimestamp: 100, index: 0, state: .active)),

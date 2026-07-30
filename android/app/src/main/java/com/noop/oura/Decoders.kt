@@ -544,6 +544,48 @@ object OuraDecoders {
         return if (out.isEmpty()) null else out
     }
 
+    /**
+     * Decode the hardware-observed 4/5/6-byte `0x47 motion_events` shapes. Bit 6 of either optional
+     * byte is reserved by the native parser; reject it rather than silently applying the wrong layout.
+     */
+    fun decodeMotionSummary(rec: OuraRecord): OuraMotionSummary? {
+        val b = rec.payload
+        if (b.size !in 4..6) return null
+        if (b.size >= 5 && b[4] and 0x40 != 0) return null
+        if (b.size >= 6 && b[5] and 0x40 != 0) return null
+        return OuraMotionSummary(
+            ringTimestamp = rec.ringTimestamp,
+            orientation = b[0] ushr 5,
+            motionSeconds = b[0] and 0x1F,
+            averageX = i8(b[1]) * 8,
+            averageY = i8(b[2]) * 8,
+            averageZ = i8(b[3]) * 8,
+            lowIntensity = if (b.size >= 5) b[4] and 0x3F else null,
+            lowIntensityFlag = if (b.size >= 5) b[4] and 0x80 != 0 else null,
+            highIntensity = if (b.size >= 6) b[5] and 0x3F else null,
+            highIntensityFlag = if (b.size >= 6) b[5] and 0x80 != 0 else null,
+        )
+    }
+
+    /**
+     * Decode the exact 12-byte `0x72 sleep_acm_period` body. The first three values use
+     * `whole + fraction/255`; the last three use a 4-bit whole and 12-bit fraction divided by 4095.
+     */
+    fun decodeSleepAcmPeriod(rec: OuraRecord): OuraSleepAcmPeriod? {
+        val b = rec.payload
+        if (b.size != 12) return null
+        val values = ArrayList<Double>(6)
+        for (offset in 0..4 step 2) {
+            values.add(b[offset + 1].toDouble() + b[offset].toDouble() / 255.0)
+        }
+        for (offset in 6..10 step 2) {
+            val fraction = b[offset] or ((b[offset + 1] and 0x0F) shl 8)
+            val whole = b[offset + 1] ushr 4
+            values.add(whole.toDouble() + fraction.toDouble() / 4095.0)
+        }
+        return OuraSleepAcmPeriod(ringTimestamp = rec.ringTimestamp, values = values)
+    }
+
     // MARK: - Activity info (0x50; s6.13) - Tier B, third-party formula
 
     /**

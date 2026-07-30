@@ -5,7 +5,7 @@ import WhoopProtocol
 /// Increment this only when a clean-room Oura decoder or durable mapping changes in a way that can
 /// recover new information from already-retained TLVs. It is intentionally independent of app version.
 public enum OuraRawHistoryDecoderRevision {
-    public static let current = 2
+    public static let current = 3
 }
 
 public struct OuraRawHistoryRedecodeReport: Equatable, Sendable {
@@ -84,7 +84,8 @@ enum OuraRawHistoryPageDecoder {
 
     private static func eventRequiresDurableTimestamp(_ event: OuraEvent) -> Bool {
         switch event {
-        case .hr, .ibi, .hrv, .spo2, .spo2Ratio, .temp, .sleepPhase, .sleepPeriod:
+        case .hr, .ibi, .hrv, .spo2, .spo2Ratio, .temp, .sleepPhase, .sleepPeriod,
+             .motionSummary, .sleepAcmPeriod:
             return true
         case .bedtimePeriod, .battery, .motion, .state, .timeSync, .rtcBeacon, .debugText,
              .tierB, .activityInfo:
@@ -120,6 +121,8 @@ private extension OuraEvent {
         case .sleepPeriod(let value): return value.ringTimestamp
         case .bedtimePeriod(let value): return value.ringTimestamp
         case .motion(let value): return value.ringTimestamp
+        case .motionSummary(let value): return value.ringTimestamp
+        case .sleepAcmPeriod(let value): return value.ringTimestamp
         case .state(let value): return value.ringTimestamp
         case .timeSync(let value): return value.ringTimestamp
         case .rtcBeacon(let value): return value.ringTimestamp

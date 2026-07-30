@@ -600,8 +600,26 @@ final class OuraDriverTests: XCTestCase {
         XCTAssertEqual(OuraEventTag.spo2RatioPI.tier, .diagnostic)
         XCTAssertEqual(OuraEventTag.sleepPhase.tier, .diagnostic)
         XCTAssertEqual(OuraEventTag.sleepPhaseAlt.tier, .diagnostic)
+        XCTAssertEqual(OuraEventTag.motion.tier, .diagnostic)
+        XCTAssertEqual(OuraEventTag.sleepAcmPeriod.tier, .diagnostic)
         XCTAssertEqual(OuraEventTag.sleepPhaseInfo.tier, .tierB)
         XCTAssertEqual(OuraEventTag.sleepPhaseInfo.name, "SLEEP_PHASE_INFO")
+    }
+
+    func testIngestRoutesHardwareBackedMotionDiagnosticsWithoutTierBFlag() {
+        let d = OuraDriver(ringGen: .gen4, authKey: key)
+        let motion = OuraRecord(type: 0x47, ringTimestamp: rt, payload: bytes("b101fe7f8506"))
+        let sleepAcm = OuraRecord(type: 0x72, ringTimestamp: rt,
+                                  payload: bytes("80020003ff040050ff0f00a8"))
+        XCTAssertEqual(d.ingest(record: motion).first,
+                       .motionSummary(OuraMotionSummary(
+                        ringTimestamp: rt, orientation: 5, motionSeconds: 17,
+                        averageX: 8, averageY: -16, averageZ: 1016,
+                        lowIntensity: 5, lowIntensityFlag: true,
+                        highIntensity: 6, highIntensityFlag: false
+                       )))
+        XCTAssertEqual(d.ingest(record: sleepAcm).first,
+                       .sleepAcmPeriod(OuraDecoders.decodeSleepAcmPeriod(sleepAcm)!))
     }
 
     func testIngestUnknownTagYieldsNothing() {

@@ -52,9 +52,10 @@ enum class OuraEventTag(val raw: Int) {
     TEMP_PERIOD(0x69),        // temp_period (single int16 LE / 100), OURA_PROTOCOL.md s6.8
     SLEEP_TEMP(0x75),         // sleep_temp_event (uint16 LE / 100), OURA_PROTOCOL.md s6.8
 
-    // --- Motion (Tier A) ---
+    // --- Motion / sleep accelerometer diagnostics ---
     MOTION(0x47),             // motion_events, OURA_PROTOCOL.md s6.13
     MOTION_PERIOD(0x6B),      // motion_period (2-bit MOTION_STATE codes), OURA_PROTOCOL.md s6.13
+    SLEEP_ACM_PERIOD(0x72),   // 30-second sleep accelerometer MAD statistics, s6.12
 
     // Battery (0x0D) is an OUTER command response, not a TLV inner record; see Decoders.decodeBattery.
 
@@ -90,7 +91,8 @@ enum class OuraEventTag(val raw: Int) {
      */
     val tier: TrustTier
         get() = when (this) {
-            SPO2_RATIO_PI, SLEEP_PHASE, SLEEP_PHASE_ALT -> TrustTier.DIAGNOSTIC
+            SPO2_RATIO_PI, SLEEP_PHASE, SLEEP_PHASE_ALT, MOTION, SLEEP_ACM_PERIOD ->
+                TrustTier.DIAGNOSTIC
             SLEEP_SUMMARY_1, SLEEP_PHASE_INFO, SLEEP_SUMMARY_C, SLEEP_SUMMARY_D, SLEEP_SUMMARY_E,
             SLEEP_SUMMARY_F, ACTIVITY_INFO, ACTIVITY_SUMMARY_1, ACTIVITY_SUMMARY_2,
             REAL_STEPS_1, REAL_STEPS_2, SPO2_SMOOTHED -> TrustTier.TIER_B
@@ -121,6 +123,7 @@ enum class OuraEventTag(val raw: Int) {
             SLEEP_TEMP -> "SLEEP_TEMP"
             MOTION -> "MOTION"
             MOTION_PERIOD -> "MOTION_PERIOD"
+            SLEEP_ACM_PERIOD -> "SLEEP_ACM_PERIOD"
             SLEEP_SUMMARY_1 -> "SLEEP_SUMMARY_1"
             SLEEP_PHASE_INFO -> "SLEEP_PHASE_INFO"
             SLEEP_SUMMARY_C -> "SLEEP_SUMMARY_4C"

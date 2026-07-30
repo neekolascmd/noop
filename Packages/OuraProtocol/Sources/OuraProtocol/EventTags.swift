@@ -47,9 +47,10 @@ public enum OuraEventTag: UInt8, Sendable, CaseIterable, Codable {
     case tempPeriod       = 0x69   // temp_period (single int16 LE / 100), OURA_PROTOCOL.md s6.8
     case sleepTemp        = 0x75   // sleep_temp_event (uint16 LE / 100), OURA_PROTOCOL.md s6.8
 
-    // --- Motion (Tier A) ---
+    // --- Motion / sleep accelerometer diagnostics ---
     case motion           = 0x47   // motion_events, OURA_PROTOCOL.md s6.13
     case motionPeriod     = 0x6B   // motion_period (2-bit MOTION_STATE codes), OURA_PROTOCOL.md s6.13
+    case sleepAcmPeriod   = 0x72   // 30-second sleep accelerometer MAD statistics, s6.12
 
     // --- Battery (Tier A; carried inline, not a TLV record but routed here for the enum) ---
     // Battery (0x0D) is an OUTER command response, not a TLV inner record; see Decoders.decodeBattery.
@@ -84,7 +85,7 @@ public enum OuraEventTag: UInt8, Sendable, CaseIterable, Codable {
     /// behind an explicit allowTierB flag. Per OURA_PROTOCOL.md s7.3 and the brief's TIER DISCIPLINE.
     public var tier: TrustTier {
         switch self {
-        case .spo2RatioPI, .sleepPhase, .sleepPhaseAlt:
+        case .spo2RatioPI, .sleepPhase, .sleepPhaseAlt, .motion, .sleepAcmPeriod:
             return .diagnostic
         case .sleepSummary1, .sleepPhaseInfo, .sleepSummaryC, .sleepSummaryD, .sleepSummaryE,
              .sleepSummaryF, .activityInfo, .activitySummary1, .activitySummary2,
@@ -119,6 +120,7 @@ public enum OuraEventTag: UInt8, Sendable, CaseIterable, Codable {
         case .sleepTemp: return "SLEEP_TEMP"
         case .motion: return "MOTION"
         case .motionPeriod: return "MOTION_PERIOD"
+        case .sleepAcmPeriod: return "SLEEP_ACM_PERIOD"
         case .sleepSummary1: return "SLEEP_SUMMARY_1"
         case .sleepPhaseInfo: return "SLEEP_PHASE_INFO"
         case .sleepSummaryC: return "SLEEP_SUMMARY_4C"
