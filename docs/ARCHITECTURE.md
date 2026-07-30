@@ -328,15 +328,19 @@ Imports converge on the *same* store as the BLE paths, so history lights up inst
 
 ```
 URL (export.zip / *.csv / export.xml / folder)
-  └─▶ ImportCoordinator.detectKind  → .whoopExport | .appleHealth
-        ├─ WhoopExportImporter   → cycles/sleeps/workouts/journal  → WhoopImporter      → store rows
-        └─ AppleHealthImporter   → streamed export.xml (aggregated) → AppleHealthImport  → store rows
+  └─▶ ImportCoordinator.detectAndImport
+        ├─ WhoopExportImporter    → cycles/sleeps/workouts/journal → WhoopImporter     → store rows
+        ├─ AppleHealthImporter    → streamed export.xml            → AppleHealthImport → store rows
+        ├─ XiaomiBandImporter     → Mi Fitness SQLite              → XiaomiImporter    → store rows
+        └─ WearableExportImporter → Oura/Fitbit/Garmin wellness    → WearableImporter  → store rows
 ```
 
 `StrandImport` is **parse-only**; the app's `WhoopImporter`/`AppleHealthImport` glue maps the
 normalized results into `dailyMetric`, `sleepSession`, `workout`, `appleDaily`, and `metricSeries`
-rows, then calls `Repository.refresh()`. Apple Health's `export.xml` is parsed with a streaming
-reader so multi-hundred-MB files don't blow up memory.
+rows, then calls `Repository.refresh()`. The wearable lane also maps an Oura
+`sleep_phase_5_min` string into bounded five-minute stage intervals when the export carries it;
+duration-only nights remain stage-less. Apple Health's `export.xml` is parsed with a streaming reader
+so multi-hundred-MB files don't blow up memory.
 
 ---
 

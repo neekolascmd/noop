@@ -4,6 +4,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.json.JSONArray
+import java.time.Instant
 
 /**
  * Pins the offline file-import of a user's OWN Oura / Fitbit / Garmin data export onto NOOP's daily
@@ -91,6 +93,76 @@ class WearableExportImporterTest {
         val p = WearableExportImporter.parseOura(files)
         assertEquals(1, p.sleeps.size)
         assertEquals(360.0, p.sleeps[0].totalSleepMin!!, 1e-6)
+    }
+
+    @Test
+    fun ouraOfficialFiveMinuteSleepPhasesBecomeMergedHypnogram() {
+        val json = """
+            { "sleep": [
+                { "day": "2026-06-03",
+                  "bedtime_start": "2026-06-02T23:00:00+00:00",
+                  "bedtime_end": "2026-06-02T23:30:00+00:00",
+                  "sleep_phase_5_min": "112344" } ] }
+        """
+        val p = WearableExportImporter.parseOura(mapOf("oura.json" to bytes(json)))
+        val stages = JSONArray(p.sleeps.single().stagesJson!!)
+        assertEquals(4, stages.length())
+        assertEquals(listOf("deep", "light", "rem", "wake"),
+            (0 until stages.length()).map { stages.getJSONObject(it).getString("stage") })
+
+        val start = Instant.parse("2026-06-02T23:00:00Z").epochSecond
+        assertEquals(start, stages.getJSONObject(0).getLong("start"))
+        assertEquals(start + 10 * 60, stages.getJSONObject(0).getLong("end"))
+        assertEquals(start + 10 * 60, stages.getJSONObject(1).getLong("start"))
+        assertEquals(start + 15 * 60, stages.getJSONObject(1).getLong("end"))
+        assertEquals(start + 15 * 60, stages.getJSONObject(2).getLong("start"))
+        assertEquals(start + 20 * 60, stages.getJSONObject(2).getLong("end"))
+        assertEquals(start + 20 * 60, stages.getJSONObject(3).getLong("start"))
+        assertEquals(start + 30 * 60, stages.getJSONObject(3).getLong("end"))
+    }
+
+    @Test
+    fun ouraSleepPhasesClipFinalEpochAndRejectMalformedFields() {
+        val oversized = "1".repeat(289)
+        val json = """
+            { "sleep": [
+                { "day": "2026-06-04",
+                  "bedtime_start": "2026-06-03T23:00:00+00:00",
+                  "bedtime_end": "2026-06-03T23:12:00+00:00",
+                  "sleep_phase_5_min": "123" },
+                { "day": "2026-06-05",
+                  "bedtime_start": "2026-06-04T23:00:00+00:00",
+                  "bedtime_end": "2026-06-04T23:30:00+00:00",
+                  "sleep_phase_5_min": "12x4" },
+                { "day": "2026-06-06",
+                  "bedtime_start": "2026-06-05T00:00:00+00:00",
+                  "bedtime_end": "2026-06-06T23:00:00+00:00",
+                  "sleep_phase_5_min": "$oversized" } ] }
+        """
+        val p = WearableExportImporter.parseOura(mapOf("oura.json" to bytes(json)))
+        assertEquals(3, p.sleeps.size)
+
+        val clipped = JSONArray(p.sleeps[0].stagesJson!!)
+        assertEquals(listOf("deep", "light", "rem"),
+            (0 until clipped.length()).map { clipped.getJSONObject(it).getString("stage") })
+        assertEquals(
+            Instant.parse("2026-06-03T23:12:00Z").epochSecond,
+            clipped.getJSONObject(2).getLong("end"),
+        )
+        assertNull(p.sleeps[1].stagesJson)
+        assertNull(p.sleeps[2].stagesJson)
+    }
+
+    @Test
+    fun ouraCsvFiveMinuteSleepPhasesBecomeHypnogram() {
+        val csv = """
+            day,bedtime_start,bedtime_end,total_sleep_duration,sleep_phase_5_min
+            2026-06-03,2026-06-02T23:00:00+00:00,2026-06-02T23:30:00+00:00,1500,112344
+        """
+        val p = WearableExportImporter.parseOura(mapOf("sleep.csv" to bytes(csv)))
+        val stages = JSONArray(p.sleeps.single().stagesJson!!)
+        assertEquals(listOf("deep", "light", "rem", "wake"),
+            (0 until stages.length()).map { stages.getJSONObject(it).getString("stage") })
     }
 
     // ---------------- Oura CSV (#857) ----------------

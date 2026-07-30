@@ -1,6 +1,7 @@
 package com.noop.analytics
 
 import com.noop.ingest.WearableExportImporter
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -131,6 +132,14 @@ class SharedAnalyticsGoldenTest {
                 assertEquals(id, sleepExpected.getDouble("remMin"), sleep.remMin!!, metricTolerance)
                 assertEquals(id, sleepExpected.getDouble("avgHrvMs"), sleep.avgHrvMs!!, metricTolerance)
                 assertEquals(id, sleepExpected.getDouble("respRateBpm"), sleep.respRateBpm!!, metricTolerance)
+                if (sleepExpected.has("stageCount")) {
+                    val stages = JSONArray(checkNotNull(sleep.stagesJson))
+                    assertEquals(id, sleepExpected.getInt("stageCount"), stages.length())
+                    assertEquals(id, sleepExpected.getString("firstStage"),
+                        stages.getJSONObject(0).getString("stage"))
+                    assertEquals(id, sleepExpected.getLong("firstStageDurationSec"),
+                        stages.getJSONObject(0).getLong("end") - stages.getJSONObject(0).getLong("start"))
+                }
             }
         }
     }

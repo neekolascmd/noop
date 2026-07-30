@@ -117,6 +117,68 @@ final class WearableExportImporterTests: XCTestCase {
         XCTAssertEqual(r.sleeps[0].totalSleepMin!, 360, accuracy: 1e-6)
     }
 
+    func testOuraOfficialFiveMinuteSleepPhasesBecomeMergedHypnogram() throws {
+        let json = """
+        { "sleep": [
+            { "day": "2026-06-03",
+              "bedtime_start": "2026-06-02T23:00:00+00:00",
+              "bedtime_end": "2026-06-02T23:30:00+00:00",
+              "sleep_phase_5_min": "112344" } ] }
+        """
+        let r = WearableExportImporter.parse(brand: .oura, files: ["oura.json": bytes(json)])
+        let stages = try XCTUnwrap(r.sleeps.first?.stages)
+        XCTAssertEqual(stages.map(\.stage), ["deep", "light", "rem", "wake"])
+
+        let start = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-06-02T23:00:00Z"))
+        XCTAssertEqual(stages[0].start, start)
+        XCTAssertEqual(stages[0].end, start.addingTimeInterval(10 * 60))
+        XCTAssertEqual(stages[1].start, start.addingTimeInterval(10 * 60))
+        XCTAssertEqual(stages[1].end, start.addingTimeInterval(15 * 60))
+        XCTAssertEqual(stages[2].start, start.addingTimeInterval(15 * 60))
+        XCTAssertEqual(stages[2].end, start.addingTimeInterval(20 * 60))
+        XCTAssertEqual(stages[3].start, start.addingTimeInterval(20 * 60))
+        XCTAssertEqual(stages[3].end, start.addingTimeInterval(30 * 60))
+    }
+
+    func testOuraSleepPhasesClipFinalEpochAndRejectMalformedFields() throws {
+        let oversized = String(repeating: "1", count: 289)
+        let json = """
+        { "sleep": [
+            { "day": "2026-06-04",
+              "bedtime_start": "2026-06-03T23:00:00+00:00",
+              "bedtime_end": "2026-06-03T23:12:00+00:00",
+              "sleep_phase_5_min": "123" },
+            { "day": "2026-06-05",
+              "bedtime_start": "2026-06-04T23:00:00+00:00",
+              "bedtime_end": "2026-06-04T23:30:00+00:00",
+              "sleep_phase_5_min": "12x4" },
+            { "day": "2026-06-06",
+              "bedtime_start": "2026-06-05T00:00:00+00:00",
+              "bedtime_end": "2026-06-06T23:00:00+00:00",
+              "sleep_phase_5_min": "\(oversized)" } ] }
+        """
+        let r = WearableExportImporter.parse(brand: .oura, files: ["oura.json": bytes(json)])
+        XCTAssertEqual(r.sleeps.count, 3)
+
+        let clipped = r.sleeps[0].stages
+        XCTAssertEqual(clipped.map(\.stage), ["deep", "light", "rem"])
+        XCTAssertEqual(
+            clipped.last?.end,
+            try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-06-03T23:12:00Z")))
+        XCTAssertTrue(r.sleeps[1].stages.isEmpty)
+        XCTAssertTrue(r.sleeps[2].stages.isEmpty)
+    }
+
+    func testOuraCSVFiveMinuteSleepPhasesBecomeHypnogram() {
+        let csv = """
+        day,bedtime_start,bedtime_end,total_sleep_duration,sleep_phase_5_min
+        2026-06-03,2026-06-02T23:00:00+00:00,2026-06-02T23:30:00+00:00,1500,112344
+        """
+        let r = WearableExportImporter.parse(brand: .oura, files: ["sleep.csv": bytes(csv)])
+        XCTAssertEqual(r.sleeps.count, 1)
+        XCTAssertEqual(r.sleeps[0].stages.map(\.stage), ["deep", "light", "rem", "wake"])
+    }
+
     // MARK: - Oura CSV (the "Export Data" daily-summary CSV, and the raw heart-rate CSV) #857
 
     func testOuraDailySummaryCSVFoldsDaysAndSleep() {

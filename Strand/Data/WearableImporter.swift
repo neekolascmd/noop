@@ -14,7 +14,7 @@ import StrandImport
 enum WearableImporter {
 
     /// The Oura/Fitbit/Garmin export mapping revision, stamped into the Import test-mode parser line.
-    static let importerVersion = 1
+    static let importerVersion = 2
 
     @discardableResult
     static func importExport(url: URL, into store: WhoopStore,
@@ -46,9 +46,9 @@ enum WearableImporter {
         // Capture the rows the store actually wrote (summed SQLite changes) for the Import test mode.
         let metricsWritten = try await store.upsertDailyMetrics(metrics, deviceId: deviceId)
 
-        // Sleep sessions → CachedSleepSession. Oura/Garmin give duration breakdowns without a per-segment
-        // hypnogram, so those sessions carry no stage JSON (we never synthesize a fake one); Fitbit's
-        // optional `levels.data` hypnogram is mapped when present.
+        // Sleep sessions → CachedSleepSession. Oura's optional official 5-minute phases, Fitbit's
+        // `levels.data`, and Garmin's sleep levels are mapped when present. A duration-only session keeps
+        // stage JSON nil; we never synthesize a fake hypnogram from totals.
         var sessions: [CachedSleepSession] = []
         for s in result.sleeps {
             let startTs = Int(s.start.timeIntervalSince1970)

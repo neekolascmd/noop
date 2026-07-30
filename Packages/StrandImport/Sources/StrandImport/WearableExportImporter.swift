@@ -8,7 +8,8 @@ import ZIPFoundation
 // own account — fully offline, no cloud API, no login. NOOP ingests the file the user already owns and
 // maps it onto NOOP's DAILY metrics + sleep sessions (NOT workouts — workouts stay wave-1's lane).
 //
-//   • Oura   — the Account → Export Data JSON: sleep periods (stages/durations/HRV/RHR/breath),
+//   • Oura   — Account → Export Data CSV/JSON: sleep periods (5-minute stages when present,
+//              durations/HRV/RHR/breath),
 //              daily readiness (RHR, temperature deviation, score), daily activity (steps/calories).
 //   • Fitbit — Google Takeout → Fitbit → JSON: per-day sleep-*.json, resting_heart_rate-*.json,
 //              steps-*.json, heart_rate-*.json.

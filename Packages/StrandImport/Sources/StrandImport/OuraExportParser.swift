@@ -10,9 +10,9 @@ import Foundation
 //                        deep_sleep_duration / light_sleep_duration / rem_sleep_duration / awake_time
 //                        (SECONDS), efficiency (0-100), average_heart_rate, lowest_heart_rate,
 //                        average_hrv (rMSSD ms), average_breath, type (`long_sleep`/`short_sleep`/
-//                        `deleted`, where a `deleted` period is skipped). Oura gives stage DURATIONS, not
-//                        a per-segment hypnogram, so the session carries the breakdown without a stage
-//                        timeline (we never fake one).
+//                        `deleted`, where a `deleted` period is skipped), and optional
+//                        sleep_phase_5_min (official 1=deep / 2=light / 3=REM / 4=awake epochs).
+//                        Adjacent equal epochs are merged into an exact, chronological hypnogram.
 //   daily_readiness    : day, score (Oura's OWN readiness, REFERENCE only, never NOOP Charge),
 //                        temperature_deviation (°C from baseline), contributors.resting_heart_rate.
 //   daily_activity     : day, steps, active_calories, total_calories, equivalent_walking_distance (m).
@@ -203,6 +203,7 @@ enum OuraExportParser {
         "readiness_score", "sleep_score", "respiratory_rate", "temperature_deviation",
         "active_calories", "total_calories", "equivalent_walking_distance",
         "vo2_max", "spo2_percentage", "breathing_disturbance_index", "contributors",
+        "sleep_phase_5_min",
     ]
 
     /// Parse Oura CSV files (daily summaries) into the same day/sleep model the JSON path produces. A CSV
@@ -310,7 +311,11 @@ enum OuraExportParser {
                         lowestHr: restingHr.flatMap { $0 > 0 ? Int($0) : nil },
                         avgHrvMs: row.avgHrvMs,
                         respRateBpm: cells.double("respiratory_rate", "average_breath").flatMap { $0 > 0 ? $0 : nil },
-                        sleepScore: nil, stages: []))
+                        sleepScore: nil,
+                        stages: sleepPhaseIntervals(
+                            cells.cell("sleep_phase_5_min"),
+                            start: start,
+                            end: end)))
                 }
             }
         }
@@ -363,6 +368,65 @@ enum OuraExportParser {
             avgHrvMs: WearableJSON.posDbl(s, "average_hrv"),
             respRateBpm: WearableJSON.posDbl(s, "average_breath"),
             sleepScore: nil,
-            stages: [])
+            stages: sleepPhaseIntervals(
+                WearableJSON.str(s, "sleep_phase_5_min"),
+                start: start,
+                end: end))
+    }
+
+    /// Decode Oura's official `sleep_phase_5_min` string. Each ASCII character is one chronological
+    /// five-minute epoch from `bedtime_start`: 1=deep, 2=light, 3=REM, 4=awake. The final epoch is
+    /// clipped to `bedtime_end`; adjacent equal stages are merged to keep stored JSON compact.
+    ///
+    /// The export is untrusted. Reject the whole field when it contains another code, extends beyond
+    /// the bedtime window, or exceeds a 24-hour/288-epoch ceiling. The rest of the sleep row still imports.
+    private static func sleepPhaseIntervals(
+        _ raw: String?,
+        start: Date,
+        end: Date
+    ) -> [WearableSleepStageInterval] {
+        guard let raw, !raw.isEmpty, end > start else { return [] }
+
+        // Prefix before materializing so a hostile string cannot allocate an unbounded byte array.
+        let bytes = Array(raw.utf8.prefix(289))
+        guard !bytes.isEmpty, bytes.count <= 288 else { return [] }
+
+        let span = end.timeIntervalSince(start)
+        let maxEpochs = Int(min(288.0, ceil(span / 300.0)))
+        guard maxEpochs > 0, bytes.count <= maxEpochs else { return [] }
+
+        func stage(_ byte: UInt8) -> String? {
+            switch byte {
+            case 49: return "deep"   // "1"
+            case 50: return "light"  // "2"
+            case 51: return "rem"    // "3"
+            case 52: return "wake"   // "4"
+            default: return nil
+            }
+        }
+
+        // Validate the entire field before returning any partial hypnogram.
+        guard bytes.allSatisfy({ stage($0) != nil }) else { return [] }
+
+        var intervals: [WearableSleepStageInterval] = []
+        intervals.reserveCapacity(bytes.count)
+        for (index, byte) in bytes.enumerated() {
+            guard let name = stage(byte) else { return [] } // already validated; keeps the mapping total
+            let epochStart = start.addingTimeInterval(Double(index) * 300.0)
+            let epochEnd = min(end, epochStart.addingTimeInterval(300.0))
+            guard epochEnd > epochStart else { break }
+
+            if let last = intervals.last,
+               last.stage == name,
+               last.end == epochStart {
+                intervals[intervals.count - 1].end = epochEnd
+            } else {
+                intervals.append(WearableSleepStageInterval(
+                    stage: name,
+                    start: epochStart,
+                    end: epochEnd))
+            }
+        }
+        return intervals
     }
 }
