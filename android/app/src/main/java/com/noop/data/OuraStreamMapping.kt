@@ -30,6 +30,9 @@ import com.noop.protocol.WhoopEvent
  * (honest-data invariant), a ts-less biometric row is unstorable anyway.
  */
 object OuraStreamMapping {
+    /** Oura's app-side Ring 4 / Oreo quadratic, never confused with a firmware percentage. */
+    const val ESTIMATED_SPO2_UNIT = "estimated_tenths_percent"
+
 
     /** The event `kind` recorded for the ring's own open HRV (0x5D) tag. Must match Swift exactly. */
     const val EVENT_HRV = "OURA_HRV"
@@ -125,11 +128,20 @@ object OuraStreamMapping {
                         if (calibrated.isNotEmpty()) {
                             payload["calibrated_sample_indices"] = calibrated.map { it.first }
                             payload["calibrated_tenths_percent_samples"] = calibrated.map { it.second }
+                            // One estimate per real record timestamp: partial boundary records exist and
+                            // the individual optical samples do not carry independent timestamps.
+                            out.spo2.add(
+                                Spo2Sample(
+                                    ts = ts,
+                                    red = Math.round(calibrated.map { it.second }.average()).toInt(),
+                                    ir = 0,
+                                    unit = ESTIMATED_SPO2_UNIT,
+                                ),
+                            )
                         }
                     }
-                    // Keep app-side estimates out of the production SpO2 stream: that stream feeds the
-                    // unlabelled daily metric and Android Health Connect. The explicitly profiled sample
-                    // array remains in this diagnostic event until hardware/reference qualification.
+                    // The estimate-specific unit is preserved through storage. Analytics prefers measured
+                    // firmware percentages and stamps provenance before any user-facing daily value.
                     out.events.add(WhoopEvent(ts, EVENT_SPO2_RATIO_PI, payload))
                 }
 

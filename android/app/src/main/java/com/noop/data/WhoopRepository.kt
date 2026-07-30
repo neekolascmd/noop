@@ -180,8 +180,20 @@ class WhoopRepository(private val dao: WhoopDao) {
             dao.insertEvents(streams.events.map { EventRow(deviceId, it.ts, it.kind, it.payloadJSON) })
         val batIds = if (streams.battery.isEmpty()) emptyList() else
             dao.insertBattery(streams.battery.map { BatterySample(deviceId, it.ts, it.soc, it.mv, it.charging) })
-        val spo2Ids = if (streams.spo2.isEmpty()) emptyList() else
-            dao.insertSpo2(streams.spo2.map { Spo2Sample(deviceId, it.ts, it.red, it.ir, it.unit) })
+        val spo2Rows = streams.spo2.map { Spo2Sample(deviceId, it.ts, it.red, it.ir, it.unit) }
+        val spo2Ids = if (spo2Rows.isEmpty()) {
+            emptyList()
+        } else {
+            dao.insertSpo2(spo2Rows).also { ids ->
+                spo2Rows.zip(ids).forEach { (row, id) ->
+                    if (id == -1L && row.unit == "tenths_percent") {
+                        dao.promoteSpo2ToMeasured(
+                            row.deviceId, row.ts, row.red, row.ir, row.unit
+                        )
+                    }
+                }
+            }
+        }
         val skinIds = if (streams.skinTemp.isEmpty()) emptyList() else
             dao.insertSkinTemp(streams.skinTemp.map { SkinTempSample(deviceId, it.ts, it.raw) })
         // activityClass (#316, v13 column) is the @63 activity-class enum (0=still/1=walk/2=run) the decoder
@@ -1734,6 +1746,7 @@ class WhoopRepository(private val dao: WhoopDao) {
                     strain = d.strain ?: c.strain,
                     exerciseCount = d.exerciseCount ?: c.exerciseCount,
                     spo2Pct = d.spo2Pct ?: c.spo2Pct,
+                    spo2Method = if (d.spo2Pct != null) d.spo2Method else c.spo2Method,
                     skinTempDevC = d.skinTempDevC ?: c.skinTempDevC,
                     respRateBpm = d.respRateBpm ?: c.respRateBpm,
                     steps = d.steps ?: c.steps,

@@ -16,7 +16,7 @@ final class MetricsCacheTests: XCTestCase {
     }
 
     func testSchemaVersionBumped() {
-        XCTAssertEqual(WhoopStoreInfo.schemaVersion, 26)
+        XCTAssertEqual(WhoopStoreInfo.schemaVersion, 27)
     }
 
     // MARK: - sleep sessions
@@ -410,6 +410,39 @@ final class MetricsCacheTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(row.spo2Pct), 96.4, accuracy: 0.001)
         XCTAssertEqual(try XCTUnwrap(row.skinTempDevC), 0.3, accuracy: 0.001)
         XCTAssertEqual(try XCTUnwrap(row.respRateBpm), 15.2, accuracy: 0.001)
+    }
+
+    func testOuraSpO2EstimateMethodRoundTripsAndClearsOnMeasuredUpdate() async throws {
+        let store = try await WhoopStore.inMemory()
+        let estimate = DailyMetric(
+            day: "2026-07-30", totalSleepMin: 420, efficiency: 0.91,
+            deepMin: 90, remMin: 110, lightMin: 220, disturbances: 2,
+            restingHr: 52, avgHrv: 63.0, recovery: 0.70, strain: 11.5,
+            exerciseCount: 1, spo2Pct: 96.8, spo2Method: "oura_simple_gen4"
+        )
+        try await store.upsertDailyMetrics([estimate], deviceId: "ring")
+        var rows = try await store.dailyMetrics(
+            deviceId: "ring", from: "2026-07-30", to: "2026-07-30"
+        )
+        XCTAssertEqual(rows.count, 1)
+        var row = try XCTUnwrap(rows.first)
+        XCTAssertEqual(row.spo2Pct, 96.8)
+        XCTAssertEqual(row.spo2Method, "oura_simple_gen4")
+
+        let measured = DailyMetric(
+            day: "2026-07-30", totalSleepMin: 420, efficiency: 0.91,
+            deepMin: 90, remMin: 110, lightMin: 220, disturbances: 2,
+            restingHr: 52, avgHrv: 63.0, recovery: 0.70, strain: 11.5,
+            exerciseCount: 1, spo2Pct: 97.2
+        )
+        try await store.upsertDailyMetrics([measured], deviceId: "ring")
+        rows = try await store.dailyMetrics(
+            deviceId: "ring", from: "2026-07-30", to: "2026-07-30"
+        )
+        XCTAssertEqual(rows.count, 1)
+        row = try XCTUnwrap(rows.first)
+        XCTAssertEqual(row.spo2Pct, 97.2)
+        XCTAssertNil(row.spo2Method)
     }
 
     func testV7ColumnsNilWhenAbsent() async throws {

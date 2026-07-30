@@ -233,8 +233,8 @@ targets: [
 
 ### Schema
 
-The migrator (`WhoopStore.makeMigrator()`) runs `v1`…`v26`
-(`WhoopStoreInfo.schemaVersion == 26`). On open, the store enables WAL journal
+The migrator (`WhoopStore.makeMigrator()`) runs `v1`…`v27`
+(`WhoopStoreInfo.schemaVersion == 27`). On open, the store enables WAL journal
 mode, `synchronous = NORMAL`, a 16 MB page cache, 256 MB mmap, and a 5-second
 busy timeout so two handles to the same file don't deadlock.
 

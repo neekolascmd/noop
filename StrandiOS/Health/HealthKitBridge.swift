@@ -462,7 +462,8 @@ final class HealthKitBridge: ObservableObject {
             if let hrv = row.avgHrv {
                 add(.heartRateVariabilitySDNN, .secondUnit(with: .milli), hrv, row.day, noon)
             }
-            if let spo2 = row.spo2Pct {
+            // Never write Oura's explicitly-labelled app-side estimate as a measured HealthKit sample.
+            if row.spo2Method == nil, let spo2 = row.spo2Pct {
                 add(.oxygenSaturation, .percent(), spo2 / 100, row.day, noon)
             }
             if let rr = row.respRateBpm {

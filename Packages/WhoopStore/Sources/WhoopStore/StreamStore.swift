@@ -89,7 +89,13 @@ extension WhoopStore {
             if !streams.spo2.isEmpty {
                 let stmt = try db.cachedStatement(sql: """
                     INSERT INTO spo2Sample (deviceId, ts, red, ir, unit) VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(deviceId, ts) DO NOTHING
+                    ON CONFLICT(deviceId, ts) DO UPDATE SET
+                        red = excluded.red,
+                        ir = excluded.ir,
+                        unit = excluded.unit,
+                        synced = 0
+                    WHERE excluded.unit = 'tenths_percent'
+                      AND spo2Sample.unit != 'tenths_percent'
                     """)
                 for s in streams.spo2 {
                     try stmt.execute(arguments: [deviceId, s.ts, s.red, s.ir, s.unit])

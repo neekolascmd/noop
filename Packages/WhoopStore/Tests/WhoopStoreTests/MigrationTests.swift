@@ -51,7 +51,7 @@ final class MigrationTests: XCTestCase {
             let cols = try await store.columnNamesForTest(table: table)
             XCTAssertTrue(cols.contains("synced"), "\(table) missing synced column")
         }
-        XCTAssertEqual(WhoopStoreInfo.schemaVersion, 26)
+        XCTAssertEqual(WhoopStoreInfo.schemaVersion, 27)
     }
 
     /// v13 adds the `userEdited` flag to sleepSession (user-corrected wake times survive re-sync).
@@ -75,11 +75,17 @@ final class MigrationTests: XCTestCase {
         XCTAssertTrue(cols.contains("peripheralId"), "pairedDevice missing v16 peripheralId column")
     }
 
+    func testV27AddsSpO2MethodColumnToDailyMetric() async throws {
+        let store = try await WhoopStore.inMemory()
+        let cols = try await store.columnNamesForTest(table: "dailyMetric")
+        XCTAssertTrue(cols.contains("spo2Method"), "dailyMetric missing v27 spo2Method column")
+    }
+
     func testSchemaVersionMatchesRegisteredMigrationHistory() {
         let identifiers = WhoopStoreInfo.migrationIdentifiers
         XCTAssertEqual(WhoopStoreInfo.schemaVersion, identifiers.count)
         XCTAssertEqual(identifiers.first, "v1")
-        XCTAssertEqual(identifiers.last, "v26-oura-raw-redecode")
+        XCTAssertEqual(identifiers.last, "v27-spo2-method")
         XCTAssertEqual(Set(identifiers).count, identifiers.count, "migration identifiers must be unique")
     }
 

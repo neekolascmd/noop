@@ -553,5 +553,68 @@ final class AnalyticsEngineTests: XCTestCase {
             knownSleepWindows: [(start: start, end: start + 3600)],
             profile: UserProfile(age: 30))
         XCTAssertEqual(result.daily.spo2Pct, 96.0)
+        XCTAssertNil(result.daily.spo2Method)
+    }
+
+    func testQualifiedOuraSimpleEstimateIsLabelledAndNativePercentageWins() throws {
+        let start = 1_623_700_000
+        let estimates = (0...60).map {
+            SpO2Sample(
+                ts: start + $0 * 30,
+                red: $0.isMultiple(of: 2) ? 970 : 960,
+                ir: 0,
+                unit: OuraStreamMapping.estimatedSpO2Unit
+            )
+        }
+        let estimated = AnalyticsEngine.analyzeDay(
+            day: "2021-06-15",
+            spo2: estimates,
+            knownSleepWindows: [(start: start, end: start + 3600)],
+            profile: UserProfile(age: 30))
+        XCTAssertEqual(
+            try XCTUnwrap(estimated.daily.spo2Pct),
+            96.50819672131148,
+            accuracy: 0.0001
+        )
+        XCTAssertEqual(estimated.daily.spo2Method, "oura_simple_gen4")
+
+        let native = AnalyticsEngine.analyzeDay(
+            day: "2021-06-15",
+            spo2: estimates + [
+                SpO2Sample(ts: start + 120, red: 980, ir: 0, unit: "tenths_percent"),
+            ],
+            knownSleepWindows: [(start: start, end: start + 3600)],
+            profile: UserProfile(age: 30))
+        XCTAssertEqual(try XCTUnwrap(native.daily.spo2Pct), 98.0, accuracy: 0.0001)
+        XCTAssertNil(native.daily.spo2Method)
+    }
+
+    func testOuraSimpleEstimateRejectsSparseOrShortFragments() {
+        let start = 1_623_700_000
+        let short = (0..<60).map {
+            SpO2Sample(
+                ts: start + $0 * 20,
+                red: 970,
+                ir: 0,
+                unit: OuraStreamMapping.estimatedSpO2Unit
+            )
+        }
+        let sparse = (0..<60).map {
+            SpO2Sample(
+                ts: start + $0 * 31,
+                red: 970,
+                ir: 0,
+                unit: OuraStreamMapping.estimatedSpO2Unit
+            )
+        }
+        for samples in [short, sparse] {
+            let result = AnalyticsEngine.analyzeDay(
+                day: "2021-06-15",
+                spo2: samples,
+                knownSleepWindows: [(start: start, end: start + 3600)],
+                profile: UserProfile(age: 30))
+            XCTAssertNil(result.daily.spo2Pct)
+            XCTAssertNil(result.daily.spo2Method)
+        }
     }
 }

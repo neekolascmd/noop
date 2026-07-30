@@ -4,6 +4,7 @@ import com.noop.data.DailyMetric
 import com.noop.data.EventRow
 import com.noop.data.GravitySample
 import com.noop.data.HrSample
+import com.noop.data.OuraStreamMapping
 import com.noop.data.SkinTempSample
 import com.noop.data.Spo2Sample
 import com.noop.data.RespSample
@@ -473,12 +474,43 @@ object AnalyticsEngine {
         } else {
             matched.map { it.start to it.end }
         }
-        val oxygen = spo2.mapNotNull { sample ->
+        val nativeOxygen = spo2.mapNotNull { sample ->
             if (sample.unit != "tenths_percent" || sample.ir != 0 || sample.red !in 700..1000) null
             else if (oxygenWindows.none { sample.ts >= it.first && sample.ts <= it.second }) null
-            else sample.red / 10.0
+            else sample.ts to sample.red / 10.0
         }
-        val spo2Pct = oxygen.takeIf { it.isNotEmpty() }?.average()
+        val estimatedOxygen = spo2.mapNotNull { sample ->
+            if (sample.unit != OuraStreamMapping.ESTIMATED_SPO2_UNIT ||
+                sample.ir != 0 || sample.red !in 850..1000
+            ) {
+                null
+            } else if (oxygenWindows.none { sample.ts >= it.first && sample.ts <= it.second }) {
+                null
+            } else {
+                sample.ts to sample.red / 10.0
+            }
+        }.sortedBy { it.first }
+        val byWindow = oxygenWindows.map { mutableListOf<Pair<Long, Double>>() }
+        estimatedOxygen.forEach { sample ->
+            val index = oxygenWindows.indexOfFirst {
+                sample.first >= it.first && sample.first <= it.second
+            }
+            if (index >= 0) byWindow[index] += sample
+        }
+        val qualifiedEstimate = byWindow.flatMap { values ->
+            val span = (values.lastOrNull()?.first ?: 0) - (values.firstOrNull()?.first ?: 0)
+            values.takeIf {
+                it.size >= 60 && span >= 30L * 60L &&
+                    it.size.toDouble() / span.coerceAtLeast(1L).toDouble() >= 1.0 / 30.0
+            }.orEmpty()
+        }
+        val selectedOxygen = if (nativeOxygen.isNotEmpty()) nativeOxygen else qualifiedEstimate
+        val spo2Pct = selectedOxygen.takeIf { it.isNotEmpty() }?.map { it.second }?.average()
+        val spo2Method = if (nativeOxygen.isEmpty() && qualifiedEstimate.isNotEmpty()) {
+            "oura_simple_gen4"
+        } else {
+            null
+        }
 
         // ── Assemble DailyMetric ──────────────────────────────────────────────
         // deviceId is stamped by the caller (IntelligenceEngine persists under
@@ -499,6 +531,7 @@ object AnalyticsEngine {
             strain = strain,
             exerciseCount = workouts.size,
             spo2Pct = spo2Pct,
+            spo2Method = spo2Method,
             skinTempDevC = skinTempDevC,
             respRateBpm = respRateDaily,
             steps = stepsTotal,

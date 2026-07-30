@@ -526,6 +526,16 @@ extension WhoopStore {
                 columns: ["deviceId", "decodedRevision", "archiveId"]
             )
         }
+
+        // v27: preserve the provenance of a derived Oura oxygen percentage. Nil means the value is a
+        // measured/imported percentage; `oura_simple_gen4` identifies the explicitly-labelled local
+        // R-ratio calibration. Nullable and additive so existing rows stay measured/unknown, never
+        // silently relabelled. Android twin: MIGRATION_20_21.
+        migrator.registerMigration("v27-spo2-method") { db in
+            try db.alter(table: "dailyMetric") { t in
+                t.add(column: "spo2Method", .text)
+            }
+        }
         return migrator
     }
 }

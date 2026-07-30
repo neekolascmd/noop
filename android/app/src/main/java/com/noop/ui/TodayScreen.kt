@@ -3059,7 +3059,9 @@ private fun dashboardCardValue(
         DashboardCard.RESPIRATORY ->
             withUnit((day?.respRateBpm ?: vitalsDay?.respRateBpm)?.let { String.format(Locale.US, "%.1f", it) } ?: NO_DATA)
         DashboardCard.BLOOD_OXYGEN ->
-            vd?.spo2Pct?.let { String.format(Locale.US, "%.0f%%", it) } ?: NO_DATA
+            vd?.spo2Pct?.let {
+                "${if (vd.spo2Method == null) "" else "≈"}${String.format(Locale.US, "%.0f%%", it)}"
+            } ?: NO_DATA
         DashboardCard.SKIN_TEMP ->
             // Stored as a deviation from baseline (°C); show it signed so +/- reads honestly.
             vd?.skinTempDevC?.let { String.format(Locale.US, "%+.1f°", it) } ?: NO_DATA
@@ -4218,11 +4220,16 @@ private fun MetricGrid(
             )
         },
         KeyMetric.BLOOD_OXYGEN to run {
-            val v = d?.spo2Pct ?: carriedDay?.spo2Pct
+            val source = d?.takeIf { it.spo2Pct != null } ?: carriedDay
+            val v = source?.spo2Pct
             KeyTileData(
                 label = "Blood Oxygen",
-                value = v?.let { String.format(Locale.US, "%.0f", it) } ?: NO_DATA,
-                unit = if (v != null) "%" else "",
+                value = v?.let {
+                    "${if (source?.spo2Method == null) "" else "≈"}${String.format(Locale.US, "%.0f", it)}"
+                } ?: NO_DATA,
+                unit = if (v != null) {
+                    if (source?.spo2Method == null) "%" else "% · Oura estimate"
+                } else "",
                 tint = Palette.metricCyan,
                 frac = v?.let { (it / 100.0).coerceIn(0.0, 1.0) },
             )

@@ -1,5 +1,6 @@
 import OuraProtocol
 import XCTest
+import WhoopProtocol
 @testable import WhoopStore
 
 final class OuraRawHistoryRedecoderTests: XCTestCase {
@@ -115,8 +116,8 @@ final class OuraRawHistoryRedecoderTests: XCTestCase {
         XCTAssertNil(event.payload["cadence_seconds"])
     }
 
-    func testPageDecoderRevisionThreeRecoversMotionDiagnostics() {
-        XCTAssertEqual(OuraRawHistoryDecoderRevision.current, 3)
+    func testPageDecoderRevisionFourRecoversMotionAndSpO2Diagnostics() {
+        XCTAssertEqual(OuraRawHistoryDecoderRevision.current, 4)
         let anchor = OuraTimeAnchor(
             ringTimestamp: 1_000,
             utcMilliseconds: 1_700_000_000_000,
@@ -139,14 +140,32 @@ final class OuraRawHistoryRedecoderTests: XCTestCase {
             firstSeenAtUnixMs: 1,
             timeAnchor: anchor
         )
+        let spo2 = StoredOuraRawHistoryRecord(
+            archiveId: 3,
+            tag: OuraEventTag.spo2RatioPI.rawValue,
+            ringTimestamp: 800,
+            payload: Data([0x00, 0x30, 0x00, 0x80, 0x33, 0x33, 0x40]),
+            firstSeenAtUnixMs: 1,
+            timeAnchor: anchor
+        )
 
-        let decoded = OuraRawHistoryPageDecoder.decode([motion, sleepAcm], ringGen: .gen4)
+        let decoded = OuraRawHistoryPageDecoder.decode([motion, sleepAcm, spo2], ringGen: .gen4)
         XCTAssertEqual(decoded.withheldEvents, 0)
         XCTAssertEqual(decoded.streams.events.map(\.kind), [
             OuraStreamMapping.motionSummaryEventKind,
             OuraStreamMapping.sleepAcmPeriodEventKind,
+            OuraStreamMapping.spo2RatioEventKind,
         ])
         XCTAssertEqual(decoded.streams.events[0].ts, 1_699_999_990)
         XCTAssertEqual(decoded.streams.events[1].ts, 1_699_999_970)
+        XCTAssertEqual(decoded.streams.events[2].ts, 1_699_999_980)
+        XCTAssertEqual(decoded.streams.spo2, [
+            SpO2Sample(
+                ts: 1_699_999_980,
+                red: 932,
+                ir: 0,
+                unit: OuraStreamMapping.estimatedSpO2Unit
+            ),
+        ])
     }
 }

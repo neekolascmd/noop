@@ -1593,7 +1593,8 @@ private extension DailyMetric {
         DailyMetric(day: day, totalSleepMin: totalSleepMin, efficiency: efficiency, deepMin: deepMin,
                     remMin: remMin, lightMin: lightMin, disturbances: disturbances, restingHr: restingHr,
                     avgHrv: avgHrv, recovery: r, strain: strain, exerciseCount: exerciseCount,
-                    spo2Pct: spo2Pct, skinTempDevC: sd, respRateBpm: respRateBpm,
+                    spo2Pct: spo2Pct, spo2Method: spo2Method,
+                    skinTempDevC: sd, respRateBpm: respRateBpm,
                     steps: steps, activeKcalEst: activeKcalEst)
     }
 
@@ -1603,7 +1604,8 @@ private extension DailyMetric {
               deepMin dm: Double?, remMin rm: Double?, lightMin lm: Double?) -> DailyMetric {
         DailyMetric(day: day, totalSleepMin: tsm, efficiency: eff, deepMin: dm, remMin: rm, lightMin: lm,
                     disturbances: disturbances, restingHr: restingHr, avgHrv: avgHrv, recovery: recovery,
-                    strain: strain, exerciseCount: exerciseCount, spo2Pct: spo2Pct,
+                    strain: strain, exerciseCount: exerciseCount,
+                    spo2Pct: spo2Pct, spo2Method: spo2Method,
                     skinTempDevC: skinTempDevC, respRateBpm: respRateBpm, steps: steps,
                     activeKcalEst: activeKcalEst)
     }

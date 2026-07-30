@@ -149,7 +149,8 @@ public enum WhoopCsvExporter {
             let s = series[d.day] ?? [:]
             let cols: [String] = [
                 d.day + " 00:00:00", "", "UTC+00:00",
-                num(d.recovery), num(d.restingHr), num(d.avgHrv), num(d.skinTempDevC), num(d.spo2Pct),
+                num(d.recovery), num(d.restingHr), num(d.avgHrv), num(d.skinTempDevC),
+                num(d.spo2Method == nil ? d.spo2Pct : nil),
                 // Day Strain column is WHOOP's 0–21 scale → convert our 0–100 Effort down so the CSV is
                 // WHOOP-format and a NOOP→NOOP round-trip is lossless (importer scales it back up).
                 num(WhoopExportImporter.whoopDayStrainFromEffort(d.strain)), num(s["energy_kcal"]), num(s["max_hr"]), num(s["avg_hr"]),

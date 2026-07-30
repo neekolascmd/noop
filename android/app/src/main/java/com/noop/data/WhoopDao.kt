@@ -55,6 +55,20 @@ interface WhoopDao : DeviceRegistryDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertSpo2(rows: List<Spo2Sample>): List<Long>
 
+    /** A timestamp collision may not let a local estimate mask a firmware percentage. */
+    @Query(
+        "UPDATE spo2Sample SET red = :red, ir = :ir, unit = :unit, synced = 0 " +
+            "WHERE deviceId = :deviceId AND ts = :ts " +
+            "AND :unit = 'tenths_percent' AND unit != 'tenths_percent'"
+    )
+    suspend fun promoteSpo2ToMeasured(
+        deviceId: String,
+        ts: Long,
+        red: Int,
+        ir: Int,
+        unit: String,
+    ): Int
+
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertSkinTemp(rows: List<SkinTempSample>): List<Long>
 

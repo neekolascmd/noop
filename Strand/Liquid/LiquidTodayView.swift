@@ -522,9 +522,12 @@ struct LiquidTodayView: View {
             cardLink(dest: metricDetail("steps_est"), title: card.title, sub: card.subtitle,
                      value: stepsText, tint: StrandPalette.metricCyan, frac: fracOver(stepCount, 10000))
         case .bloodOxygen:
-            // Not wired to a real read yet — render EMPTY (not half-full) so it doesn't imply a reading.
+            let oxygen = displayDay?.spo2Pct.map {
+                "\(displayDay?.spo2Method == nil ? "" : "≈")\(String(format: "%.0f%%", $0))"
+            } ?? "–"
             cardLink(dest: metricDetail("spo2"), title: card.title, sub: card.subtitle,
-                     value: "–", tint: StrandPalette.metricCyan, frac: nil)
+                     value: oxygen, tint: StrandPalette.metricCyan,
+                     frac: fracOver(displayDay?.spo2Pct, 100))
         case .skinTemp:
             cardLink(dest: metricDetail("skin_temp"), title: card.title, sub: card.subtitle,
                      value: "–", tint: StrandPalette.metricAmber, frac: nil)

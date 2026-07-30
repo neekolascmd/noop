@@ -125,7 +125,11 @@ class OuraStreamMappingTest {
         val s = OuraStreamMapping.streams(
             listOf(OuraEvent.Spo2Ratio(raw, OuraSpO2CalibrationProfile.GEN4_OREO)), anchor,
         )
-        assertTrue(s.spo2.isEmpty())
+        assertEquals(1, s.spo2.size)
+        assertEquals(base + 5, s.spo2.single().ts)
+        assertEquals(932, s.spo2.single().red)
+        assertEquals(0, s.spo2.single().ir)
+        assertEquals(OuraStreamMapping.ESTIMATED_SPO2_UNIT, s.spo2.single().unit)
         assertEquals(OuraStreamMapping.EVENT_SPO2_RATIO_PI, s.events.single().kind)
         assertEquals(listOf(0x3000, 0x3333), s.events.single().payload["ratio_q14"])
         assertEquals(listOf(128, 64), s.events.single().payload["perfusion_u8"])

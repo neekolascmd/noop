@@ -100,7 +100,8 @@ object HealthConnectWriter {
                     metadata = meta("hrv", d.day, version),
                 ))
             }
-            d.spo2Pct?.let {
+            // Oura Simple is a labelled local estimate, not a measured Health Connect record.
+            d.spo2Pct?.takeIf { d.spo2Method == null }?.let {
                 records.add(OxygenSaturationRecord(
                     time = instant, zoneOffset = offset, percentage = Percentage(it),
                     metadata = meta("spo2", d.day, version),

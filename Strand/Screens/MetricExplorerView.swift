@@ -422,6 +422,8 @@ struct MetricDetailView: View {
     @State private var heroAnimatedFraction: Double = 0
     /// Full ascending series for this metric — ALL history.
     @State private var series: [(day: String, value: Double)] = []
+    /// Days whose SpO₂ value is the explicitly-labelled local Ring 4 estimate.
+    @State private var estimatedDays: Set<String> = []
     /// Every OTHER catalog series, loaded once for the correlation scan.
     @State private var others: [(metric: MetricDescriptor, series: [(day: String, value: Double)])] = []
     @State private var loaded = false
@@ -538,6 +540,9 @@ struct MetricDetailView: View {
     }
 
     private var latest: (day: String, value: Double)? { series.last }
+    private func isEstimated(day: String?) -> Bool {
+        metric.key == "spo2" && day.map(estimatedDays.contains) == true
+    }
 
     // MARK: Body
 
@@ -584,6 +589,9 @@ struct MetricDetailView: View {
 
     private func load() async {
         series = await repo.exploreSeries(key: metric.key, source: metric.source)
+        estimatedDays = metric.key == "spo2"
+            ? Set(repo.days.filter { $0.spo2Method != nil }.map(\.day))
+            : []
         var loadedOthers: [(metric: MetricDescriptor, series: [(day: String, value: Double)])] = []
         for other in MetricCatalog.all where other.id != metric.id {
             let s = await repo.exploreSeries(key: other.key, source: other.source)
@@ -612,7 +620,8 @@ struct MetricDetailView: View {
                             windowFellBack: Bool) -> some View {
         let domain = metricDomain(metric)
         let value = latest?.value
-        let heroValue = latest.map { fmt($0.value) } ?? "—"
+        let latestEstimate = isEstimated(day: latest?.day)
+        let heroValue = latest.map { "\(latestEstimate ? "≈" : "")\(fmt($0.value))" } ?? "—"
         let asOf: String = {
             guard let day = latest?.day, let d = parseDay(day) else { return "—" }
             return String(localized: "as of \(longDate(d))")
@@ -670,6 +679,11 @@ struct MetricDetailView: View {
                             Text(asOf)
                                 .font(StrandFont.footnote)
                                 .foregroundStyle(StrandPalette.textTertiary)
+                            if latestEstimate {
+                                Text("≈ Oura Simple estimate · not a measured oxygen reading")
+                                    .font(StrandFont.footnote)
+                                    .foregroundStyle(StrandPalette.textTertiary)
+                            }
                         }
                         // One VoiceOver stop for the hero read-out (the vessel is decorative above).
                         .accessibilityElement(children: .ignore)
@@ -684,6 +698,11 @@ struct MetricDetailView: View {
                             Text(asOf)
                                 .font(StrandFont.footnote)
                                 .foregroundStyle(StrandPalette.textTertiary)
+                            if latestEstimate {
+                                Text("≈ Oura Simple estimate · not a measured oxygen reading")
+                                    .font(StrandFont.footnote)
+                                    .foregroundStyle(StrandPalette.textTertiary)
+                            }
                         }
                         .padding(.vertical, 18)
                     } else {
@@ -782,10 +801,15 @@ struct MetricDetailView: View {
             guard let day = latest?.day, let d = parseDay(day) else { return "—" }
             return String(localized: "as of \(longDate(d))")
         }()
-        let heroValue = latest.map { fmt($0.value) } ?? "—"
-        let subtitle = windowFellBack
+        let latestEstimate = isEstimated(day: latest?.day)
+        let includesEstimate = windowed.contains { estimatedDays.contains($0.day) }
+        let heroValue = latest.map { "\(latestEstimate ? "≈" : "")\(fmt($0.value))" } ?? "—"
+        let rangeSubtitle = windowFellBack
             ? String(localized: "Sparse, widened to \(effectiveRange.name) · \(windowed.count) readings")
             : String(localized: "\(windowed.count) readings · \(range.name)")
+        let subtitle = includesEstimate
+            ? "\(rangeSubtitle) · ≈ includes Oura estimates"
+            : rangeSubtitle
         return ChartCard(
             title: "\(metric.title)",
             subtitle: subtitle,
@@ -814,6 +838,8 @@ struct MetricDetailView: View {
     private func statRow(effectiveRange: ExploreRange,
                          windowed: [(day: String, value: Double)]) -> some View {
         let windowValues = windowed.map(\.value)
+        let includesEstimate = windowed.contains { estimatedDays.contains($0.day) }
+        let estimatePrefix = includesEstimate ? "≈" : ""
         let s = ComparisonEngine.stat(windowValues)
         let cmp = ComparisonEngine.compare(current: windowValues,
                                            previous: previousWindow(effectiveRange: effectiveRange,
@@ -838,16 +864,20 @@ struct MetricDetailView: View {
             alignment: .leading,
             spacing: NoopMetrics.gap
         ) {
-            StatTile(label: "Average", value: fmt(s.mean),
+            StatTile(label: "Average", value: "\(estimatePrefix)\(fmt(s.mean))",
                      caption: s.n == 1 ? String(localized: "1 day") : String(localized: "\(s.n) days"),
                      accent: accent,
                      sparkline: windowValues.count > 1 ? windowValues : nil,
                      sparkColor: accent)
-            StatTile(label: "Min", value: fmt(s.min),
+            StatTile(label: "Min", value: "\(estimatePrefix)\(fmt(s.min))",
                      accent: StrandPalette.textPrimary)
-            StatTile(label: "Max", value: fmt(s.max),
+            StatTile(label: "Max", value: "\(estimatePrefix)\(fmt(s.max))",
                      accent: StrandPalette.textPrimary)
-            StatTile(label: "Latest", value: latest.map { fmt($0.value) } ?? "—",
+            StatTile(
+                label: "Latest",
+                value: latest.map {
+                    "\(isEstimated(day: $0.day) ? "≈" : "")\(fmt($0.value))"
+                } ?? "—",
                      caption: latestCaption, accent: accent)
             StatTile(label: "Δ vs prev", value: deltaText ?? "—",
                      caption: deltaCaption, accent: StrandPalette.textPrimary,
