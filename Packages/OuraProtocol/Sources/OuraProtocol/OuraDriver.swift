@@ -567,9 +567,11 @@ public final class OuraDriver {
         case .motionPeriod:
             return (OuraDecoders.decodeMotionPeriod(record) ?? []).map { OuraEvent.motion($0) }
         case .motion:
-            // 0x47 motion_events: surfaced as state-free motion is out of v1 scope; decode to nothing
-            // rather than guess the partial layout. Per OURA_PROTOCOL.md s6.13.
-            return []
+            guard let value = OuraDecoders.decodeMotionSummary(record) else { return [] }
+            return [.motionSummary(value)]
+        case .sleepAcmPeriod:
+            guard let value = OuraDecoders.decodeSleepAcmPeriod(record) else { return [] }
+            return [.sleepAcmPeriod(value)]
 
         // --- Diagnostic sleep phase: codebook/order are known; cadence is not production-qualified ---
         case .sleepPhase, .sleepPhaseAlt:

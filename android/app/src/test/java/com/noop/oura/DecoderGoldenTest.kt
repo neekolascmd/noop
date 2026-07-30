@@ -247,6 +247,41 @@ class DecoderGoldenTest {
         )
     }
 
+    @Test
+    fun testMotionSummary0x47PreservesPackedFields() {
+        val rec = record("470a02000100b101fe7f8506")
+        assertEquals(
+            OuraMotionSummary(
+                ringTimestamp = rt, orientation = 5, motionSeconds = 17,
+                averageX = 8, averageY = -16, averageZ = 1016,
+                lowIntensity = 5, lowIntensityFlag = true,
+                highIntensity = 6, highIntensityFlag = false,
+            ),
+            OuraDecoders.decodeMotionSummary(rec),
+        )
+        assertNull(OuraDecoders.decodeMotionSummary(
+            OuraRecord(0x47, rt, intArrayOf(0x00, 1, 2))))
+        assertNull(OuraDecoders.decodeMotionSummary(
+            OuraRecord(0x47, rt, intArrayOf(0x00, 1, 2, 3, 0x40))))
+    }
+
+    @Test
+    fun testSleepAcmPeriod0x72DecodesBothFixedPointEncodings() {
+        val value = OuraDecoders.decodeSleepAcmPeriod(
+            record("72100200010080020003ff040050ff0f00a8"),
+        )!!
+        assertEquals(rt, value.ringTimestamp)
+        assertEquals(6, value.values.size)
+        assertEquals(2.0 + 128.0 / 255.0, value.values[0], 1e-12)
+        assertEquals(3.0, value.values[1], 1e-12)
+        assertEquals(5.0, value.values[2], 1e-12)
+        assertEquals(5.0, value.values[3], 1e-12)
+        assertEquals(1.0, value.values[4], 1e-12)
+        assertEquals(10.0 + 2048.0 / 4095.0, value.values[5], 1e-12)
+        assertNull(OuraDecoders.decodeSleepAcmPeriod(
+            OuraRecord(0x72, rt, IntArray(11))))
+    }
+
     // MARK: - 0x85 RTC beacon (unix_s u32 LE)
 
     @Test

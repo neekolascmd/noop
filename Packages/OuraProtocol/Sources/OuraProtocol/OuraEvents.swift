@@ -261,6 +261,51 @@ public struct OuraMotion: Equatable, Sendable, Codable {
     }
 }
 
+/// One `0x47 motion_events` record. Ring 4 firmware 2.12.3 emitted only the native parser's
+/// 4/5/6-byte shapes at a nominal 30-second cadence. The axis values and optional intensity fields
+/// are preserved as diagnostics; they do not feed scoring until their semantics are reference-validated.
+public struct OuraMotionSummary: Equatable, Sendable, Codable {
+    public let ringTimestamp: UInt32
+    public let orientation: Int
+    public let motionSeconds: Int
+    public let averageX: Int
+    public let averageY: Int
+    public let averageZ: Int
+    public let lowIntensity: Int?
+    public let lowIntensityFlag: Bool?
+    public let highIntensity: Int?
+    public let highIntensityFlag: Bool?
+
+    public init(ringTimestamp: UInt32, orientation: Int, motionSeconds: Int,
+                averageX: Int, averageY: Int, averageZ: Int,
+                lowIntensity: Int? = nil, lowIntensityFlag: Bool? = nil,
+                highIntensity: Int? = nil, highIntensityFlag: Bool? = nil) {
+        self.ringTimestamp = ringTimestamp
+        self.orientation = orientation
+        self.motionSeconds = motionSeconds
+        self.averageX = averageX
+        self.averageY = averageY
+        self.averageZ = averageZ
+        self.lowIntensity = lowIntensity
+        self.lowIntensityFlag = lowIntensityFlag
+        self.highIntensity = highIntensity
+        self.highIntensityFlag = highIntensityFlag
+    }
+}
+
+/// Six fixed-point accelerometer MAD statistics from one `0x72 sleep_acm_period` record. The exact
+/// 12-byte layout and nominal 30-second cadence are Ring 4 hardware-backed. The six positions remain
+/// units-neutral and diagnostic until they are correlated with a reference implementation.
+public struct OuraSleepAcmPeriod: Equatable, Sendable, Codable {
+    public let ringTimestamp: UInt32
+    public let values: [Double]
+
+    public init(ringTimestamp: UInt32, values: [Double]) {
+        self.ringTimestamp = ringTimestamp
+        self.values = values
+    }
+}
+
 /// Device lifecycle state (OURA_PROTOCOL.md s6.15) decoded from a 0x45/0x53 record.
 public struct OuraState: Equatable, Sendable, Codable {
     public let ringTimestamp: UInt32
@@ -367,6 +412,8 @@ public enum OuraEvent: Equatable, Sendable {
     case sleepPeriod(OuraSleepPeriod)
     case bedtimePeriod(OuraBedtimePeriod)
     case motion(OuraMotion)
+    case motionSummary(OuraMotionSummary)
+    case sleepAcmPeriod(OuraSleepAcmPeriod)
     case state(OuraState)
     case timeSync(OuraTimeSync)
     case rtcBeacon(OuraRtcBeacon)

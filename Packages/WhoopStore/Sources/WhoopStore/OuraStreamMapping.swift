@@ -36,6 +36,10 @@ public enum OuraStreamMapping {
     public static let sleepPeriodEventKind = "OURA_SLEEP_PERIOD"
     /// Lossless raw `0x8B` record alongside any explicitly calibrated estimate.
     public static let spo2RatioEventKind = "OURA_SPO2_RATIO_PI"
+    /// Ring 4 hardware-backed `0x47` motion fields, retained as units-labelled diagnostics.
+    public static let motionSummaryEventKind = "OURA_MOTION_SUMMARY"
+    /// Six units-neutral fixed-point values from `0x72 sleep_acm_period`.
+    public static let sleepAcmPeriodEventKind = "OURA_SLEEP_ACM_PERIOD"
 
     /// Build a `Streams` from a batch of decoded Oura events, all stamped at the arrival wall-clock `ts`
     /// (unix seconds). Pure → unit-testable. Section-4 table:
@@ -46,11 +50,10 @@ public enum OuraStreamMapping {
     ///   - `.temp`       (0x46/0x75)                    → `skinTemp:[SkinTempSample(raw_adc)]`
     ///   - `.sleepPhase` (0x4E/0x5A ordered codes)      → one diagnostic series event per source record
     ///   - `.battery`                                   → `battery:[BatterySample]`
-    /// Every other event case (`.motion`, `.state`, `.timeSync`, `.rtcBeacon`, `.debugText`, `.tierB`,
-    /// `.activityInfo`) is intentionally not folded into a durable stream here. In particular the 0x50
-    /// activity/MET decode NEVER mints a `steps` row: the formula is third-party and unvalidated (Tier B,
-    /// OURA_PROTOCOL.md s6.13), and MET is not a step count - fabricating one would break the honest-data
-    /// invariant and the per-source day-owner rules.
+    /// The hardware-backed `.motionSummary` / `.sleepAcmPeriod` cases become units-neutral diagnostic
+    /// events only. Packed `.motion`, lifecycle, transport, debug, and Tier-B cases remain non-durable.
+    /// In particular the 0x50 activity/MET decode NEVER mints a `steps` row: the formula is third-party
+    /// and unvalidated, and MET is not a step count.
     public static func streams(from events: [OuraEvent], at ts: Int) -> Streams {
         var out = Streams()
         for e in events {
@@ -145,6 +148,33 @@ public enum OuraStreamMapping {
                     "sleep_state": .int(v.sleepState),
                 ]))
 
+            case .motionSummary(let v):
+                var payload: [String: ParsedValue] = [
+                    "orientation": .int(v.orientation),
+                    "motion_seconds": .int(v.motionSeconds),
+                    "average_x_x8": .int(v.averageX),
+                    "average_y_x8": .int(v.averageY),
+                    "average_z_x8": .int(v.averageZ),
+                    "axis_unit": .string("raw_x8"),
+                ]
+                if let value = v.lowIntensity { payload["low_intensity"] = .int(value) }
+                if let value = v.lowIntensityFlag { payload["low_intensity_flag"] = .bool(value) }
+                if let value = v.highIntensity { payload["high_intensity"] = .int(value) }
+                if let value = v.highIntensityFlag { payload["high_intensity_flag"] = .bool(value) }
+                out.events.append(WhoopEvent(ts: ts, kind: motionSummaryEventKind, payload: payload))
+
+            case .sleepAcmPeriod(let v):
+                guard v.values.count == 6 else { continue }
+                out.events.append(WhoopEvent(ts: ts, kind: sleepAcmPeriodEventKind, payload: [
+                    "mad_0": .double(v.values[0]),
+                    "mad_1": .double(v.values[1]),
+                    "mad_2": .double(v.values[2]),
+                    "mad_3": .double(v.values[3]),
+                    "mad_4": .double(v.values[4]),
+                    "mad_5": .double(v.values[5]),
+                    "unit": .string("fixed_point_raw"),
+                ]))
+
             case .battery(let v):
                 out.battery.append(BatterySample(
                     ts: ts,
@@ -154,8 +184,8 @@ public enum OuraStreamMapping {
 
             case .bedtimePeriod, .motion, .state, .timeSync, .rtcBeacon, .debugText, .tierB, .activityInfo:
                 // Not a durable per-device stream row (timeSync/rtcBeacon anchor the transport's clock;
-                // motion/state/debug are diagnostics; Tier-B / .activityInfo are UNVERIFIED and must
-                // never feed scoring or the steps stream).
+                // packed motion/state/debug remain non-durable; Tier-B / .activityInfo must never feed
+                // scoring or the steps stream).
                 continue
             }
         }

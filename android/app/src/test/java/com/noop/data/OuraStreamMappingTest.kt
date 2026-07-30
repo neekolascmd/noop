@@ -4,6 +4,8 @@ import com.noop.oura.OuraEvent
 import com.noop.oura.OuraHR
 import com.noop.oura.OuraHRV
 import com.noop.oura.OuraIBI
+import com.noop.oura.OuraMotionSummary
+import com.noop.oura.OuraSleepAcmPeriod
 import com.noop.oura.OuraSleepPhaseSeries
 import com.noop.oura.OuraSleepStage
 import com.noop.oura.OuraSpO2
@@ -145,6 +147,39 @@ class OuraStreamMappingTest {
         assertEquals(1, s.skinTemp.size)
         assertEquals(3327, s.skinTemp.first().raw)
         assertEquals(base + 4, s.skinTemp.first().ts)
+    }
+
+    @Test
+    fun motionDiagnosticsPersistExactUnitsNeutralFields() {
+        val s = OuraStreamMapping.streams(
+            listOf(
+                OuraEvent.MotionSummaryEvent(
+                    OuraMotionSummary(
+                        10, 5, 17, 8, -16, 1016,
+                        lowIntensity = 5, lowIntensityFlag = true,
+                        highIntensity = 6, highIntensityFlag = false,
+                    ),
+                ),
+                OuraEvent.SleepAcmPeriodEvent(
+                    OuraSleepAcmPeriod(11, listOf(2.5, 3.0, 5.0, 5.0, 1.0, 10.5)),
+                ),
+            ),
+            anchor,
+        )
+        assertEquals(
+            listOf(OuraStreamMapping.EVENT_MOTION_SUMMARY, OuraStreamMapping.EVENT_SLEEP_ACM_PERIOD),
+            s.events.map { it.kind },
+        )
+        assertEquals(5, s.events[0].payload["orientation"])
+        assertEquals(17, s.events[0].payload["motion_seconds"])
+        assertEquals(-16, s.events[0].payload["average_y_x8"])
+        assertEquals("raw_x8", s.events[0].payload["axis_unit"])
+        assertEquals(true, s.events[0].payload["low_intensity_flag"])
+        assertEquals(2.5, s.events[1].payload["mad_0"])
+        assertEquals(10.5, s.events[1].payload["mad_5"])
+        assertEquals("fixed_point_raw", s.events[1].payload["unit"])
+        assertTrue(s.hr.isEmpty())
+        assertTrue(s.rr.isEmpty())
     }
 
     @Test

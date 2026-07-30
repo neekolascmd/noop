@@ -212,6 +212,39 @@ final class DecoderGoldenTests: XCTestCase {
         ])
     }
 
+    func testMotionSummary0x47PreservesPackedFields() {
+        // orientation=5, motion seconds=17; signed axes 1,-2,127 scaled x8; optional intensity bytes.
+        let rec = record("470a02000100b101fe7f8506")
+        XCTAssertEqual(
+            OuraDecoders.decodeMotionSummary(rec),
+            OuraMotionSummary(
+                ringTimestamp: rt, orientation: 5, motionSeconds: 17,
+                averageX: 8, averageY: -16, averageZ: 1016,
+                lowIntensity: 5, lowIntensityFlag: true,
+                highIntensity: 6, highIntensityFlag: false
+            )
+        )
+        XCTAssertNil(OuraDecoders.decodeMotionSummary(
+            OuraRecord(type: 0x47, ringTimestamp: rt, payload: [0x00, 1, 2])))
+        XCTAssertNil(OuraDecoders.decodeMotionSummary(
+            OuraRecord(type: 0x47, ringTimestamp: rt, payload: [0x00, 1, 2, 3, 0x40])))
+    }
+
+    func testSleepAcmPeriod0x72DecodesBothFixedPointEncodings() {
+        let rec = record("72100200010080020003ff040050ff0f00a8")
+        let value = OuraDecoders.decodeSleepAcmPeriod(rec)
+        XCTAssertEqual(value?.ringTimestamp, rt)
+        XCTAssertEqual(value?.values.count, 6)
+        XCTAssertEqual(value?.values[0] ?? -1, 2.0 + 128.0 / 255.0, accuracy: 1e-12)
+        XCTAssertEqual(value?.values[1] ?? -1, 3.0, accuracy: 1e-12)
+        XCTAssertEqual(value?.values[2] ?? -1, 5.0, accuracy: 1e-12)
+        XCTAssertEqual(value?.values[3] ?? -1, 5.0, accuracy: 1e-12)
+        XCTAssertEqual(value?.values[4] ?? -1, 1.0, accuracy: 1e-12)
+        XCTAssertEqual(value?.values[5] ?? -1, 10.0 + 2048.0 / 4095.0, accuracy: 1e-12)
+        XCTAssertNil(OuraDecoders.decodeSleepAcmPeriod(
+            OuraRecord(type: 0x72, ringTimestamp: rt, payload: Array(repeating: 0, count: 11))))
+    }
+
     // MARK: - 0x85 RTC beacon (unix_s u32 LE)
 
     func testRtcBeacon0x85() {

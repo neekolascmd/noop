@@ -458,14 +458,26 @@ out-of-range values are withheld rather than allowed to corrupt HRV/recovery. Se
   two index bytes `/16`, breathing `uint8 / 8`, breathing variation `uint8 / 8`, motion count `0...120`,
   unnamed state `0...2`, and CV `uint16 LE / 65536`. The state codes are preserved raw and are **not**
   mapped to WHOOP sleep state or sleep stages until a fixture proves their semantics. [open_ring]
-- **`0x72` `sleep_acm_period`** (16 B): values0–2 = `whole(8)+frac(8)/255`; values3–5 = `whole(4)+frac(12)/4095`. [ringverse]
+- **`0x72` `sleep_acm_period`** (12-byte payload / 18-byte TLV): values0–2 =
+  `whole(8)+frac(8)/255`; values3–5 = `whole(4)+frac(12)/4095`. [ringverse][oura-rs]
+  - A retained Ring 4 / FW 2.12.3 capture contained 1,875 records, all with the exact 12-byte payload,
+    at a nominal 30-second ring-clock cadence (mostly 300 ticks with small clock jitter). NOOP decodes
+    the six units-neutral positions into `OURA_SLEEP_ACM_PERIOD` diagnostic events on Swift and Kotlin.
+  - These values are retained offline for future local sleep analysis but do not feed staging, Rest, or
+    scoring until their positional semantics are correlated with a reference implementation.
 - **`0x49` `sleep_summary_1`**: start/end as uint16 LE minutes-before-event. [ringverse]
 - **`0x76` `bedtime_period`** (8-byte body): start/end as uint32 LE ringTimestamps → map to UTC
   (§5.5). NOOP persists plausible 15-minute...16-hour windows as stage-less sleep sessions. [open_ring]
 - Tags `0x48,0x4A–0x4D,0x4F,0x57,0x58` are additional sleep summary/feature variants in the dictionary; layouts **(UNVERIFIED)** - decode only after fixtures. [ringverse]
 
 ### 6.13 Motion / activity
-- **`0x47` `motion_events`** (variable): byte6 bits`[7:5]`=field_a, `[4:0]`=field_b; bytes7–9 = three **int8 × 8** axis magnitudes; optional bytes10–11. [ringverse]
+- **`0x47` `motion_events`** (4/5/6-byte payload): byte6 bits`[7:5]`=orientation,
+  `[4:0]`=motion seconds; bytes7–9 = three **int8 × 8** axis averages; optional bytes10–11
+  expose six-bit low/high intensity values, with bit6 reserved. [ringverse][oura-rs]
+  - The same Ring 4 capture contained 2,538 records and no other payload shape, also at a nominal
+    30-second cadence. NOOP rejects a set reserved bit, preserves the unresolved bit7 flags, and writes
+    `OURA_MOTION_SUMMARY` diagnostics with an explicit `raw_x8` axis unit.
+  - The diagnostic events do not mint steps, gravity, activity categories, or scores.
 - **`0x6B` `motion_period`** (19–31 B): 12-bit period `((b6<<8)|(b6>>6)) & 0xFFF`; byte6 bits`[5:4]`=leading-symbol count; then 2-bit codes, 4 per byte (MSB-first). MOTION_STATE enum: `0 NO_MOTION, 1 RESTLESS, 2 TOSSING, 3 ACTIVE`. [ringverse][open_ring]
 - **`0x50` activity_info / `0x51`,`0x52` activity_summary**: activity category + intensity (MET-class). Layout **(UNVERIFIED - partial)**; [ringverse] notes real_steps/activity_info have unresolved constants. Gate on fixtures. [ringverse]
   - **`0x50` decode formula (PR #960 investigation, live Gen 3, 2026-07-02) [oura-rs]:** byte0 = a `state` code (activity-category, meaning unconfirmed); every following byte = one MET sample, `met = byte × 0.1` for `byte < 0x80`, else `met = 12.8 + (byte − 128) × 0.2` (two-slope: 0.1-MET resolution to 12.7, 0.2 steps above). **Plausible against six real Gen 3 captures** across two sessions - a full day from steady resting (0.9–1.1 MET) through a vigorous-activity burst (7.4 MET), everything physiologically sane, nothing negative or absurd - but **NOT ground-truth-validated** against the Oura app's own MET/step numbers. Stays Tier B: NOOP decodes it (`OuraDecoders.decodeActivityInfo` → `OuraEvent.activityInfo`, both platforms) but gates it behind `allowTierB`, logs it for investigation only, and never folds it into `OuraStreamMapping`/scoring - and NEVER derives a step count from it. `0x51`/`0x52` activity_summary stay fully undecoded (raw Tier-B bytes only).
@@ -567,6 +579,11 @@ Decoder revision 2 corrects the native phase codebook and replays each retained 
 one atomic `OURA_SLEEP_PHASE_SERIES` diagnostic event. The new kind intentionally does not collide with
 legacy `OURA_SLEEP_PHASE` rows that may contain only the first code. Neither event kind feeds scoring.
 
+Decoder revision 3 replays retained Ring 4 `0x47` and `0x72` records as timestamped
+`OURA_MOTION_SUMMARY` and `OURA_SLEEP_ACM_PERIOD` diagnostic events. Their clean-room byte layouts and
+wire shapes are hardware-backed, but their unresolved semantic fields remain units-neutral and cannot
+feed scoring. The original TLVs remain available for lossless future re-decoding.
+
 The `oura-decode` CLI uses the same inventory while replaying an opt-in capture. It counts reassembled TLVs,
 not capture fragments, so a split record or several records packed into one notification cannot create a
 false tag count. Its values-free inventory is written to stderr; `--json` stdout remains machine-readable.
@@ -577,6 +594,8 @@ false tag count. Its values-free inventory is written to stderr; `--json` stdout
 - Confirm Ring-5 `…0004/0005/0006` roles before writing to them (currently unused).
 - Resolve the `0x0D` battery percent-vs-voltage offset per generation via captured fixtures (§6.10).
 - Validate all Tier-B sleep/activity/step layouts against real captures before enabling in scoring.
+- Correlate `0x47` motion and `0x72` sleep-ACM diagnostic fields against an official-app or independent
+  accelerometer reference before using them in sleep staging or activity scoring.
 - Confirm live-HR `0x02` path on actual Gen-4/Gen-5 hardware (only Gen-3 is verified in the corpus).
 - Compare the passive inventory from each hardware tuple before adding a decoder; an online reference's
   tag list is not evidence that a particular ring/firmware emitted that tag.

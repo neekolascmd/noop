@@ -709,8 +709,31 @@ class OuraDriverTest {
         assertEquals(TrustTier.DIAGNOSTIC, OuraEventTag.SPO2_RATIO_PI.tier)
         assertEquals(TrustTier.DIAGNOSTIC, OuraEventTag.SLEEP_PHASE.tier)
         assertEquals(TrustTier.DIAGNOSTIC, OuraEventTag.SLEEP_PHASE_ALT.tier)
+        assertEquals(TrustTier.DIAGNOSTIC, OuraEventTag.MOTION.tier)
+        assertEquals(TrustTier.DIAGNOSTIC, OuraEventTag.SLEEP_ACM_PERIOD.tier)
         assertEquals(TrustTier.TIER_B, OuraEventTag.SLEEP_PHASE_INFO.tier)
         assertEquals("SLEEP_PHASE_INFO", OuraEventTag.SLEEP_PHASE_INFO.tagName)
+    }
+
+    @Test
+    fun testIngestRoutesHardwareBackedMotionDiagnosticsWithoutTierBFlag() {
+        val d = OuraDriver(ringGen = OuraRingGen.GEN4, authKey = key)
+        val motion = OuraRecord(0x47, rt, bytes("b101fe7f8506"))
+        val sleepAcm = OuraRecord(0x72, rt, bytes("80020003ff040050ff0f00a8"))
+        assertEquals(
+            OuraEvent.MotionSummaryEvent(
+                OuraMotionSummary(
+                    rt, 5, 17, 8, -16, 1016,
+                    lowIntensity = 5, lowIntensityFlag = true,
+                    highIntensity = 6, highIntensityFlag = false,
+                ),
+            ),
+            d.ingest(motion).first(),
+        )
+        assertEquals(
+            OuraEvent.SleepAcmPeriodEvent(OuraDecoders.decodeSleepAcmPeriod(sleepAcm)!!),
+            d.ingest(sleepAcm).first(),
+        )
     }
 
     @Test

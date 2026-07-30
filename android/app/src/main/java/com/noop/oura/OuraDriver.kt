@@ -669,9 +669,11 @@ class OuraDriver(
             OuraEventTag.MOTION_PERIOD ->
                 (OuraDecoders.decodeMotionPeriod(record) ?: emptyList()).map { OuraEvent.MotionEvent(it) }
             OuraEventTag.MOTION ->
-                // 0x47 motion_events: surfaced as state-free motion is out of v1 scope; decode to nothing
-                // rather than guess the partial layout. Per OURA_PROTOCOL.md s6.13.
-                emptyList()
+                OuraDecoders.decodeMotionSummary(record)
+                    ?.let { listOf(OuraEvent.MotionSummaryEvent(it)) } ?: emptyList()
+            OuraEventTag.SLEEP_ACM_PERIOD ->
+                OuraDecoders.decodeSleepAcmPeriod(record)
+                    ?.let { listOf(OuraEvent.SleepAcmPeriodEvent(it)) } ?: emptyList()
 
             // --- Diagnostic sleep phase: codebook/order are known; cadence is not production-qualified ---
             OuraEventTag.SLEEP_PHASE, OuraEventTag.SLEEP_PHASE_ALT ->
