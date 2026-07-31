@@ -232,20 +232,75 @@ final class WearableExportImporterTests: XCTestCase {
         XCTAssertEqual(d.steps, 8421)     // CSV fills the step gap JSON lacked
     }
 
-    func testLoneHeartRateCSVRoutesToOuraButImportsNoDailyData() {
-        // The exact #857 input: a single raw `heartrate.csv` (timestamped samples, no daily summary). It
-        // must route to Oura (so we can speak to it) yet fold to NOTHING, no fabricated day.
+    func testLoneHeartRateCSVImportsTimestampedStreamWithoutFabricatingDailyData() throws {
+        // The exact #857 input now becomes a useful local HR stream while remaining honest about the
+        // absence of daily rollups and sleeps.
         let csv = """
         timestamp,heart_rate
         2026-06-01T09:00:00+00:00,62
         2026-06-01T09:01:00+00:00,64
+        bad,80
+        2026-06-01T09:02:00+00:00,0
+        2026-06-01T09:03:00+00:00,1e308
+        2026-06-01T09:00:00+00:00,70
         """
         let files = ["heartrate.csv": bytes(csv)]
         XCTAssertEqual(WearableExportImporter.detectBrand(files), .oura)
-        XCTAssertTrue(WearableExportImporter.onlyHeartRateCSV(files))
         let r = WearableExportImporter.parse(brand: .oura, files: files)
         XCTAssertTrue(r.days.isEmpty)
         XCTAssertTrue(r.sleeps.isEmpty)
+        XCTAssertEqual(r.heartRates.map(\.bpm), [62, 64])
+        XCTAssertEqual(
+            r.heartRates.first?.timestamp,
+            try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-06-01T09:00:00Z")))
+        XCTAssertEqual(r.summary.recordCount, 2)
+        XCTAssertEqual(r.summary.countsByCategory["heartRateSamples"], 2)
+        XCTAssertTrue(WearableExportImporter.summaryText(r).contains("2 HR samples"))
+    }
+
+    func testOuraOfficialDiscreteHeartRateJSONUsesUnixFallback() throws {
+        let json = """
+        { "data": [
+            { "timestamp": "2026-06-01T09:00:00+00:00",
+              "timestamp_unix": 1780304400000, "bpm": 61, "source": "awake" },
+            { "timestamp": "bad", "timestamp_unix": 1780304460000,
+              "bpm": 64, "source": "rest" },
+            { "timestamp": "2026-06-01T09:02:00+00:00",
+              "timestamp_unix": 1780304520000, "bpm": 0, "source": "awake" } ] }
+        """
+        let files = ["heartrate.json": bytes(json)]
+        XCTAssertEqual(WearableExportImporter.detectBrand(files), .oura)
+        let r = WearableExportImporter.parse(brand: .oura, files: files)
+        XCTAssertEqual(r.heartRates.map(\.bpm), [61, 64])
+        XCTAssertEqual(
+            r.heartRates[1].timestamp,
+            Date(timeIntervalSince1970: 1_780_304_460))
+    }
+
+    func testOuraSleepHeartRateSeriesKeepsGapsAndDiscreteSampleWinsCollision() {
+        let json = """
+        {
+          "heartrate": [
+            { "timestamp": "2026-06-01T00:00:00+00:00", "bpm": 60, "source": "sleep" }
+          ],
+          "sleep": [
+            { "day": "2026-06-01",
+              "bedtime_start": "2026-06-01T00:00:00+00:00",
+              "bedtime_end": "2026-06-01T01:00:00+00:00",
+              "heart_rate": {
+                "timestamp": "2026-06-01T00:00:00+00:00",
+                "interval": 300,
+                "items": [90, 50.4, null, 52.6, 301]
+              }
+            }
+          ]
+        }
+        """
+        let r = WearableExportImporter.parse(brand: .oura, files: ["oura.json": bytes(json)])
+        XCTAssertEqual(r.heartRates.map(\.bpm), [60, 50, 53])
+        XCTAssertEqual(
+            r.heartRates.map { Int($0.timestamp.timeIntervalSince1970) },
+            [1_780_272_000, 1_780_272_300, 1_780_272_900])
     }
 
     func testOuraRealSchemaSemicolonPerCategoryCSVs() {

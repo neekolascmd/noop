@@ -202,19 +202,68 @@ class WearableExportImporterTest {
     }
 
     @Test
-    fun loneHeartRateCsvRoutesToOuraButImportsNothing() {
-        // The exact #857 input: a single raw heartrate.csv (timestamped samples, no daily summary).
+    fun loneHeartRateCsvImportsTimestampedStreamWithoutFabricatingDailyData() {
+        // The exact #857 input now becomes local HR while days/sleeps stay honestly absent.
         val csv = """
             timestamp,heart_rate
             2026-06-01T09:00:00+00:00,62
             2026-06-01T09:01:00+00:00,64
+            bad,80
+            2026-06-01T09:02:00+00:00,0
+            2026-06-01T09:03:00+00:00,1e308
+            2026-06-01T09:00:00+00:00,70
         """
         val files = mapOf("heartrate.csv" to bytes(csv))
         assertEquals(WearableExportImporter.Brand.OURA, WearableExportImporter.detectBrand(files))
-        assertTrue(WearableExportImporter.onlyHeartRateCsv(files))
         val p = WearableExportImporter.parseOura(files)
         assertTrue(p.days.isEmpty())
         assertTrue(p.sleeps.isEmpty())
+        assertEquals(listOf(62, 64), p.heartRates.map { it.bpm })
+        assertEquals(Instant.parse("2026-06-01T09:00:00Z").epochSecond, p.heartRates.first().ts)
+    }
+
+    @Test
+    fun ouraOfficialDiscreteHeartRateJsonUsesUnixFallback() {
+        val json = """
+            { "data": [
+                { "timestamp": "2026-06-01T09:00:00+00:00",
+                  "timestamp_unix": 1780304400000, "bpm": 61, "source": "awake" },
+                { "timestamp": "bad", "timestamp_unix": 1780304460000,
+                  "bpm": 64, "source": "rest" },
+                { "timestamp": "2026-06-01T09:02:00+00:00",
+                  "timestamp_unix": 1780304520000, "bpm": 0, "source": "awake" } ] }
+        """
+        val files = mapOf("heartrate.json" to bytes(json))
+        assertEquals(WearableExportImporter.Brand.OURA, WearableExportImporter.detectBrand(files))
+        val p = WearableExportImporter.parseOura(files)
+        assertEquals(listOf(61, 64), p.heartRates.map { it.bpm })
+        assertEquals(1_780_304_460L, p.heartRates[1].ts)
+    }
+
+    @Test
+    fun ouraSleepHeartRateSeriesKeepsGapsAndDiscreteSampleWinsCollision() {
+        val json = """
+            {
+              "heartrate": [
+                { "timestamp": "2026-06-01T00:00:00+00:00", "bpm": 60, "source": "sleep" }
+              ],
+              "sleep": [
+                { "day": "2026-06-01",
+                  "bedtime_start": "2026-06-01T00:00:00+00:00",
+                  "bedtime_end": "2026-06-01T01:00:00+00:00",
+                  "heart_rate": {
+                    "timestamp": "2026-06-01T00:00:00+00:00",
+                    "interval": 300,
+                    "items": [90, 50.4, null, 52.6, 301]
+                  }
+                }
+              ]
+            }
+        """
+        val p = WearableExportImporter.parseOura(mapOf("oura.json" to bytes(json)))
+        assertEquals(listOf(60, 50, 53), p.heartRates.map { it.bpm })
+        assertEquals(listOf(1_780_272_000L, 1_780_272_300L, 1_780_272_900L),
+            p.heartRates.map { it.ts })
     }
 
     @Test

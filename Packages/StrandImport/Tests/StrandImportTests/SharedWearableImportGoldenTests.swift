@@ -21,6 +21,10 @@ final class SharedWearableImportGoldenTests: XCTestCase {
 
             XCTAssertEqual(result.days.count, try integer(expected["dayCount"]), id)
             XCTAssertEqual(result.sleeps.count, try integer(expected["sleepCount"]), id)
+            XCTAssertEqual(
+                result.heartRates.count,
+                (expected["heartRateCount"] as? NSNumber)?.intValue ?? 0,
+                id)
 
             if let dayExpected = expected["firstDay"] as? [String: Any] {
                 let day = try XCTUnwrap(result.days.first, id)
@@ -54,6 +58,15 @@ final class SharedWearableImportGoldenTests: XCTestCase {
                                        accuracy: tolerance, id)
                     }
                 }
+            }
+
+            if let heartRateExpected = expected["firstHeartRate"] as? [String: Any] {
+                let sample = try XCTUnwrap(result.heartRates.first, id)
+                XCTAssertEqual(sample.bpm, try integer(heartRateExpected["bpm"]), id)
+                XCTAssertEqual(
+                    Int(sample.timestamp.timeIntervalSince1970),
+                    try integer(heartRateExpected["timestamp"]),
+                    id)
             }
         }
     }

@@ -133,6 +133,7 @@ fun DataSourcesScreen(vm: AppViewModel) {
     var xiaomiDays by remember { mutableStateOf<Int?>(null) }
     // Imported Oura / Fitbit / Garmin exports write daily metrics under their own per-brand source.
     var wearableDays by remember { mutableStateOf<Int?>(null) }
+    var wearableHasHr by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         val now = System.currentTimeMillis() / 1000
@@ -151,6 +152,9 @@ fun DataSourcesScreen(vm: AppViewModel) {
         wearableDays = WearableExportImporter.Brand.values().sumOf {
             vm.repo.metricSeries(it.sourceId, "rhr", "0000-01-01", "9999-12-31").size +
                 vm.repo.metricSeries(it.sourceId, "sleep_total_min", "0000-01-01", "9999-12-31").size
+        }
+        wearableHasHr = WearableExportImporter.Brand.values().any {
+            vm.repo.latestHrSampleTs(it.sourceId) != null
         }
     }
 
@@ -215,6 +219,9 @@ fun DataSourcesScreen(vm: AppViewModel) {
         wearableDays = WearableExportImporter.Brand.values().sumOf {
             vm.repo.metricSeries(it.sourceId, "rhr", "0000-01-01", "9999-12-31").size +
                 vm.repo.metricSeries(it.sourceId, "sleep_total_min", "0000-01-01", "9999-12-31").size
+        }
+        wearableHasHr = WearableExportImporter.Brand.values().any {
+            vm.repo.latestHrSampleTs(it.sourceId) != null
         }
     }
 
@@ -684,21 +691,27 @@ fun DataSourcesScreen(vm: AppViewModel) {
             title = "Oura / Fitbit / Garmin export",
             icon = Icons.Filled.Watch,
             tint = Palette.metricPurple,
-            subtitle = "Import your own data export from Oura, Fitbit or Garmin: sleep, resting heart " +
-                "rate, HRV, steps and more, where the export has them. Download it from the brand's app " +
-                "(Oura: Account → Export Data; Fitbit: Google Takeout; Garmin: Export Your Data), then " +
-                "choose the file here. Fully offline; nothing leaves your phone. Each brand's own " +
-                "readiness or sleep score is kept for reference only. Your scores stay yours.",
+            subtitle = "Import your own data export from Oura, Fitbit or Garmin: sleep, timestamped " +
+                "heart-rate history, resting heart rate, HRV, steps and more, where the export has them. " +
+                "Download it from the brand's app (Oura: Account → Export Data; Fitbit: Google Takeout; " +
+                "Garmin: Export Your Data), then choose the file here. Fully offline; nothing leaves " +
+                "your phone. Each brand's own readiness or sleep score is kept for reference only. " +
+                "Your scores stay yours.",
         ) {
-            val hasDays = (wearableDays ?: 0) > 0
+            val hasData = (wearableDays ?: 0) > 0 || wearableHasHr
             StatePill(
-                title = if (hasDays) "Imported" else "Nothing imported",
-                tone = if (hasDays) StrandTone.Accent else StrandTone.Neutral,
+                title = if (hasData) "Imported" else "Nothing imported",
+                tone = if (hasData) StrandTone.Accent else StrandTone.Neutral,
                 showsDot = true,
             )
             CountLine(
-                primary = wearableDays?.let { "$it day metrics" } ?: "—",
-                secondary = "Oura JSON · Fitbit Takeout · Garmin GDPR (daily metrics + sleep)",
+                primary = when {
+                    (wearableDays ?: 0) > 0 && wearableHasHr -> "$wearableDays day metrics · HR history"
+                    (wearableDays ?: 0) > 0 -> "$wearableDays day metrics"
+                    wearableHasHr -> "HR history"
+                    else -> "—"
+                },
+                secondary = "Oura JSON/CSV · Fitbit Takeout · Garmin GDPR (daily metrics + sleep + HR)",
             )
             BackupButton(
                 label = "Import wearable export…",

@@ -111,6 +111,7 @@ class SharedAnalyticsGoldenTest {
             val expected = testCase.getJSONObject("expected")
             assertEquals(id, expected.getInt("dayCount"), parsed.days.size)
             assertEquals(id, expected.getInt("sleepCount"), parsed.sleeps.size)
+            assertEquals(id, expected.optInt("heartRateCount", 0), parsed.heartRates.size)
 
             expected.optJSONObject("firstDay")?.let { dayExpected ->
                 val day = parsed.days.first()
@@ -140,6 +141,11 @@ class SharedAnalyticsGoldenTest {
                     assertEquals(id, sleepExpected.getLong("firstStageDurationSec"),
                         stages.getJSONObject(0).getLong("end") - stages.getJSONObject(0).getLong("start"))
                 }
+            }
+            expected.optJSONObject("firstHeartRate")?.let { heartRateExpected ->
+                val sample = parsed.heartRates.first()
+                assertEquals(id, heartRateExpected.getInt("bpm"), sample.bpm)
+                assertEquals(id, heartRateExpected.getLong("timestamp"), sample.ts)
             }
         }
     }
