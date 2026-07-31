@@ -27,8 +27,8 @@ struct DataSourcesView: View {
     @State private var activityFileSummary: String?
     @State private var activityFileFailed = false
     // Wearable export (Oura / Fitbit / Garmin own-data export) import state — same lightweight,
-    // self-contained pattern: parse the file, upsert daily metrics + sleep sessions under the brand's
-    // own source, refresh. The brand's own scores are stored as reference only, never NOOP scores.
+    // self-contained pattern: parse the file, upsert daily metrics + sleep/workout sessions under the
+    // brand's own source, refresh. Its own scores are stored as reference only, never NOOP scores.
     @State private var wearableImporting = false
     @State private var wearableSummary: String?
     @State private var wearableFailed = false
@@ -265,7 +265,7 @@ struct DataSourcesView: View {
     private var wearableCard: some View {
         card(title: String(localized: "Oura / Fitbit / Garmin export"), icon: "figure.mind.and.body",
              tint: StrandPalette.metricPurple,
-             subtitle: String(localized: "Import your own data export from Oura, Fitbit or Garmin: sleep, timestamped heart-rate history, resting heart rate, HRV, steps and more, where the export has them. Download it from the brand's app (Oura: Account → Export Data; Fitbit: Google Takeout; Garmin: Export Your Data), then choose the file here. Fully offline; nothing leaves \(Platform.deviceNounPhrase). Each brand's own readiness or sleep score is kept for reference only. Your scores stay yours.")) {
+             subtitle: String(localized: "Import your own data export from Oura, Fitbit or Garmin: sleep, timestamped heart-rate history, workouts, resting heart rate, HRV, steps and more, where the export has them. Download it from the brand's app (Oura: Account → Export Data; Fitbit: Google Takeout; Garmin: Export Your Data), then choose the file here. Fully offline; nothing leaves \(Platform.deviceNounPhrase). Each brand's own readiness or sleep score is kept for reference only. Your scores stay yours.")) {
             HStack(spacing: NoopMetrics.space3) {
                 Button { presentImporter(.wearable) } label: {
                     Label(wearableImporting ? "Importing…" : "Choose export…", systemImage: "tray.and.arrow.down")
@@ -520,8 +520,9 @@ struct DataSourcesView: View {
     }
 
     /// Parse a user's own Oura / Fitbit / Garmin data export and upsert it under the brand's own source
-    /// (daily metrics + sleep sessions + reference-only metric series). The brand's own readiness/sleep
-    /// score is NEVER mapped to a NOOP Charge/Effort/Rest — NOOP recomputes its own from the raw inputs.
+    /// (daily metrics + sleep sessions + workout summaries + reference-only metric series). The brand's
+    /// own readiness/sleep score is NEVER mapped to a NOOP Charge/Effort/Rest — NOOP recomputes its own
+    /// from the raw inputs.
     private func importWearable(url: URL) {
         wearableImporting = true
         wearableSummary = nil
@@ -568,6 +569,7 @@ struct DataSourcesView: View {
                 logImport(
                     "\(result.brand.displayName) export: \(result.days.count) days, "
                     + "\(result.sleeps.count) sleeps, \(result.heartRates.count) HR samples, "
+                    + "\(result.workouts.count) workouts, "
                     + "\(result.summary.skippedSpans) rejected")
             } catch {
                 wearableSummary = String(localized: "Import failed: \(error.localizedDescription)")

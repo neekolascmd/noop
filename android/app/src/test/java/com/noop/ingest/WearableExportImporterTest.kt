@@ -9,8 +9,9 @@ import java.time.Instant
 
 /**
  * Pins the offline file-import of a user's OWN Oura / Fitbit / Garmin data export onto NOOP's daily
- * metrics + sleep sessions. Kotlin twin of the macOS WearableExportImporterTests — same arithmetic,
- * same brand detection, same honesty rules (a brand's own score is reference-only, never Charge).
+ * metrics + sleep sessions + exported workout summaries. Kotlin twin of the macOS
+ * WearableExportImporterTests — same arithmetic, same brand detection, same honesty rules (a brand's
+ * own score is reference-only, never Charge).
  *
  * Tests the pure parse functions directly (no Room) with tiny inline fixtures.
  */
@@ -93,6 +94,48 @@ class WearableExportImporterTest {
         val p = WearableExportImporter.parseOura(files)
         assertEquals(1, p.sleeps.size)
         assertEquals(360.0, p.sleeps[0].totalSleepMin!!, 1e-6)
+    }
+
+    @Test
+    fun ouraOfficialWorkoutDataWrapperImportsOnlyExportedFacts() {
+        val json = """
+            { "data": [
+                { "id": "workout-1", "activity": "strength_training", "day": "2026-06-02",
+                  "start_datetime": "2026-06-02T17:15:00+00:00",
+                  "end_datetime": "2026-06-02T18:00:00+00:00",
+                  "calories": 312.5, "distance": 0, "intensity": "moderate",
+                  "source": "confirmed", "label": "  Upper\nbody  " } ] }
+        """
+        val files = mapOf("export.json" to bytes(json))
+        assertEquals(WearableExportImporter.Brand.OURA, WearableExportImporter.detectBrand(files))
+
+        val p = WearableExportImporter.parseOura(files)
+        assertTrue(p.days.isEmpty())
+        assertTrue(p.sleeps.isEmpty())
+        assertTrue(p.heartRates.isEmpty())
+        val workout = p.workouts.single()
+        assertEquals("strength_training", workout.activity)
+        assertEquals("Strength Training", ActivityFileImporter.workoutSport(workout.activity))
+        assertEquals(45L * 60L, workout.endTs - workout.startTs)
+        assertEquals(312.5, workout.caloriesKcal!!, 1e-6)
+        assertEquals(0.0, workout.distanceM!!, 1e-6)
+        assertEquals("moderate", workout.intensity)
+        assertEquals("confirmed", workout.source)
+        assertEquals("Upper body", workout.label)
+    }
+
+    @Test
+    fun ouraWorkoutCsvIsDeduplicatedAndRejectsInvalidRows() {
+        val csv = """
+            activity,day,start_datetime,end_datetime,calories,distance,intensity,source,label
+            running,2026-06-03,2026-06-03T07:00:00+00:00,2026-06-03T07:30:00+00:00,250,5000,easy,manual,Park run
+            running,2026-06-03,2026-06-03T07:00:00+00:00,2026-06-03T07:30:00+00:00,250,5000,easy,manual,Park run
+            walking,2026-06-03,not-a-date,2026-06-03T08:00:00+00:00,20,500,easy,manual,Bad time
+        """
+        val p = WearableExportImporter.parseOura(mapOf("workout.csv" to bytes(csv)))
+        val workout = p.workouts.single()
+        assertEquals("running", workout.activity)
+        assertEquals(5_000.0, workout.distanceM!!, 1e-6)
     }
 
     @Test
@@ -545,6 +588,14 @@ class WearableExportImporterTest {
     fun nonWellnessFilesAreFilteredOut() {
         assertTrue(WearableExportImporter.isWellnessFile("sleep-2026-06-01.json", bytes("[]")))
         assertTrue(WearableExportImporter.isWellnessFile("2026_sleepdata.json", bytes("[]")))
+        assertTrue(WearableExportImporter.isWellnessFile(
+            "export.json",
+            bytes("""
+                { "data": [ { "activity": "walking",
+                  "start_datetime": "2026-06-01T10:00:00+00:00",
+                  "end_datetime": "2026-06-01T10:30:00+00:00" } ] }
+            """),
+        ))
         assertTrue(!WearableExportImporter.isWellnessFile("device_settings.json", bytes("{}")))
         assertTrue(!WearableExportImporter.isWellnessFile("readme.txt", bytes("hi")))
     }

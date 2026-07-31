@@ -545,6 +545,10 @@ final class Repository: ObservableObject {
         // Whole recordable epoch in unix seconds [0, ~2^31) so every recorded workout row is counted.
         var workouts: [WorkoutRow] = []
         for id in importedReadIds { workouts += (try? await store.workouts(deviceId: id, from: 0, to: 4_102_444_800, limit: 1_000_000)) ?? [] }
+        for id in Self.wearableImportSources {
+            workouts += (try? await store.workouts(
+                deviceId: id, from: 0, to: 4_102_444_800, limit: 1_000_000)) ?? []
+        }
         workouts = Self.dedupWorkoutsByNaturalKey(workouts)
         // lastRenderRows = the size of the merged DAILY set the dashboard list/charts actually render: the
         // union of distinct days across the three daily sources (imported strap + on-device computed + Apple)
@@ -1935,6 +1939,11 @@ final class Repository: ObservableObject {
         for id in importedReadIds { rows += (try? await store.workouts(deviceId: id, from: lo, to: hi, limit: 5000)) ?? [] }
         for id in computedReadIds { rows += (try? await store.workouts(deviceId: id, from: lo, to: hi, limit: 5000)) ?? [] }
         rows += (try? await store.workouts(deviceId: "apple-health", from: lo, to: hi, limit: 5000)) ?? []
+        // Offline Oura/Fitbit/Garmin export workouts use their import source ids, separate from a live
+        // device. Oura currently populates this lane; the full list keeps the read path future-proof.
+        for id in Self.wearableImportSources {
+            rows += (try? await store.workouts(deviceId: id, from: lo, to: hi, limit: 5000)) ?? []
+        }
         // Imported lifting sessions (Hevy / Liftosaur) live under their own "lifting" source.
         rows += (try? await store.workouts(deviceId: "lifting", from: lo, to: hi, limit: 5000)) ?? []
         rows = Self.dedupWorkoutsByNaturalKey(rows)
@@ -2204,7 +2213,7 @@ final class Repository: ObservableObject {
             switch WorkoutSource.classify(r.source) {
             case .detected: await dismissDetected(r)
             case .manual:   await deleteWorkout(r)
-            case .whoop, .apple, .lifting, .activityFile:
+            case .whoop, .apple, .wearable, .lifting, .activityFile:
                 // Defensive: canMerge already excludes imported rows; never rewrite imported history.
                 continue
             }
@@ -2229,7 +2238,7 @@ final class Repository: ObservableObject {
             switch WorkoutSource.classify(r.source) {
             case .detected: await dismissDetected(r)
             case .manual:   await deleteWorkout(r)
-            case .whoop, .apple, .lifting, .activityFile: continue
+            case .whoop, .apple, .wearable, .lifting, .activityFile: continue
             }
         }
     }

@@ -112,6 +112,7 @@ class SharedAnalyticsGoldenTest {
             assertEquals(id, expected.getInt("dayCount"), parsed.days.size)
             assertEquals(id, expected.getInt("sleepCount"), parsed.sleeps.size)
             assertEquals(id, expected.optInt("heartRateCount", 0), parsed.heartRates.size)
+            assertEquals(id, expected.optInt("workoutCount", 0), parsed.workouts.size)
 
             expected.optJSONObject("firstDay")?.let { dayExpected ->
                 val day = parsed.days.first()
@@ -146,6 +147,19 @@ class SharedAnalyticsGoldenTest {
                 val sample = parsed.heartRates.first()
                 assertEquals(id, heartRateExpected.getInt("bpm"), sample.bpm)
                 assertEquals(id, heartRateExpected.getLong("timestamp"), sample.ts)
+            }
+            expected.optJSONObject("firstWorkout")?.let { workoutExpected ->
+                val workout = parsed.workouts.first()
+                assertEquals(id, workoutExpected.getLong("start"), workout.startTs)
+                assertEquals(id, workoutExpected.getLong("end"), workout.endTs)
+                assertEquals(id, workoutExpected.getString("activity"), workout.activity)
+                assertEquals(id, workoutExpected.getString("intensity"), workout.intensity)
+                assertEquals(id, workoutExpected.getString("source"), workout.source)
+                assertEquals(id, workoutExpected.getString("label"), workout.label)
+                assertEquals(id, workoutExpected.getDouble("caloriesKcal"),
+                    workout.caloriesKcal!!, metricTolerance)
+                assertEquals(id, workoutExpected.getDouble("distanceM"),
+                    workout.distanceM!!, metricTolerance)
             }
         }
     }

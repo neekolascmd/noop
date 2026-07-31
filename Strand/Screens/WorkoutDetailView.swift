@@ -429,6 +429,7 @@ struct WorkoutDetailView: View {
             switch WorkoutSource.classify(source) {
             case .whoop:    return (String(localized: "Whoop"), StrandPalette.accent)
             case .apple:    return (String(localized: "Apple"), StrandPalette.metricCyan)
+            case .wearable: return (WorkoutSource.wearableLabel(source), StrandPalette.metricPurple)
             case .detected: return (String(localized: "Detected"), StrandPalette.metricPurple)
             case .manual:   return (String(localized: "Manual"), StrandPalette.statusWarning)
             case .lifting:  return (String(localized: "Lifting"), StrandPalette.zone2)

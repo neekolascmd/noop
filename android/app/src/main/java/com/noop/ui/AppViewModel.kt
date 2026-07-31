@@ -39,6 +39,7 @@ import com.noop.data.WorkoutRow
 import com.noop.ingest.HealthConnectImporter
 import com.noop.ingest.HealthConnectWriter
 import com.noop.ingest.LiftingImporter
+import com.noop.ingest.WearableExportImporter
 import com.noop.notif.IllnessAlertNotifier
 import com.noop.notif.ScheduledReportNotifier
 import com.noop.notif.ScheduledReportPolicy
@@ -1288,6 +1289,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             // a strength-volume estimate, not cardio. Kept OUT of the strap HR-fill below so we never
             // fabricate a heart rate the lift never measured.
             val lifting = repository.workouts(LiftingImporter.SOURCE_ID, 0L, now)
+            // Offline wearable exports are separate provenance sources. Oura workout summaries do not
+            // carry HR/strain/zones/routes, so keep them out of strap HR-fill and show only exported facts.
+            val wearable = WearableExportImporter.Brand.values().flatMap {
+                repository.workouts(it.sourceId, 0L, now)
+            }
             val markers = repository.dismissedDetected(deviceId)
             // Fill imported sessions' missing HR from strap samples (#77), same as before; detected /
             // manual rows already carry their own HR so they pass through unchanged. #961: also backfill a
@@ -1301,7 +1307,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             // #687: collapse the SAME activity tracked live under the strap AND imported from Health
             // Connect / Apple Health into one richer entry — they sit under different sources so without
             // this they show as two sessions. Dedup runs on the dismissed-filtered set, before the sort.
-            val filteredRows = WorkoutEditing.filterDismissed(filled + lifting, markers)
+            val filteredRows = WorkoutEditing.filterDismissed(filled + lifting + wearable, markers)
             // Workouts & GPS test mode: when on, run the dedup twin which returns the BYTE-IDENTICAL kept list
             // plus a trace line per collapsed cross-source pair, tagged .workouts. Zero-cost when off (the gate
             // is one SharedPreferences bool read), and the kept list equals dedupCrossSource exactly, so the

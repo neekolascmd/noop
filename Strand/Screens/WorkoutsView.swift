@@ -475,13 +475,14 @@ struct WorkoutsView: View {
 
     /// The origin classes offered in the Source filter (imported + on-device), in a stable menu order.
     private static let sourceFilterOptions: [WorkoutSource] =
-        [.whoop, .apple, .detected, .manual, .lifting, .activityFile]
+        [.whoop, .apple, .wearable, .detected, .manual, .lifting, .activityFile]
 
     /// The Source-filter menu label for an origin class (matches the row source badges).
     private static func sourceFilterLabel(_ c: WorkoutSource) -> String {
         switch c {
         case .whoop:        return String(localized: "Whoop")
         case .apple:        return String(localized: "Apple")
+        case .wearable:     return String(localized: "Wearable")
         case .detected:     return String(localized: "Detected")
         case .manual:       return String(localized: "Manual")
         case .lifting:      return String(localized: "Lifting")
@@ -1351,7 +1352,7 @@ struct WorkoutsView: View {
             Button("Edit…") { editWorkout(row) }
             Divider()
             Button("Delete", role: .destructive) { delete(row) }
-        case .whoop, .apple, .lifting, .activityFile:
+        case .whoop, .apple, .wearable, .lifting, .activityFile:
             // Imported history is read-only; offer a copy-to-manual edit path that doesn't touch it.
             Button("Duplicate as manual…") { editWorkout(asManualCopy(row)) }
         }
@@ -1389,6 +1390,9 @@ struct WorkoutsView: View {
             switch WorkoutSource.classify(source) {
             case .whoop:    return (String(localized: "Whoop"), StrandPalette.accent, String(localized: "Source Whoop"))
             case .apple:    return (String(localized: "Apple"), StrandPalette.metricCyan, String(localized: "Source Apple Health"))
+            case .wearable:
+                let label = WorkoutSource.wearableLabel(source)
+                return (label, StrandPalette.metricPurple, "Source \(label) export")
             case .detected: return (String(localized: "Detected"), StrandPalette.metricPurple, String(localized: "Source on-device detected"))
             case .manual:   return (String(localized: "Manual"), StrandPalette.statusWarning, String(localized: "Source manual entry"))
             case .lifting:  return (String(localized: "Lifting"), StrandPalette.zone2, String(localized: "Source imported lifting log"))

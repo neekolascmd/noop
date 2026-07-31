@@ -420,7 +420,7 @@ private fun RangeBar(
 
 /** The origin classes offered in the Source filter, in a stable menu order (matches the row badges). */
 private val SOURCE_FILTER_OPTIONS = listOf(
-    WorkoutSource.WHOOP, WorkoutSource.APPLE, WorkoutSource.DETECTED,
+    WorkoutSource.WHOOP, WorkoutSource.APPLE, WorkoutSource.WEARABLE, WorkoutSource.DETECTED,
     WorkoutSource.MANUAL, WorkoutSource.LIFTING, WorkoutSource.ACTIVITY_FILE,
 )
 
@@ -428,6 +428,7 @@ private val SOURCE_FILTER_OPTIONS = listOf(
 private fun sourceFilterLabel(c: WorkoutSource): String = when (c) {
     WorkoutSource.WHOOP -> "Whoop"
     WorkoutSource.APPLE -> "Apple"
+    WorkoutSource.WEARABLE -> "Wearable"
     WorkoutSource.DETECTED -> "Detected"
     WorkoutSource.MANUAL -> "Manual"
     WorkoutSource.LIFTING -> "Lifting"
@@ -1485,7 +1486,8 @@ private fun RowActionsMenu(
                         onClick = { open = false; onDelete(row) },
                     )
                 }
-                WorkoutSource.WHOOP, WorkoutSource.APPLE, WorkoutSource.LIFTING, WorkoutSource.ACTIVITY_FILE -> {
+                WorkoutSource.WHOOP, WorkoutSource.APPLE, WorkoutSource.WEARABLE,
+                WorkoutSource.LIFTING, WorkoutSource.ACTIVITY_FILE -> {
                     DropdownMenuItem(
                         text = { Text("Duplicate as manual…", style = NoopType.body, color = Palette.textPrimary) },
                         onClick = { open = false; onEdit(row.copy(source = "manual", sport = WorkoutEditing.displaySport(row.sport))) },
@@ -1937,6 +1939,8 @@ private val WorkoutRow.sourceBadge: Pair<String, Color>
         WorkoutSource.MANUAL -> "Manual" to Palette.statusWarning
         WorkoutSource.LIFTING -> "Lifting" to Palette.zone2 // imported Hevy / Liftosaur strength log
         WorkoutSource.ACTIVITY_FILE -> "File" to Palette.metricAmber // imported GPX / TCX / FIT
+        WorkoutSource.WEARABLE ->
+            WorkoutEditing.wearableLabel(source) to Palette.metricPurple
         else -> when (workoutSourceLabel(deviceId, source)) {
             "HC" -> "HC" to Palette.metricPurple
             "Whoop" -> "Whoop" to Palette.accent

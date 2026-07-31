@@ -13,7 +13,7 @@ public enum DataSourceKind: String, Sendable, Codable, Equatable, CaseIterable {
     case xiaomiBand
     /// Oura Ring — the user's own Account data export (JSON), imported from the file
     /// Oura hands them. Sleep periods + daily readiness/activity → daily metrics + sleep
-    /// sessions. Fully offline, no Oura cloud/API.
+    /// sessions; official workout rows → local workout history. Fully offline, no Oura cloud/API.
     case ouraImport
     /// Fitbit — the user's own Google Takeout → Fitbit JSON export (per-day sleep /
     /// resting_heart_rate / steps / heart_rate files). Fully offline, no Fitbit/Google API.
@@ -608,12 +608,47 @@ public struct WearableHeartRateSample: Sendable, Equatable {
     }
 }
 
+/// One workout summary from a wearable-owned export. These are the vendor's recorded session facts,
+/// not a NOOP inference: missing calories, distance, intensity, source, or label stay nil. NOOP never
+/// invents HR, strain, zones, or a route for an exported summary that did not carry them.
+public struct WearableWorkoutSession: Sendable, Equatable {
+    public var start: Date
+    public var end: Date
+    public var activity: String
+    public var caloriesKcal: Double?
+    public var distanceM: Double?
+    public var intensity: String?
+    public var source: String?
+    public var label: String?
+
+    public init(
+        start: Date,
+        end: Date,
+        activity: String,
+        caloriesKcal: Double? = nil,
+        distanceM: Double? = nil,
+        intensity: String? = nil,
+        source: String? = nil,
+        label: String? = nil
+    ) {
+        self.start = start
+        self.end = end
+        self.activity = activity
+        self.caloriesKcal = caloriesKcal
+        self.distanceM = distanceM
+        self.intensity = intensity
+        self.source = source
+        self.label = label
+    }
+}
+
 /// Normalized output of parsing a wearable export (Oura / Fitbit / Garmin own-data export).
 public struct WearableImportResult: Sendable, Equatable {
     public var brand: WearableBrand
     public var days: [WearableDailyRow]
     public var sleeps: [WearableSleepSession]
     public var heartRates: [WearableHeartRateSample]
+    public var workouts: [WearableWorkoutSession]
     public var summary: ImportSummary
 
     public init(
@@ -621,12 +656,14 @@ public struct WearableImportResult: Sendable, Equatable {
         days: [WearableDailyRow],
         sleeps: [WearableSleepSession],
         heartRates: [WearableHeartRateSample] = [],
+        workouts: [WearableWorkoutSession] = [],
         summary: ImportSummary
     ) {
         self.brand = brand
         self.days = days
         self.sleeps = sleeps
         self.heartRates = heartRates
+        self.workouts = workouts
         self.summary = summary
     }
 }
