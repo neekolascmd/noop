@@ -3,8 +3,9 @@ import Foundation
 @testable import StrandImport
 
 /// Pins the offline file-import of a user's OWN Oura / Fitbit / Garmin data export onto NOOP's daily
-/// metrics + sleep sessions. Tiny inline fixtures per brand (no real account data). HONEST DATA:
-/// only fields the export carries are written; a brand's OWN score is reference-only, never Charge.
+/// metrics + sleep sessions + exported workout summaries. Tiny inline fixtures per brand (no real
+/// account data). HONEST DATA: only fields the export carries are written; a brand's OWN score is
+/// reference-only, never Charge.
 final class WearableExportImporterTests: XCTestCase {
 
     private func bytes(_ s: String) -> Data { s.data(using: .utf8)! }
@@ -115,6 +116,51 @@ final class WearableExportImporterTests: XCTestCase {
         let r = WearableExportImporter.parse(brand: .oura, files: files)
         XCTAssertEqual(r.sleeps.count, 1)
         XCTAssertEqual(r.sleeps[0].totalSleepMin!, 360, accuracy: 1e-6)
+    }
+
+    func testOuraOfficialWorkoutDataWrapperImportsOnlyExportedFacts() throws {
+        let json = """
+        { "data": [
+            { "id": "workout-1", "activity": "strength_training", "day": "2026-06-02",
+              "start_datetime": "2026-06-02T17:15:00+00:00",
+              "end_datetime": "2026-06-02T18:00:00+00:00",
+              "calories": 312.5, "distance": 0, "intensity": "moderate",
+              "source": "confirmed", "label": "  Upper\\nbody  " } ] }
+        """
+        let files = ["export.json": bytes(json)]
+        XCTAssertEqual(WearableExportImporter.detectBrand(files), .oura)
+
+        let result = WearableExportImporter.parse(brand: .oura, files: files)
+        let workout = try XCTUnwrap(result.workouts.first)
+        XCTAssertEqual(result.days.count, 0)
+        XCTAssertEqual(result.sleeps.count, 0)
+        XCTAssertEqual(result.heartRates.count, 0)
+        XCTAssertEqual(result.summary.countsByCategory["workouts"], 1)
+        XCTAssertEqual(workout.activity, "strength_training")
+        XCTAssertEqual(ActivityFileImporter.workoutSport(from: workout.activity), "Strength Training")
+        XCTAssertEqual(workout.end.timeIntervalSince(workout.start), 45 * 60, accuracy: 1e-6)
+        XCTAssertEqual(workout.caloriesKcal, 312.5)
+        XCTAssertEqual(workout.distanceM, 0)
+        XCTAssertEqual(workout.intensity, "moderate")
+        XCTAssertEqual(workout.source, "confirmed")
+        XCTAssertEqual(workout.label, "Upper body")
+    }
+
+    func testOuraWorkoutCSVIsDeduplicatedAndRejectsInvalidRows() throws {
+        let csv = """
+        activity,day,start_datetime,end_datetime,calories,distance,intensity,source,label
+        running,2026-06-03,2026-06-03T07:00:00+00:00,2026-06-03T07:30:00+00:00,250,5000,easy,manual,Park run
+        running,2026-06-03,2026-06-03T07:00:00+00:00,2026-06-03T07:30:00+00:00,250,5000,easy,manual,Park run
+        walking,2026-06-03,not-a-date,2026-06-03T08:00:00+00:00,20,500,easy,manual,Bad time
+        """
+        let result = WearableExportImporter.parse(
+            brand: .oura,
+            files: ["workout.csv": bytes(csv)])
+        let workout = try XCTUnwrap(result.workouts.first)
+        XCTAssertEqual(result.workouts.count, 1)
+        XCTAssertEqual(workout.activity, "running")
+        XCTAssertEqual(workout.distanceM, 5_000)
+        XCTAssertTrue(WearableExportImporter.summaryText(result).contains("1 workouts"))
     }
 
     func testOuraOfficialFiveMinuteSleepPhasesBecomeMergedHypnogram() throws {
@@ -540,5 +586,15 @@ final class WearableExportImporterTests: XCTestCase {
         XCTAssertNotNil(d)
         XCTAssertNil(d?.steps)                                   // 1e19 out of Int range → dropped
         XCTAssertEqual(d?.activeKcal, 500)                       // the valid field still imports
+    }
+
+    func testGenericOfficialWorkoutFilenamePassesContentFilter() {
+        let data = bytes("""
+        { "data": [ { "activity": "walking",
+          "start_datetime": "2026-06-01T10:00:00+00:00",
+          "end_datetime": "2026-06-01T10:30:00+00:00" } ] }
+        """)
+        XCTAssertTrue(WearableExportImporter.isWellnessFile("export.json", data: data))
+        XCTAssertFalse(WearableExportImporter.isWellnessFile("device_settings.json", data: bytes("{}")))
     }
 }

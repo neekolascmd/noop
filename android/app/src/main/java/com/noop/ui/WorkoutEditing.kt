@@ -16,7 +16,7 @@ import kotlin.math.roundToInt
  */
 
 /** Origin of a workout row, classified from its stored `source` column. */
-enum class WorkoutSource { WHOOP, APPLE, DETECTED, MANUAL, LIFTING, ACTIVITY_FILE }
+enum class WorkoutSource { WHOOP, APPLE, WEARABLE, DETECTED, MANUAL, LIFTING, ACTIVITY_FILE }
 
 object WorkoutEditing {
 
@@ -32,9 +32,18 @@ object WorkoutEditing {
             s == "manual" -> WorkoutSource.MANUAL
             s == "lifting" -> WorkoutSource.LIFTING       // imported Hevy / Liftosaur strength session
             s == "activity-file" -> WorkoutSource.ACTIVITY_FILE // imported GPX / TCX / FIT activity file
+            s == "oura-import" || s == "fitbit-import" || s == "garmin-import" ->
+                WorkoutSource.WEARABLE
             s.contains("whoop") -> WorkoutSource.WHOOP
             else -> WorkoutSource.APPLE
         }
+    }
+
+    fun wearableLabel(source: String): String = when (source.lowercase()) {
+        "oura-import" -> "Oura"
+        "fitbit-import" -> "Fitbit"
+        "garmin-import" -> "Garmin"
+        else -> "Wearable"
     }
 
     /**
@@ -159,8 +168,10 @@ object WorkoutEditing {
         val ra = richness(a)
         val rb = richness(b)
         if (ra != rb) return if (ra > rb) a else b
-        val ia = classify(a.source) == WorkoutSource.APPLE
-        val ib = classify(b.source) == WorkoutSource.APPLE
+        val ca = classify(a.source)
+        val cb = classify(b.source)
+        val ia = ca == WorkoutSource.APPLE || ca == WorkoutSource.WEARABLE
+        val ib = cb == WorkoutSource.APPLE || cb == WorkoutSource.WEARABLE
         if (ia != ib) return if (ia) b else a // keep the non-import on a richness tie
         val da = a.endTs - a.startTs
         val db = b.endTs - b.startTs
@@ -228,6 +239,7 @@ object WorkoutEditing {
     fun sourceLabel(row: WorkoutRow): String = when (classify(row.source)) {
         WorkoutSource.WHOOP -> "strap"
         WorkoutSource.APPLE -> "apple"
+        WorkoutSource.WEARABLE -> "wearable"
         WorkoutSource.DETECTED -> "detected"
         WorkoutSource.MANUAL -> "manual"
         WorkoutSource.LIFTING -> "lifting"
@@ -423,7 +435,8 @@ object WorkoutMerge {
     /** Only MANUAL and DETECTED rows can be merged (imported history stays read-only). */
     fun isMergeable(row: WorkoutRow): Boolean = when (WorkoutEditing.classify(row.source)) {
         WorkoutSource.MANUAL, WorkoutSource.DETECTED -> true
-        WorkoutSource.WHOOP, WorkoutSource.APPLE, WorkoutSource.LIFTING, WorkoutSource.ACTIVITY_FILE -> false
+        WorkoutSource.WHOOP, WorkoutSource.APPLE, WorkoutSource.WEARABLE,
+        WorkoutSource.LIFTING, WorkoutSource.ACTIVITY_FILE -> false
     }
 
     /** True when a set of selected rows can be merged: two or more, and every one is mergeable. */

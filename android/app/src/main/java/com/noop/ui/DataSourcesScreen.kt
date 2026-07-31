@@ -134,6 +134,7 @@ fun DataSourcesScreen(vm: AppViewModel) {
     // Imported Oura / Fitbit / Garmin exports write daily metrics under their own per-brand source.
     var wearableDays by remember { mutableStateOf<Int?>(null) }
     var wearableHasHr by remember { mutableStateOf(false) }
+    var wearableWorkouts by remember { mutableStateOf<Int?>(null) }
 
     LaunchedEffect(Unit) {
         val now = System.currentTimeMillis() / 1000
@@ -155,6 +156,9 @@ fun DataSourcesScreen(vm: AppViewModel) {
         }
         wearableHasHr = WearableExportImporter.Brand.values().any {
             vm.repo.latestHrSampleTs(it.sourceId) != null
+        }
+        wearableWorkouts = WearableExportImporter.Brand.values().sumOf {
+            vm.repo.workouts(it.sourceId, 0L, now).size
         }
     }
 
@@ -223,6 +227,9 @@ fun DataSourcesScreen(vm: AppViewModel) {
         wearableHasHr = WearableExportImporter.Brand.values().any {
             vm.repo.latestHrSampleTs(it.sourceId) != null
         }
+        wearableWorkouts = WearableExportImporter.Brand.values().sumOf {
+            vm.repo.workouts(it.sourceId, 0L, nowS).size
+        }
     }
 
     // Run an importer off the main thread, refresh the counts, then toast the result.
@@ -282,10 +289,14 @@ fun DataSourcesScreen(vm: AppViewModel) {
         }
     }
 
-    // Oura / Fitbit / Garmin own-data export: daily metrics + sleep sessions under the brand's source.
+    // Oura / Fitbit / Garmin own-data export: daily metrics + sleep/workout sessions under the brand.
     val wearableImportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument(),
-    ) { uri -> if (uri != null) runImport { WearableExportImporter.importExport(context, uri, vm.repo) } }
+    ) { uri ->
+        if (uri != null) runImport {
+            WearableExportImporter.importExport(context, uri, vm.repo).also { vm.loadWorkouts() }
+        }
+    }
 
     // Workout file (GPX / TCX / FIT): one imported activity → one workout; reload the Workouts list too.
     val activityFileImportLauncher = rememberLauncherForActivityResult(
@@ -692,26 +703,25 @@ fun DataSourcesScreen(vm: AppViewModel) {
             icon = Icons.Filled.Watch,
             tint = Palette.metricPurple,
             subtitle = "Import your own data export from Oura, Fitbit or Garmin: sleep, timestamped " +
-                "heart-rate history, resting heart rate, HRV, steps and more, where the export has them. " +
+                "heart-rate history, workouts, resting heart rate, HRV, steps and more, where the export has them. " +
                 "Download it from the brand's app (Oura: Account → Export Data; Fitbit: Google Takeout; " +
                 "Garmin: Export Your Data), then choose the file here. Fully offline; nothing leaves " +
                 "your phone. Each brand's own readiness or sleep score is kept for reference only. " +
                 "Your scores stay yours.",
         ) {
-            val hasData = (wearableDays ?: 0) > 0 || wearableHasHr
+            val hasData = (wearableDays ?: 0) > 0 || wearableHasHr || (wearableWorkouts ?: 0) > 0
             StatePill(
                 title = if (hasData) "Imported" else "Nothing imported",
                 tone = if (hasData) StrandTone.Accent else StrandTone.Neutral,
                 showsDot = true,
             )
             CountLine(
-                primary = when {
-                    (wearableDays ?: 0) > 0 && wearableHasHr -> "$wearableDays day metrics · HR history"
-                    (wearableDays ?: 0) > 0 -> "$wearableDays day metrics"
-                    wearableHasHr -> "HR history"
-                    else -> "—"
-                },
-                secondary = "Oura JSON/CSV · Fitbit Takeout · Garmin GDPR (daily metrics + sleep + HR)",
+                primary = buildList {
+                    if ((wearableDays ?: 0) > 0) add("$wearableDays day metrics")
+                    if (wearableHasHr) add("HR history")
+                    if ((wearableWorkouts ?: 0) > 0) add("$wearableWorkouts workouts")
+                }.joinToString(" · ").ifEmpty { "—" },
+                secondary = "Oura JSON/CSV · Fitbit Takeout · Garmin GDPR (daily metrics + sleep + HR + workouts)",
             )
             BackupButton(
                 label = "Import wearable export…",

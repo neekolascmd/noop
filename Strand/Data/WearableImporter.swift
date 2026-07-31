@@ -4,9 +4,10 @@ import WhoopProtocol
 import StrandImport
 
 /// Maps a parsed Oura / Fitbit / Garmin own-data export into the on-device WhoopStore tables the UI
-/// reads — `dailyMetric`, `sleepSession`, measured `hrSample`, and the generic `metricSeries` — under
-/// a per-brand Data Source id ("oura-import" / "fitbit-import" / "garmin-import"), so importing
-/// lights up the history immediately as its own source distinct from WHOOP.
+/// reads — `dailyMetric`, `sleepSession`, measured `hrSample`, `workout`, and the generic
+/// `metricSeries` — under a per-brand Data Source id ("oura-import" / "fitbit-import" /
+/// "garmin-import"), so importing lights up the history immediately as its own source distinct from
+/// WHOOP.
 ///
 /// HONEST DATA: only fields the export carried are written. The brand's OWN scores (Oura readiness,
 /// any sleep score) are stored under REFERENCE metric keys only — never as NOOP's Charge/Effort/Rest.
@@ -15,7 +16,7 @@ import StrandImport
 enum WearableImporter {
 
     /// The Oura/Fitbit/Garmin export mapping revision, stamped into the Import test-mode parser line.
-    static let importerVersion = 3
+    static let importerVersion = 4
 
     @discardableResult
     static func importExport(url: URL, into store: WhoopStore,
@@ -86,6 +87,26 @@ enum WearableImporter {
                 deviceId: deviceId).hr
         }
 
+        // Oura's official exported workout summaries land in the same local workout history as other
+        // imports. Only the facts the export carries are written: no inferred HR, strain, zones, or route.
+        // The durable source remains `oura-import`; Oura's own `source` enum is preserved in notes.
+        let workouts = result.workouts.map {
+            WorkoutRow(
+                startTs: Int($0.start.timeIntervalSince1970),
+                endTs: Int($0.end.timeIntervalSince1970),
+                sport: ActivityFileImporter.workoutSport(from: $0.activity),
+                source: deviceId,
+                durationS: $0.end.timeIntervalSince($0.start),
+                energyKcal: $0.caloriesKcal,
+                avgHr: nil,
+                maxHr: nil,
+                strain: nil,
+                distanceM: $0.distanceM,
+                zonesJSON: nil,
+                notes: workoutNotes($0))
+        }
+        let workoutsWritten = try await store.upsertWorkouts(workouts, deviceId: deviceId)
+
         // Generic metric series — every scalar keyed for the Metric Explorer + correlations. The brand's
         // own scores go under clearly-labelled reference keys (e.g. "ref_readiness_score"), so they're
         // browseable but never mistaken for a NOOP score.
@@ -126,6 +147,10 @@ enum WearableImporter {
                     category: "heartRate",
                     rowsIn: result.heartRates.count,
                     rowsOut: heartRatesWritten),
+                ImportTrace.stageLine(
+                    category: "workouts",
+                    rowsIn: result.workouts.count,
+                    rowsOut: workoutsWritten),
                 // The Oura/Fitbit/Garmin parser drops unusable rows upstream in StrandImport; the app map
                 // keeps every day/sleep, so the reject signal at this seam is the day-delta below.
                 ImportTrace.rejectLine(droppedRows: 0, skippedSpans: result.summary.skippedSpans),
@@ -155,5 +180,13 @@ enum WearableImporter {
             asleep += max(0, e - s)
         }
         return min(100, Double(asleep) / Double(end - start) * 100)
+    }
+
+    private static func workoutNotes(_ workout: WearableWorkoutSession) -> String? {
+        var parts: [String] = []
+        if let label = workout.label { parts.append(label) }
+        if let intensity = workout.intensity { parts.append("Oura intensity: \(intensity)") }
+        if let source = workout.source { parts.append("Oura source: \(source)") }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 }

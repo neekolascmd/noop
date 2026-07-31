@@ -25,6 +25,10 @@ final class SharedWearableImportGoldenTests: XCTestCase {
                 result.heartRates.count,
                 (expected["heartRateCount"] as? NSNumber)?.intValue ?? 0,
                 id)
+            XCTAssertEqual(
+                result.workouts.count,
+                (expected["workoutCount"] as? NSNumber)?.intValue ?? 0,
+                id)
 
             if let dayExpected = expected["firstDay"] as? [String: Any] {
                 let day = try XCTUnwrap(result.days.first, id)
@@ -67,6 +71,24 @@ final class SharedWearableImportGoldenTests: XCTestCase {
                     Int(sample.timestamp.timeIntervalSince1970),
                     try integer(heartRateExpected["timestamp"]),
                     id)
+            }
+
+            if let workoutExpected = expected["firstWorkout"] as? [String: Any] {
+                let workout = try XCTUnwrap(result.workouts.first, id)
+                XCTAssertEqual(
+                    Int(workout.start.timeIntervalSince1970),
+                    try integer(workoutExpected["start"]),
+                    id)
+                XCTAssertEqual(
+                    Int(workout.end.timeIntervalSince1970),
+                    try integer(workoutExpected["end"]),
+                    id)
+                XCTAssertEqual(workout.activity, workoutExpected["activity"] as? String, id)
+                XCTAssertEqual(workout.intensity, workoutExpected["intensity"] as? String, id)
+                XCTAssertEqual(workout.source, workoutExpected["source"] as? String, id)
+                XCTAssertEqual(workout.label, workoutExpected["label"] as? String, id)
+                try assertMetric(workout.caloriesKcal, workoutExpected["caloriesKcal"], tolerance, id)
+                try assertMetric(workout.distanceM, workoutExpected["distanceM"], tolerance, id)
             }
         }
     }

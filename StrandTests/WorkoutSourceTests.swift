@@ -25,6 +25,8 @@ final class WorkoutSourceTests: XCTestCase {
         XCTAssertEqual(WorkoutSource.classify("manual"), .manual)
         XCTAssertEqual(WorkoutSource.classify("lifting"), .lifting)
         XCTAssertEqual(WorkoutSource.classify("activity-file"), .activityFile)
+        XCTAssertEqual(WorkoutSource.classify("oura-import"), .wearable)
+        XCTAssertEqual(WorkoutSource.wearableLabel("oura-import"), "Oura")
         XCTAssertEqual(WorkoutSource.classify("apple_health"), .apple)
         XCTAssertEqual(WorkoutSource.classify("apple-health"), .apple)
     }
@@ -344,10 +346,12 @@ final class WorkoutSourceTests: XCTestCase {
         let detected = fullRow(start: 100, end: 3700, sport: "detected", source: "my-whoop-noop")
         let whoop = fullRow(start: 100, end: 3700, sport: "Running", source: "whoop")
         let apple = fullRow(start: 100, end: 3700, sport: "Running", source: "apple-health")
+        let oura = fullRow(start: 100, end: 3700, sport: "Running", source: "oura-import")
         XCTAssertTrue(WorkoutMerge.isMergeable(manual))
         XCTAssertTrue(WorkoutMerge.isMergeable(detected))
         XCTAssertFalse(WorkoutMerge.isMergeable(whoop))
         XCTAssertFalse(WorkoutMerge.isMergeable(apple))
+        XCTAssertFalse(WorkoutMerge.isMergeable(oura))
         // canMerge needs 2+ and every row eligible (a single imported row poisons the set).
         XCTAssertTrue(WorkoutMerge.canMerge([manual, detected]))
         XCTAssertFalse(WorkoutMerge.canMerge([manual]))

@@ -14,7 +14,7 @@ import StrandAnalytics   // WorkoutsTrace: the dedup-decision line formatter for
 /// Classification order matters: "-noop" is checked BEFORE "whoop" because the computed id
 /// "my-whoop-noop" also contains the substring "whoop".
 enum WorkoutSource: Equatable {
-    case whoop, apple, detected, manual, lifting, activityFile
+    case whoop, apple, wearable, detected, manual, lifting, activityFile
 
     /// Canonical Apple Health source id written by new imports. The early rows used the underscore
     /// spelling, so reads must accept both — see `isAppleHealth`.
@@ -27,6 +27,7 @@ enum WorkoutSource: Equatable {
         if s == "manual" { return .manual }
         if s == "lifting" { return .lifting }          // imported Hevy / Liftosaur strength session
         if s == "activity-file" { return .activityFile } // imported GPX / TCX / FIT activity file
+        if ["oura-import", "fitbit-import", "garmin-import"].contains(s) { return .wearable }
         if isAppleHealth(s) { return .apple }          // both spellings → Apple Health
         if s.contains("whoop") { return .whoop }
         return .apple
@@ -39,6 +40,15 @@ enum WorkoutSource: Equatable {
     static func isAppleHealth(_ source: String) -> Bool {
         let s = source.lowercased()
         return s == appleHealthSource || s == legacyAppleHealthSource
+    }
+
+    static func wearableLabel(_ source: String) -> String {
+        switch source.lowercased() {
+        case "oura-import": return "Oura"
+        case "fitbit-import": return "Fitbit"
+        case "garmin-import": return "Garmin"
+        default: return "Wearable"
+        }
     }
 
     /// Sport-cell text. The detector stores the machine token "detected"; show it as a neutral
@@ -175,7 +185,8 @@ enum WorkoutSource: Equatable {
     static func preferred(_ a: WorkoutRow, _ b: WorkoutRow) -> WorkoutRow {
         let ra = richness(a), rb = richness(b)
         if ra != rb { return ra > rb ? a : b }
-        let ia = classify(a.source) == .apple, ib = classify(b.source) == .apple
+        let ia = [.apple, .wearable].contains(classify(a.source))
+        let ib = [.apple, .wearable].contains(classify(b.source))
         if ia != ib { return ia ? b : a }   // keep the non-import on a richness tie
         let da = a.endTs - a.startTs, db = b.endTs - b.startTs
         if da != db { return da > db ? a : b }
@@ -242,6 +253,7 @@ enum WorkoutSource: Equatable {
         switch classify(row.source) {
         case .whoop:        return "strap"
         case .apple:        return "apple"
+        case .wearable:     return "wearable"
         case .detected:     return "detected"
         case .manual:       return "manual"
         case .lifting:      return "lifting"
@@ -395,7 +407,7 @@ enum WorkoutMerge {
     static func isMergeable(_ row: WorkoutRow) -> Bool {
         switch WorkoutSource.classify(row.source) {
         case .manual, .detected: return true
-        case .whoop, .apple, .lifting, .activityFile: return false
+        case .whoop, .apple, .wearable, .lifting, .activityFile: return false
         }
     }
 

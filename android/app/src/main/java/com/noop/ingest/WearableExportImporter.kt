@@ -9,6 +9,7 @@ import com.noop.data.MetricSeriesRow
 import com.noop.data.SleepSession
 import com.noop.data.StreamBatch
 import com.noop.data.WhoopRepository
+import com.noop.data.WorkoutRow
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
@@ -42,10 +43,11 @@ import kotlin.math.roundToLong
  *   • Garmin — Garmin Connect "Export Your Data" (GDPR) ZIP wellness JSON: *_sleepData.json + daily
  *              RHR / steps / stress. (The FIT activity files in the same ZIP are wave-1's lane.)
  *
- * Maps onto NOOP's DAILY metrics + sleep sessions + measured HR stream (NOT workouts). HONEST DATA:
- * only fields the export carries are written; a brand's OWN score (Oura "readiness", a sleep score)
- * is stored under a reference metricSeries key only — NEVER as NOOP's Charge/Effort/Rest. Every row is
- * written under the brand's source/deviceId ("oura-import" / "fitbit-import" / "garmin-import").
+ * Maps onto NOOP's DAILY metrics + sleep sessions + measured HR stream; Oura's official exported
+ * workout summaries also land in NOOP's existing workout history. HONEST DATA: only fields the export
+ * carries are written; a brand's OWN score (Oura "readiness", a sleep score) is stored under a
+ * reference metricSeries key only — NEVER as NOOP's Charge/Effort/Rest. Every row is written under the
+ * brand's source/deviceId ("oura-import" / "fitbit-import" / "garmin-import").
  *
  * SECURITY: every byte is UNTRUSTED. The read/extract is byte-capped (zip-bomb guard, parity with the
  * other importers); JSON numbers are read as finite Doubles and range-checked before narrowing to Int
@@ -81,11 +83,14 @@ object WearableExportImporter {
         "active_calories", "total_calories", "equivalent_walking_distance",
         "vo2_max", "spo2_percentage", "breathing_disturbance_index", "contributors",
         "sleep_phase_5_min",
+        "activity", "start_datetime", "end_datetime", "calories", "distance", "intensity",
     )
     // Filename fragments that mark an Oura per-category CSV export (lowercased, substring match).
-    private val OURA_CSV_FILENAMES = listOf("heartrate", "heart_rate", "readiness", "sleep_periods")
+    private val OURA_CSV_FILENAMES =
+        listOf("heartrate", "heart_rate", "readiness", "sleep_periods", "workout")
 
     private val DAY_FMT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
+    private val WHITESPACE_RUN = Regex("\\s+")
 
     // Cached date/time formatters — DateTimeFormatter is immutable + thread-safe, so hoisting them out
     // of the per-row parse loops (fitbitTime / dayKey) avoids re-compiling the same pattern on every
@@ -123,10 +128,12 @@ object WearableExportImporter {
             Brand.FITBIT -> parseFitbit(files)
             Brand.GARMIN -> parseGarmin(files)
         }
-        if (parsed.days.isEmpty() && parsed.sleeps.isEmpty() && parsed.heartRates.isEmpty()) {
+        if (parsed.days.isEmpty() && parsed.sleeps.isEmpty() &&
+            parsed.heartRates.isEmpty() && parsed.workouts.isEmpty()
+        ) {
             return ImportSummary.failure(
                 brand.label,
-                "${brand.label} export held no usable sleep, daily wellness, or heart-rate data.",
+                "${brand.label} export held no usable sleep, daily wellness, heart-rate, or workout data.",
             )
         }
         return persist(repo, brand, parsed)
@@ -155,12 +162,24 @@ object WearableExportImporter {
 
     internal data class HeartRateAcc(val ts: Long, val bpm: Int)
 
+    internal data class WorkoutAcc(
+        val startTs: Long,
+        val endTs: Long,
+        val activity: String,
+        val caloriesKcal: Double? = null,
+        val distanceM: Double? = null,
+        val intensity: String? = null,
+        val source: String? = null,
+        val label: String? = null,
+    )
+
     private data class HeartRateCandidate(val sample: HeartRateAcc, val priority: Int)
 
     internal class Parsed(
         val days: List<DayAcc>,
         val sleeps: List<SleepAcc>,
         val heartRates: List<HeartRateAcc> = emptyList(),
+        val workouts: List<WorkoutAcc> = emptyList(),
     )
 
     // ------------------------------------------------------------------------
@@ -200,15 +219,20 @@ object WearableExportImporter {
     }
 
     private fun looksLikeOura(obj: JSONObject): Boolean {
-        for (key in listOf("sleep", "daily_readiness", "daily_activity", "daily_sleep", "readiness", "activity")) {
+        for (key in listOf(
+            "sleep", "daily_readiness", "daily_activity", "daily_sleep", "readiness", "activity",
+            "workout", "workouts", "workout_data",
+        )) {
             val arr = categoryArray(obj, key) ?: continue
             val first = arr.optJSONObject(0) ?: continue
             if (first.has("bedtime_start") || first.has("total_sleep_duration") || first.has("contributors") ||
                 first.has("temperature_deviation") || (first.has("day") && (first.has("score") || first.has("steps")))
+                || looksLikeWorkout(first)
             ) return true
         }
         obj.optJSONArray("data")?.optJSONObject(0)?.let { first ->
             if (first.has("timestamp") && first.has("bpm")) return true
+            if (looksLikeWorkout(first)) return true
         }
         for (key in listOf("heartrate", "heart_rate", "heart_rates")) {
             val first = categoryArray(obj, key)?.optJSONObject(0) ?: continue
@@ -225,6 +249,7 @@ object WearableExportImporter {
         val byDay = LinkedHashMap<String, DayAcc>()
         val sleeps = ArrayList<SleepAcc>()
         val heartRates = LinkedHashMap<Long, HeartRateCandidate>()
+        val workouts = LinkedHashMap<String, WorkoutAcc>()
         fun day(key: String) = byDay.getOrPut(key) { DayAcc(key) }
 
         for ((_, data) in files.toSortedMap()) {
@@ -234,6 +259,13 @@ object WearableExportImporter {
                 for (i in 0 until rows.length()) {
                     val sample = heartRateSample(rows.optJSONObject(i) ?: continue) ?: continue
                     insertHeartRate(sample, priority = 2, into = heartRates)
+                }
+            }
+
+            workoutRows(root)?.let { rows ->
+                for (i in 0 until rows.length()) {
+                    val workout = workoutSession(rows.optJSONObject(i) ?: continue) ?: continue
+                    insertWorkout(workout, workouts)
                 }
             }
 
@@ -316,12 +348,13 @@ object WearableExportImporter {
 
         // Fold Oura CSV rows in too. JSON wins daily fields; CSV fills gaps. Timestamped HR rows become a
         // measured stream and fill only seconds absent from JSON/API data (#857).
-        parseOuraCsv(files, byDay, sleeps, heartRates)
+        parseOuraCsv(files, byDay, sleeps, heartRates, workouts)
 
         return Parsed(
             byDay.values.sortedBy { it.day },
             sleeps.sortedBy { it.startTs },
             heartRates.values.map { it.sample }.sortedBy { it.ts },
+            workouts.values.sortedBy { it.startTs },
         )
     }
 
@@ -336,6 +369,7 @@ object WearableExportImporter {
         byDay: LinkedHashMap<String, DayAcc>,
         sleeps: ArrayList<SleepAcc>,
         heartRates: LinkedHashMap<Long, HeartRateCandidate>,
+        workouts: LinkedHashMap<String, WorkoutAcc>,
     ) {
         for ((name, data) in files.toSortedMap()) {
             if (!name.endsWith(".csv")) continue
@@ -353,6 +387,25 @@ object WearableExportImporter {
                         ?: continue
                     val sample = boundedHeartRateSample(timestamp, bpm) ?: continue
                     insertHeartRate(sample, priority = 2, into = heartRates)
+                }
+            }
+
+            val isWorkoutTable = "activity" in headers &&
+                "start_datetime" in headers &&
+                "end_datetime" in headers
+            if (isWorkoutTable) {
+                for (cells in table.rows) {
+                    val workout = workoutSession(
+                        startText = cells.cell("start_datetime"),
+                        endText = cells.cell("end_datetime"),
+                        activityText = cells.cell("activity"),
+                        calories = cells.double("calories"),
+                        distance = cells.double("distance"),
+                        intensityText = cells.cell("intensity"),
+                        sourceText = cells.cell("source"),
+                        labelText = cells.cell("label"),
+                    ) ?: continue
+                    insertWorkout(workout, workouts)
                 }
             }
 
@@ -521,6 +574,101 @@ object WearableExportImporter {
             }
         }
         return stages.takeIf { it.length() > 0 }?.toString()
+    }
+
+    private fun looksLikeWorkout(row: JSONObject): Boolean =
+        row.has("activity") && row.has("start_datetime") && row.has("end_datetime")
+
+    /** Official workout rows: endpoint `{data:[...]}` or account-export category wrappers. */
+    private fun workoutRows(root: JSONObject): JSONArray? {
+        for (key in listOf("workout", "workouts", "workout_data")) {
+            categoryArray(root, key)?.let { return it }
+        }
+        val rows = root.optJSONArray("data") ?: return null
+        val first = rows.optJSONObject(0) ?: return null
+        return rows.takeIf { looksLikeWorkout(first) }
+    }
+
+    private fun workoutSession(row: JSONObject): WorkoutAcc? =
+        workoutSession(
+            startText = row.strOpt("start_datetime"),
+            endText = row.strOpt("end_datetime"),
+            activityText = row.strOpt("activity"),
+            calories = row.dblOpt("calories"),
+            distance = row.dblOpt("distance"),
+            intensityText = row.strOpt("intensity"),
+            sourceText = row.strOpt("source"),
+            labelText = row.strOpt("label"),
+        )
+
+    private fun workoutSession(
+        startText: String?,
+        endText: String?,
+        activityText: String?,
+        calories: Double?,
+        distance: Double?,
+        intensityText: String?,
+        sourceText: String?,
+        labelText: String?,
+    ): WorkoutAcc? {
+        val start = WhoopTime.parseIsoWithOffsetEpochSeconds(startText) ?: return null
+        val end = WhoopTime.parseIsoWithOffsetEpochSeconds(endText) ?: return null
+        val activity = boundedText(activityText, 120) ?: return null
+        val latest = System.currentTimeMillis() / 1_000L + 86_400L
+        if (start !in 1_420_070_400L..latest || end !in (start + 1)..latest ||
+            end - start > 7L * 86_400L
+        ) return null
+
+        return WorkoutAcc(
+            startTs = start,
+            endTs = end,
+            activity = activity,
+            caloriesKcal = boundedNonnegative(calories, 100_000.0),
+            distanceM = boundedNonnegative(distance, 10_000_000.0),
+            intensity = boundedText(intensityText, 32)?.lowercase(),
+            source = boundedText(sourceText, 64)?.lowercase(),
+            label = boundedText(labelText, 240),
+        )
+    }
+
+    private fun boundedNonnegative(value: Double?, maximum: Double): Double? =
+        value?.takeIf { it.isFinite() && it >= 0.0 && it <= maximum }
+
+    /** Strip controls, collapse whitespace, and cap untrusted exported labels. */
+    private fun boundedText(raw: String?, maximumLength: Int): String? {
+        val collapsed = raw
+            ?.take(maximumLength * 4) // bound before normalization so a hostile string is not copied whole
+            ?.map { if (it.isISOControl()) ' ' else it }
+            ?.joinToString("")
+            ?.trim()
+            ?.split(WHITESPACE_RUN)
+            ?.filter { it.isNotEmpty() }
+            ?.joinToString(" ")
+            ?.take(maximumLength)
+        return collapsed?.takeIf { it.isNotEmpty() }
+    }
+
+    private fun workoutKey(workout: WorkoutAcc): String =
+        "${workout.startTs}|${ActivityFileImporter.workoutSport(workout.activity).lowercase()}"
+
+    /** Same start+normalized-sport natural key as Room; repeated exports only fill missing facts. */
+    private fun insertWorkout(
+        workout: WorkoutAcc,
+        into: LinkedHashMap<String, WorkoutAcc>,
+    ) {
+        val key = workoutKey(workout)
+        val existing = into[key]
+        if (existing != null) {
+            into[key] = existing.copy(
+                caloriesKcal = existing.caloriesKcal ?: workout.caloriesKcal,
+                distanceM = existing.distanceM ?: workout.distanceM,
+                intensity = existing.intensity ?: workout.intensity,
+                source = existing.source ?: workout.source,
+                label = existing.label ?: workout.label,
+            )
+        } else if (into.size < MAX_ROWS) {
+            into[key] = workout
+        }
     }
 
     /** Official discrete HR rows: endpoint `{data:[...]}` or account keys around the same shape. */
@@ -818,6 +966,23 @@ object WearableExportImporter {
             heartRateIndex = end
         }
 
+        // Official Oura workout summaries use the existing local workout history. Only exported facts
+        // are retained; HR, strain, zones, and routes stay null rather than being fabricated.
+        val workoutRows = parsed.workouts.map { workout ->
+            WorkoutRow(
+                deviceId = deviceId,
+                startTs = workout.startTs,
+                endTs = workout.endTs,
+                sport = ActivityFileImporter.workoutSport(workout.activity),
+                source = deviceId,
+                durationS = (workout.endTs - workout.startTs).toDouble(),
+                energyKcal = workout.caloriesKcal,
+                distanceM = workout.distanceM,
+                notes = workoutNotes(workout),
+            )
+        }
+        if (workoutRows.isNotEmpty()) repo.upsertWorkouts(workoutRows)
+
         val series = ArrayList<MetricSeriesRow>()
         fun add(day: String, key: String, v: Double?) { if (v != null) series.add(MetricSeriesRow(deviceId, day, key, v)) }
         for (d in parsed.days) {
@@ -840,24 +1005,36 @@ object WearableExportImporter {
         parsed.days.lastOrNull()?.day?.let(touchedDays::add)
         parsed.heartRates.firstOrNull()?.let { touchedDays.add(dayString(it.ts)) }
         parsed.heartRates.lastOrNull()?.let { touchedDays.add(dayString(it.ts)) }
+        parsed.workouts.firstOrNull()?.let { touchedDays.add(dayString(it.startTs)) }
+        parsed.workouts.lastOrNull()?.let { touchedDays.add(dayString(it.startTs)) }
         val first = touchedDays.minOrNull()
         val last = touchedDays.maxOrNull()
         val span = if (first != null && last != null && first != last) " · $first-$last" else ""
-        val importedParts = ArrayList<String>(3)
+        val importedParts = ArrayList<String>(4)
         if (parsed.days.isNotEmpty()) importedParts.add("${parsed.days.size} days")
         if (sleepRows.isNotEmpty()) importedParts.add("${sleepRows.size} sleeps")
         if (parsed.heartRates.isNotEmpty()) importedParts.add("${parsed.heartRates.size} HR samples")
+        if (workoutRows.isNotEmpty()) importedParts.add("${workoutRows.size} workouts")
         return ImportSummary(
             source = brand.label,
             counts = mapOf(
                 "dailyMetric" to dailyMetrics.size,
                 "sleepSession" to sleepRows.size,
                 "hrSample" to heartRatesWritten,
+                "workout" to workoutRows.size,
                 "metricSeries" to series.size,
             ),
             firstDay = first, lastDay = last,
             message = "Imported ${importedParts.joinToString(", ")} from ${brand.label}$span",
         )
+    }
+
+    private fun workoutNotes(workout: WorkoutAcc): String? {
+        val parts = ArrayList<String>(3)
+        workout.label?.let(parts::add)
+        workout.intensity?.let { parts.add("Oura intensity: $it") }
+        workout.source?.let { parts.add("Oura source: $it") }
+        return parts.takeIf { it.isNotEmpty() }?.joinToString(" · ")
     }
 
     private fun sleepEfficiency(total: Double?, awake: Double?): Double? {
@@ -919,14 +1096,17 @@ object WearableExportImporter {
         if (name.endsWith(".csv")) {
             // Includes Oura's generically-named daily-summary CSV (#857) so it reaches the parser.
             return listOf(
-                "sleep", "heart", "step", "stress", "activit", "readiness", "wellness", "rhr",
+                "sleep", "heart", "step", "stress", "activit", "workout", "readiness", "wellness", "rhr",
                 "oura", "daily", "trend",
             ).any { name.contains(it) }
         }
         if (!name.endsWith(".json")) return false
-        val hints = listOf("sleep", "heart", "rate", "step", "stress", "activit", "readiness", "wellness",
+        val hints = listOf("sleep", "heart", "rate", "step", "stress", "activit", "workout", "readiness", "wellness",
             "rhr", "oura", "calorie", "spo2", "respiration", "temperature", "biometric", "summarizedactivities", "di_connect")
-        return hints.any { name.contains(it) }
+        if (hints.any { name.contains(it) }) return true
+        // Official endpoint downloads may be named only `export.json`; accept a recognizable Oura
+        // top-level shape after the byte cap rather than requiring a vendor word in the filename.
+        return parseObject(data)?.let(::looksLikeOura) == true
     }
 
     private fun readCapped(input: InputStream, cap: Long): ByteArray {

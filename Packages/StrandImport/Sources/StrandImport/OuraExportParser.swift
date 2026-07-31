@@ -23,6 +23,9 @@ import Foundation
 //   heartrate          : timestamp + bpm discrete samples (official API JSON), or timestamp +
 //                        heart_rate/bpm CSV rows. A sleep period's official `heart_rate` time-series
 //                        object is also expanded using its timestamp/interval/items fields.
+//   workout            : official workout summaries: activity, start/end, calories, distance,
+//                        intensity, source, and label. Missing fields stay missing; HR/strain/routes
+//                        are never inferred from a summary.
 //
 // The MANY other files in a real export (bloodglucose, contraception, medication, ring config, raw
 // temperature sample streams, etc.) are health types NOOP doesn't model: they are skipped
@@ -35,18 +38,21 @@ enum OuraExportParser {
     /// True if a top-level dict has at least one Oura category whose elements look Oura-shaped. Used by
     /// brand detection so a renamed JSON still routes to Oura.
     static func looksLikeOura(_ dict: [String: Any]) -> Bool {
-        for key in ["sleep", "daily_readiness", "daily_activity", "daily_sleep", "readiness", "activity"] {
+        for key in [
+            "sleep", "daily_readiness", "daily_activity", "daily_sleep", "readiness", "activity",
+            "workout", "workouts", "workout_data",
+        ] {
             guard let arr = categoryArray(dict, key), let first = arr.first else { continue }
             if first["bedtime_start"] != nil || first["total_sleep_duration"] != nil
                 || first["contributors"] != nil || first["temperature_deviation"] != nil
-                || (first["day"] != nil && (first["score"] != nil || first["steps"] != nil)) {
+                || (first["day"] != nil && (first["score"] != nil || first["steps"] != nil))
+                || looksLikeWorkout(first) {
                 return true
             }
         }
-        if let first = (dict["data"] as? [[String: Any]])?.first,
-           first["timestamp"] != nil,
-           first["bpm"] != nil {
-            return true
+        if let first = (dict["data"] as? [[String: Any]])?.first {
+            if first["timestamp"] != nil && first["bpm"] != nil { return true }
+            if looksLikeWorkout(first) { return true }
         }
         for key in ["heartrate", "heart_rate", "heart_rates"] {
             guard let first = categoryArray(dict, key)?.first else { continue }
@@ -60,11 +66,13 @@ enum OuraExportParser {
     static func parse(_ files: [String: Data]) -> (
         days: [WearableDailyRow],
         sleeps: [WearableSleepSession],
-        heartRates: [WearableHeartRateSample]
+        heartRates: [WearableHeartRateSample],
+        workouts: [WearableWorkoutSession]
     ) {
         var byDay: [String: WearableDailyRow] = [:]
         var sleeps: [WearableSleepSession] = []
         var jsonHeartRates: [Int: HeartRateCandidate] = [:]
+        var workouts: [String: WearableWorkoutSession] = [:]
 
         func day(_ key: String) -> WearableDailyRow { byDay[key] ?? WearableDailyRow(day: key) }
 
@@ -77,6 +85,12 @@ enum OuraExportParser {
                 if let sample = heartRateSample(row) {
                     insertHeartRate(sample, priority: 2, into: &jsonHeartRates)
                 }
+            }
+
+            // Official workout endpoint `{data:[...]}` and account-export workout categories.
+            for row in workoutRows(root) {
+                guard let workout = workoutSession(row) else { continue }
+                insertWorkout(workout, into: &workouts)
             }
 
             // Sleep periods → sleep sessions + a per-day sleep rollup.
@@ -188,6 +202,9 @@ enum OuraExportParser {
             byDay[d.day] = row
         }
         sleeps.append(contentsOf: csv.sleeps)
+        for workout in csv.workouts {
+            insertWorkout(workout, into: &workouts)
+        }
 
         // JSON/API discrete samples win a same-second collision with embedded sleep-series samples.
         // A CSV fills timestamps JSON did not carry. Filenames and rows are traversed in sorted/stable
@@ -203,7 +220,8 @@ enum OuraExportParser {
         return (
             Array(byDay.values),
             sleeps,
-            heartRates.values.sorted { $0.timestamp < $1.timestamp })
+            heartRates.values.sorted { $0.timestamp < $1.timestamp },
+            workouts.values.sorted { $0.start < $1.start })
     }
 
     // MARK: - CSV (Oura's "Export Data" trends / daily-summary CSV)
@@ -252,18 +270,22 @@ enum OuraExportParser {
         "active_calories", "total_calories", "equivalent_walking_distance",
         "vo2_max", "spo2_percentage", "breathing_disturbance_index", "contributors",
         "sleep_phase_5_min",
+        // official workout export
+        "activity", "start_datetime", "end_datetime", "calories", "distance", "intensity",
     ]
 
-    /// Parse Oura CSV files into the same day/sleep/HR model as JSON. A raw `heartrate.csv` produces HR
-    /// samples without fabricating a daily wellness row.
+    /// Parse Oura CSV files into the same day/sleep/HR/workout model as JSON. A raw `heartrate.csv`
+    /// produces HR samples without fabricating a daily wellness row.
     static func parseCSV(_ files: [String: Data]) -> (
         days: [WearableDailyRow],
         sleeps: [WearableSleepSession],
-        heartRates: [WearableHeartRateSample]
+        heartRates: [WearableHeartRateSample],
+        workouts: [WearableWorkoutSession]
     ) {
         var byDay: [String: WearableDailyRow] = [:]
         var sleeps: [WearableSleepSession] = []
         var heartRates: [Int: WearableHeartRateSample] = [:]
+        var workouts: [String: WearableWorkoutSession] = [:]
 
         for (_, data) in files.sorted(by: { $0.key < $1.key }) {
             let table = CSVTable(data: data)
@@ -278,6 +300,24 @@ enum OuraExportParser {
                           let sample = boundedHeartRateSample(timestamp: timestamp, bpm: bpm) else { continue }
                     guard let second = heartRateSecond(sample.timestamp) else { continue }
                     if heartRates[second] == nil { heartRates[second] = sample }
+                }
+            }
+
+            let isWorkoutTable = headers.contains("activity")
+                && headers.contains("start_datetime")
+                && headers.contains("end_datetime")
+            if isWorkoutTable {
+                for cells in table.rows {
+                    guard let workout = workoutSession(
+                        startText: cells.cell("start_datetime"),
+                        endText: cells.cell("end_datetime"),
+                        activityText: cells.cell("activity"),
+                        calories: cells.double("calories"),
+                        distance: cells.double("distance"),
+                        intensityText: cells.cell("intensity"),
+                        sourceText: cells.cell("source"),
+                        labelText: cells.cell("label")) else { continue }
+                    insertWorkout(workout, into: &workouts)
                 }
             }
 
@@ -390,7 +430,8 @@ enum OuraExportParser {
         return (
             Array(byDay.values),
             sleeps,
-            heartRates.values.sorted { $0.timestamp < $1.timestamp })
+            heartRates.values.sorted { $0.timestamp < $1.timestamp },
+            workouts.values.sorted { $0.start < $1.start })
     }
 
     /// Reduce an Oura CSV date/datetime cell to the `YYYY-MM-DD` day key (drops any time component).
@@ -411,6 +452,110 @@ enum OuraExportParser {
         if let arr = root[key] as? [[String: Any]] { return arr }
         if let wrap = root[key] as? [String: Any], let arr = wrap["data"] as? [[String: Any]] { return arr }
         return nil
+    }
+
+    private static func looksLikeWorkout(_ row: [String: Any]) -> Bool {
+        row["activity"] != nil && row["start_datetime"] != nil && row["end_datetime"] != nil
+    }
+
+    /// Return official workout rows without treating an unrelated `{data:[...]}` document as workouts.
+    private static func workoutRows(_ root: [String: Any]) -> [[String: Any]] {
+        for key in ["workout", "workouts", "workout_data"] {
+            if let rows = categoryArray(root, key) { return rows }
+        }
+        if let rows = root["data"] as? [[String: Any]],
+           let first = rows.first,
+           looksLikeWorkout(first) {
+            return rows
+        }
+        return []
+    }
+
+    private static func workoutSession(_ row: [String: Any]) -> WearableWorkoutSession? {
+        workoutSession(
+            startText: WearableJSON.str(row, "start_datetime"),
+            endText: WearableJSON.str(row, "end_datetime"),
+            activityText: WearableJSON.str(row, "activity"),
+            calories: WearableJSON.dbl(row, "calories"),
+            distance: WearableJSON.dbl(row, "distance"),
+            intensityText: WearableJSON.str(row, "intensity"),
+            sourceText: WearableJSON.str(row, "source"),
+            labelText: WearableJSON.str(row, "label"))
+    }
+
+    private static func workoutSession(
+        startText: String?,
+        endText: String?,
+        activityText: String?,
+        calories: Double?,
+        distance: Double?,
+        intensityText: String?,
+        sourceText: String?,
+        labelText: String?
+    ) -> WearableWorkoutSession? {
+        guard let start = WhoopTime.parseISOWithOffset(startText),
+              let end = WhoopTime.parseISOWithOffset(endText),
+              let activity = boundedText(activityText, maxLength: 120),
+              end > start else { return nil }
+
+        let earliest = Date(timeIntervalSince1970: 1_420_070_400) // 2015-01-01, before Oura shipping
+        let latest = Date().addingTimeInterval(86_400)
+        let duration = end.timeIntervalSince(start)
+        guard start >= earliest, start <= latest, end <= latest, duration <= 7 * 86_400 else {
+            return nil
+        }
+
+        return WearableWorkoutSession(
+            start: start,
+            end: end,
+            activity: activity,
+            caloriesKcal: boundedNonnegative(calories, maximum: 100_000),
+            distanceM: boundedNonnegative(distance, maximum: 10_000_000),
+            intensity: boundedText(intensityText, maxLength: 32)?.lowercased(),
+            source: boundedText(sourceText, maxLength: 64)?.lowercased(),
+            label: boundedText(labelText, maxLength: 240))
+    }
+
+    private static func boundedNonnegative(_ value: Double?, maximum: Double) -> Double? {
+        guard let value, value.isFinite, value >= 0, value <= maximum else { return nil }
+        return value
+    }
+
+    /// Strip control characters, collapse whitespace, and cap untrusted exported labels.
+    private static func boundedText(_ raw: String?, maxLength: Int) -> String? {
+        guard let raw else { return nil }
+        // Bound before normalization too: a hostile JSON string must not allocate its full length again.
+        let prefix = String(raw.prefix(maxLength * 4))
+        let withoutControls = prefix.components(separatedBy: .controlCharacters).joined(separator: " ")
+        let collapsed = withoutControls.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        guard !collapsed.isEmpty else { return nil }
+        return String(collapsed.prefix(maxLength))
+    }
+
+    private static func workoutKey(_ workout: WearableWorkoutSession) -> String {
+        let second = Int(workout.start.timeIntervalSince1970.rounded())
+        let sport = ActivityFileImporter.workoutSport(from: workout.activity).lowercased()
+        return "\(second)|\(sport)"
+    }
+
+    /// Repeated exports are idempotent by the same start+normalized-sport key the durable store uses.
+    /// When two export files contain the same workout, the first valid timing wins and later copies only
+    /// fill optional facts that were absent.
+    private static func insertWorkout(
+        _ workout: WearableWorkoutSession,
+        into candidates: inout [String: WearableWorkoutSession]
+    ) {
+        let key = workoutKey(workout)
+        if var existing = candidates[key] {
+            existing.caloriesKcal = existing.caloriesKcal ?? workout.caloriesKcal
+            existing.distanceM = existing.distanceM ?? workout.distanceM
+            existing.intensity = existing.intensity ?? workout.intensity
+            existing.source = existing.source ?? workout.source
+            existing.label = existing.label ?? workout.label
+            candidates[key] = existing
+        } else if candidates.count < WearableExportImporter.maxRows {
+            candidates[key] = workout
+        }
     }
 
     private struct HeartRateCandidate {
