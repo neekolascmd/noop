@@ -164,12 +164,20 @@
       }
     },
     {
-      "id": "raw-heart-rate-csv-has-no-daily-rollup",
+      "id": "oura-raw-heart-rate-csv-imports-stream",
       "brand": "oura",
       "files": {
         "heartrate.csv": "timestamp,heart_rate\n2026-06-01T09:00:00+00:00,62\n2026-06-01T09:01:00+00:00,64"
       },
-      "expected": { "dayCount": 0, "sleepCount": 0 }
+      "expected": {
+        "dayCount": 0,
+        "sleepCount": 0,
+        "heartRateCount": 2,
+        "firstHeartRate": {
+          "timestamp": 1780304400,
+          "bpm": 62
+        }
+      }
     },
     {
       "id": "malformed-export-is-empty",

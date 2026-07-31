@@ -265,7 +265,7 @@ struct DataSourcesView: View {
     private var wearableCard: some View {
         card(title: String(localized: "Oura / Fitbit / Garmin export"), icon: "figure.mind.and.body",
              tint: StrandPalette.metricPurple,
-             subtitle: String(localized: "Import your own data export from Oura, Fitbit or Garmin: sleep, resting heart rate, HRV, steps and more, where the export has them. Download it from the brand's app (Oura: Account → Export Data; Fitbit: Google Takeout; Garmin: Export Your Data), then choose the file here. Fully offline; nothing leaves \(Platform.deviceNounPhrase). Each brand's own readiness or sleep score is kept for reference only. Your scores stay yours.")) {
+             subtitle: String(localized: "Import your own data export from Oura, Fitbit or Garmin: sleep, timestamped heart-rate history, resting heart rate, HRV, steps and more, where the export has them. Download it from the brand's app (Oura: Account → Export Data; Fitbit: Google Takeout; Garmin: Export Your Data), then choose the file here. Fully offline; nothing leaves \(Platform.deviceNounPhrase). Each brand's own readiness or sleep score is kept for reference only. Your scores stay yours.")) {
             HStack(spacing: NoopMetrics.space3) {
                 Button { presentImporter(.wearable) } label: {
                     Label(wearableImporting ? "Importing…" : "Choose export…", systemImage: "tray.and.arrow.down")
@@ -565,7 +565,10 @@ struct DataSourcesView: View {
                 await repo.refresh()
                 wearableSummary = WearableExportImporter.summaryText(result)
                 wearableFailed = false
-                logImport("\(result.brand.displayName) export: \(result.days.count) days, \(result.sleeps.count) sleeps, \(result.summary.skippedSpans) rejected")
+                logImport(
+                    "\(result.brand.displayName) export: \(result.days.count) days, "
+                    + "\(result.sleeps.count) sleeps, \(result.heartRates.count) HR samples, "
+                    + "\(result.summary.skippedSpans) rejected")
             } catch {
                 wearableSummary = String(localized: "Import failed: \(error.localizedDescription)")
                 wearableFailed = true

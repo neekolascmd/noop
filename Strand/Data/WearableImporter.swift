@@ -1,11 +1,12 @@
 import Foundation
 import WhoopStore
+import WhoopProtocol
 import StrandImport
 
 /// Maps a parsed Oura / Fitbit / Garmin own-data export into the on-device WhoopStore tables the UI
-/// reads — `dailyMetric`, `sleepSession`, and the generic `metricSeries` — under a per-brand Data
-/// Source id ("oura-import" / "fitbit-import" / "garmin-import"), so importing lights up the history
-/// immediately as its own source distinct from WHOOP.
+/// reads — `dailyMetric`, `sleepSession`, measured `hrSample`, and the generic `metricSeries` — under
+/// a per-brand Data Source id ("oura-import" / "fitbit-import" / "garmin-import"), so importing
+/// lights up the history immediately as its own source distinct from WHOOP.
 ///
 /// HONEST DATA: only fields the export carried are written. The brand's OWN scores (Oura readiness,
 /// any sleep score) are stored under REFERENCE metric keys only — never as NOOP's Charge/Effort/Rest.
@@ -14,7 +15,7 @@ import StrandImport
 enum WearableImporter {
 
     /// The Oura/Fitbit/Garmin export mapping revision, stamped into the Import test-mode parser line.
-    static let importerVersion = 2
+    static let importerVersion = 3
 
     @discardableResult
     static func importExport(url: URL, into store: WhoopStore,
@@ -70,6 +71,21 @@ enum WearableImporter {
         }
         let sessionsWritten = try await store.upsertSleepSessions(sessions, deviceId: deviceId)
 
+        // Timestamped HR from Oura `heartrate.csv`, the official API-shaped JSON response, or a sleep
+        // period's official interval/items series. Store it in the same measured stream as local BLE HR,
+        // partitioned under `oura-import`; natural-key insertion makes repeated imports idempotent.
+        var heartRatesWritten = 0
+        let heartRateChunkSize = 10_000
+        for start in stride(from: 0, to: result.heartRates.count, by: heartRateChunkSize) {
+            let end = min(result.heartRates.count, start + heartRateChunkSize)
+            let rows = result.heartRates[start..<end].map {
+                HRSample(ts: Int($0.timestamp.timeIntervalSince1970), bpm: $0.bpm)
+            }
+            heartRatesWritten += try await store.insert(
+                Streams(hr: rows),
+                deviceId: deviceId).hr
+        }
+
         // Generic metric series — every scalar keyed for the Metric Explorer + correlations. The brand's
         // own scores go under clearly-labelled reference keys (e.g. "ref_readiness_score"), so they're
         // browseable but never mistaken for a NOOP score.
@@ -106,6 +122,10 @@ enum WearableImporter {
                 ImportTrace.parserVersionLine(sourceKind: result.brand.dataSourceKind, importerVersion: importerVersion),
                 ImportTrace.stageLine(category: "days", rowsIn: result.days.count, rowsOut: metricsWritten),
                 ImportTrace.stageLine(category: "sleeps", rowsIn: sessions.count, rowsOut: sessionsWritten),
+                ImportTrace.stageLine(
+                    category: "heartRate",
+                    rowsIn: result.heartRates.count,
+                    rowsOut: heartRatesWritten),
                 // The Oura/Fitbit/Garmin parser drops unusable rows upstream in StrandImport; the app map
                 // keeps every day/sleep, so the reject signal at this seam is the day-delta below.
                 ImportTrace.rejectLine(droppedRows: 0, skippedSpans: result.summary.skippedSpans),

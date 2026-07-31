@@ -383,6 +383,13 @@ Import an Apple Health export (`export.zip`) from *Health app → profile → Ex
 NOOP **streams and aggregates** it locally — years of HR, HRV, sleep, SpO₂, steps, body
 composition and more. Large exports take a minute or two.
 
+### Oura / Fitbit / Garmin
+Import an own-data export without signing in or granting cloud access. NOOP imports the fields it can
+verify and keeps each brand under its own source. For Oura, an official `sleep_phase_5_min` becomes a
+chronological hypnogram, while `heartrate.csv`, official API-shaped discrete-HR JSON, and the sleep
+interval/items HR series become a bounded measured local HR stream. Unknown fields are skipped, and
+the vendor's readiness or sleep scores remain reference-only.
+
 ### Nutrition (CSV)
 Import a daily-nutrition CSV exported from **Cronometer** or **MacroFactor** to bring calories and
 macros onto the same timeline as your Charge, Rest and HRV — so you can explore and correlate
@@ -392,8 +399,9 @@ food against how you feel. Parsed locally; nothing is uploaded.
 Shows whether the strap is bonded and streaming. Pairs directly over Bluetooth — no WHOOP app,
 no cloud. Open **Live** to pair if it isn't connected.
 
-All imports run on-device; nothing is uploaded. WHOOP data is stored under the `my-whoop` source
-and Apple Health under `apple-health`, so per-source pages and cross-source consensus stay distinct.
+All imports run on-device; nothing is uploaded. WHOOP data is stored under the `my-whoop` source,
+Apple Health under `apple-health`, and wellness exports under their brand source (for example,
+`oura-import`), so per-source pages and cross-source consensus stay distinct.
 
 ---
 

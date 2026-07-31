@@ -339,8 +339,11 @@ URL (export.zip / *.csv / export.xml / folder)
 normalized results into `dailyMetric`, `sleepSession`, `workout`, `appleDaily`, and `metricSeries`
 rows, then calls `Repository.refresh()`. The wearable lane also maps an Oura
 `sleep_phase_5_min` string into bounded five-minute stage intervals when the export carries it;
-duration-only nights remain stage-less. Apple Health's `export.xml` is parsed with a streaming reader
-so multi-hundred-MB files don't blow up memory.
+duration-only nights remain stage-less. Timestamped Oura HR from a local CSV, official API-shaped
+JSON, or a sleep interval/items series enters the same measured `hrSample` stream as BLE data under
+the separate `oura-import` source; same-second rows are deterministic and repeat imports are
+idempotent. Apple Health's `export.xml` is parsed with a streaming reader so multi-hundred-MB files
+don't blow up memory.
 
 ---
 

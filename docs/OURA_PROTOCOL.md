@@ -18,6 +18,9 @@ platform-specific; see the [hardware graduation gate](HARDWARE_SUPPORT.md#oura-g
 - **[oura-openapi]** - Oura's official API v2
   [OpenAPI schema](https://cloud.ouraring.com/v2/static/json/openapi-1.37.json). Its `sleep_phase_5_min` field defines
   `1=deep, 2=light, 3=REM, 4=awake`; this corroborates the native zero-based codebook, not BLE cadence.
+  Its `PublicHeartRateRow` also defines timestamped `bpm`/`source` rows and its sleep `PublicSample`
+  defines an interval plus nullable items. NOOP accepts equivalent files locally; it does not call
+  the OAuth API.
 
 > **CONFLICT NOTE (resolution rule):** The relue archive file `event_data_definition.md` describes events as **protobuf varint** records (e.g. `0x55` SLEEP_HR with field tags). This contradicts the **byte-for-byte verified TLV framing** in [open_ring] and [ringverse]. The TLV/bit-packed model from [open_ring]/[ringverse] is authoritative for our decoders; the protobuf description is treated as unverified/likely AI-fabricated and is NOT used. Where a layout is only attested by a single no-license, AI-generated doc, it is marked **(UNVERIFIED)** and our decoder must gate it behind a fixture test before trusting it.
 

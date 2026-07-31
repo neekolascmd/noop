@@ -20,9 +20,12 @@ import Foundation
 //   daily_spo2         : day, spo2_percentage.average (%); note the value is NESTED under that key, not
 //                        a flat number (verified against the real schema).
 //   vo2max             : day, vo2_max (mL/kg/min); feeds NOOP's Fitness Age, alongside Apple Health's.
+//   heartrate          : timestamp + bpm discrete samples (official API JSON), or timestamp +
+//                        heart_rate/bpm CSV rows. A sleep period's official `heart_rate` time-series
+//                        object is also expanded using its timestamp/interval/items fields.
 //
 // The MANY other files in a real export (bloodglucose, contraception, medication, ring config, raw
-// heart-rate / temperature sample streams, etc.) are health types NOOP doesn't model: they are skipped
+// temperature sample streams, etc.) are health types NOOP doesn't model: they are skipped
 // gracefully, since an unknown category or column is ignored, never an error.
 //
 // Some exports nest each category as `{ "data": [ ... ] }`; we accept both `[...]` and `{data:[...]}`.
@@ -40,20 +43,52 @@ enum OuraExportParser {
                 return true
             }
         }
+        if let first = (dict["data"] as? [[String: Any]])?.first,
+           first["timestamp"] != nil,
+           first["bpm"] != nil {
+            return true
+        }
+        for key in ["heartrate", "heart_rate", "heart_rates"] {
+            guard let first = categoryArray(dict, key)?.first else { continue }
+            if first["timestamp"] != nil && (first["bpm"] != nil || first["heart_rate"] != nil) {
+                return true
+            }
+        }
         return false
     }
 
-    static func parse(_ files: [String: Data]) -> (days: [WearableDailyRow], sleeps: [WearableSleepSession]) {
+    static func parse(_ files: [String: Data]) -> (
+        days: [WearableDailyRow],
+        sleeps: [WearableSleepSession],
+        heartRates: [WearableHeartRateSample]
+    ) {
         var byDay: [String: WearableDailyRow] = [:]
         var sleeps: [WearableSleepSession] = []
+        var jsonHeartRates: [Int: HeartRateCandidate] = [:]
 
         func day(_ key: String) -> WearableDailyRow { byDay[key] ?? WearableDailyRow(day: key) }
 
-        for data in files.values {
+        for (_, data) in files.sorted(by: { $0.key < $1.key }) {
             guard let root = WearableJSON.object(data) else { continue }
+
+            // The official heartrate endpoint is `{data:[{timestamp,timestamp_unix,bpm,source}]}`;
+            // account-shaped documents may key the same rows under `heartrate` / `heart_rate`.
+            for row in discreteHeartRateRows(root) {
+                if let sample = heartRateSample(row) {
+                    insertHeartRate(sample, priority: 2, into: &jsonHeartRates)
+                }
+            }
 
             // Sleep periods → sleep sessions + a per-day sleep rollup.
             for s in categoryArray(root, "sleep") ?? [] {
+                // Oura's official sleep object can carry a localized timestamp + interval + nullable HR
+                // items. Preserve those measured points even if the surrounding sleep row is malformed.
+                if let series = s["heart_rate"] as? [String: Any] {
+                    let remaining = max(0, WearableExportImporter.maxRows - jsonHeartRates.count)
+                    for sample in heartRateSeries(series, limit: remaining) {
+                        insertHeartRate(sample, priority: 1, into: &jsonHeartRates)
+                    }
+                }
                 guard let session = sleepSession(s) else { continue }
                 sleeps.append(session)
                 // Fold the night onto its calendar day (Oura's "day" = the wake day).
@@ -154,7 +189,21 @@ enum OuraExportParser {
         }
         sleeps.append(contentsOf: csv.sleeps)
 
-        return (Array(byDay.values), sleeps)
+        // JSON/API discrete samples win a same-second collision with embedded sleep-series samples.
+        // A CSV fills timestamps JSON did not carry. Filenames and rows are traversed in sorted/stable
+        // order, so overlapping export files are deterministic.
+        var heartRates = Dictionary(
+            uniqueKeysWithValues: jsonHeartRates.map { ($0.key, $0.value.sample) })
+        for sample in csv.heartRates {
+            guard let second = heartRateSecond(sample.timestamp),
+                  heartRates[second] == nil else { continue }
+            heartRates[second] = sample
+        }
+
+        return (
+            Array(byDay.values),
+            sleeps,
+            heartRates.values.sorted { $0.timestamp < $1.timestamp })
     }
 
     // MARK: - CSV (Oura's "Export Data" trends / daily-summary CSV)
@@ -174,9 +223,8 @@ enum OuraExportParser {
     //   temperature deviation        : degrees C from baseline.
     //   steps / activity (active) burn / total burn : daily activity.
     //
-    // A lone `heartrate.csv` (timestamped HR samples, no daily summary) carries NO daily wellness/sleep
-    // row, so it folds to nothing here and the importer reports that honestly rather than failing opaquely
-    // (#857).
+    // A lone `heartrate.csv` has no daily wellness/sleep row, but its timestamped HR samples are retained
+    // as a first-class local stream (#857).
 
     /// True if a CSV's normalized header set looks like an Oura per-day summary (a date column plus at
     /// least one Oura wellness column). Used by brand detection so a CSV export routes to Oura.
@@ -206,14 +254,33 @@ enum OuraExportParser {
         "sleep_phase_5_min",
     ]
 
-    /// Parse Oura CSV files (daily summaries) into the same day/sleep model the JSON path produces. A CSV
-    /// that is only a raw HR-sample file (`heartrate.csv`) yields nothing, so the day stays honestly empty.
-    static func parseCSV(_ files: [String: Data]) -> (days: [WearableDailyRow], sleeps: [WearableSleepSession]) {
+    /// Parse Oura CSV files into the same day/sleep/HR model as JSON. A raw `heartrate.csv` produces HR
+    /// samples without fabricating a daily wellness row.
+    static func parseCSV(_ files: [String: Data]) -> (
+        days: [WearableDailyRow],
+        sleeps: [WearableSleepSession],
+        heartRates: [WearableHeartRateSample]
+    ) {
         var byDay: [String: WearableDailyRow] = [:]
         var sleeps: [WearableSleepSession] = []
+        var heartRates: [Int: WearableHeartRateSample] = [:]
 
-        for data in files.values {
+        for (_, data) in files.sorted(by: { $0.key < $1.key }) {
             let table = CSVTable(data: data)
+
+            let headers = Set(table.normalizedHeaders)
+            let isHeartRateTable = headers.contains("timestamp")
+                && !headers.isDisjoint(with: ["heart_rate", "heart_rate_bpm", "bpm"])
+            if isHeartRateTable {
+                for cells in table.rows where heartRates.count < WearableExportImporter.maxRows {
+                    guard let timestamp = WhoopTime.parseISOWithOffset(cells.cell("timestamp")),
+                          let bpm = normalizedBPM(cells.double("heart_rate", "heart_rate_bpm", "bpm")),
+                          let sample = boundedHeartRateSample(timestamp: timestamp, bpm: bpm) else { continue }
+                    guard let second = heartRateSecond(sample.timestamp) else { continue }
+                    if heartRates[second] == nil { heartRates[second] = sample }
+                }
+            }
+
             guard looksLikeOuraCSV(table.normalizedHeaders) else { continue }
             for cells in table.rows {
                 guard let key = cells.cell("date", "day", "summary_date", "calendar_date")
@@ -320,7 +387,10 @@ enum OuraExportParser {
             }
         }
 
-        return (Array(byDay.values), sleeps)
+        return (
+            Array(byDay.values),
+            sleeps,
+            heartRates.values.sorted { $0.timestamp < $1.timestamp })
     }
 
     /// Reduce an Oura CSV date/datetime cell to the `YYYY-MM-DD` day key (drops any time component).
@@ -341,6 +411,103 @@ enum OuraExportParser {
         if let arr = root[key] as? [[String: Any]] { return arr }
         if let wrap = root[key] as? [String: Any], let arr = wrap["data"] as? [[String: Any]] { return arr }
         return nil
+    }
+
+    private struct HeartRateCandidate {
+        var sample: WearableHeartRateSample
+        var priority: Int
+    }
+
+    /// Return one official discrete-HR array without treating an unrelated `{data:[...]}` document as HR.
+    private static func discreteHeartRateRows(_ root: [String: Any]) -> [[String: Any]] {
+        for key in ["heartrate", "heart_rate", "heart_rates"] {
+            if let rows = categoryArray(root, key) { return rows }
+        }
+        if let rows = root["data"] as? [[String: Any]],
+           let first = rows.first,
+           first["timestamp"] != nil,
+           first["bpm"] != nil {
+            return rows
+        }
+        return []
+    }
+
+    private static func heartRateSample(_ row: [String: Any]) -> WearableHeartRateSample? {
+        let isoTimestamp = WearableJSON.str(row, "timestamp")
+            .flatMap(WhoopTime.parseISOWithOffset)
+        let unixTimestamp = WearableJSON.dbl(row, "timestamp_unix").flatMap { milliseconds -> Date? in
+            guard milliseconds >= 1_000_000_000_000,
+                  milliseconds <= 9_000_000_000_000 else { return nil }
+            return Date(timeIntervalSince1970: milliseconds / 1_000.0)
+        }
+        let timestamp = isoTimestamp ?? unixTimestamp
+        guard let timestamp,
+              let bpm = normalizedBPM(
+                WearableJSON.dbl(row, "bpm") ?? WearableJSON.dbl(row, "heart_rate")) else { return nil }
+        return boundedHeartRateSample(timestamp: timestamp, bpm: bpm)
+    }
+
+    /// Expand Oura `PublicSample`: interval seconds + nullable float items from one localized start.
+    private static func heartRateSeries(
+        _ series: [String: Any],
+        limit: Int
+    ) -> [WearableHeartRateSample] {
+        guard let startText = WearableJSON.str(series, "timestamp"),
+              let start = WhoopTime.parseISOWithOffset(startText),
+              let interval = WearableJSON.dbl(series, "interval"),
+              interval >= 1, interval <= 3_600,
+              let items = series["items"] as? [Any],
+              limit > 0 else { return [] }
+
+        var samples: [WearableHeartRateSample] = []
+        samples.reserveCapacity(min(items.count, limit, 10_000))
+        for (index, item) in items.prefix(limit).enumerated() {
+            guard !(item is Bool),
+                  let number = item as? NSNumber,
+                  let bpm = normalizedBPM(number.doubleValue) else { continue }
+            let timestamp = start.addingTimeInterval(Double(index) * interval)
+            if let sample = boundedHeartRateSample(timestamp: timestamp, bpm: bpm) {
+                samples.append(sample)
+            }
+        }
+        return samples
+    }
+
+    private static func normalizedBPM(_ value: Double?) -> Int? {
+        guard let value, value.isFinite, value >= 1, value < 300 else { return nil }
+        let bpm = Int(value.rounded())
+        return (1..<300).contains(bpm) ? bpm : nil
+    }
+
+    private static func boundedHeartRateSample(
+        timestamp: Date,
+        bpm: Int
+    ) -> WearableHeartRateSample? {
+        guard let second = heartRateSecond(timestamp) else { return nil }
+        let maximum = Int(Date().timeIntervalSince1970) + 86_400
+        guard second >= 1_577_836_800, second <= maximum else { return nil } // Gen 3/API era onward
+        return WearableHeartRateSample(
+            timestamp: Date(timeIntervalSince1970: TimeInterval(second)),
+            bpm: bpm)
+    }
+
+    private static func heartRateSecond(_ timestamp: Date) -> Int? {
+        let seconds = timestamp.timeIntervalSince1970.rounded()
+        guard seconds.isFinite,
+              seconds >= Double(Int.min),
+              seconds <= Double(Int.max) else { return nil }
+        return Int(seconds)
+    }
+
+    private static func insertHeartRate(
+        _ sample: WearableHeartRateSample,
+        priority: Int,
+        into candidates: inout [Int: HeartRateCandidate]
+    ) {
+        guard let second = heartRateSecond(sample.timestamp) else { return }
+        if let existing = candidates[second], existing.priority >= priority { return }
+        guard candidates[second] != nil || candidates.count < WearableExportImporter.maxRows else { return }
+        candidates[second] = HeartRateCandidate(sample: sample, priority: priority)
     }
 
     private static func sleepSession(_ s: [String: Any]) -> WearableSleepSession? {

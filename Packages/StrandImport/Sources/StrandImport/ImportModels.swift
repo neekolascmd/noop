@@ -595,17 +595,38 @@ public struct WearableDailyRow: Sendable, Equatable {
     }
 }
 
+/// One timestamped heart-rate sample from a wearable-owned export. The normalized value is an integer
+/// bpm because that is the durable local `hrSample` domain. Importers may round a finite sub-bpm source
+/// value to the nearest bpm, but never invent a timestamp or carry an invalid/non-positive reading.
+public struct WearableHeartRateSample: Sendable, Equatable {
+    public var timestamp: Date
+    public var bpm: Int
+
+    public init(timestamp: Date, bpm: Int) {
+        self.timestamp = timestamp
+        self.bpm = bpm
+    }
+}
+
 /// Normalized output of parsing a wearable export (Oura / Fitbit / Garmin own-data export).
 public struct WearableImportResult: Sendable, Equatable {
     public var brand: WearableBrand
     public var days: [WearableDailyRow]
     public var sleeps: [WearableSleepSession]
+    public var heartRates: [WearableHeartRateSample]
     public var summary: ImportSummary
 
-    public init(brand: WearableBrand, days: [WearableDailyRow], sleeps: [WearableSleepSession], summary: ImportSummary) {
+    public init(
+        brand: WearableBrand,
+        days: [WearableDailyRow],
+        sleeps: [WearableSleepSession],
+        heartRates: [WearableHeartRateSample] = [],
+        summary: ImportSummary
+    ) {
         self.brand = brand
         self.days = days
         self.sleeps = sleeps
+        self.heartRates = heartRates
         self.summary = summary
     }
 }

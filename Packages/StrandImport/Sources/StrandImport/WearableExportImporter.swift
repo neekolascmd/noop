@@ -8,8 +8,8 @@ import ZIPFoundation
 // own account — fully offline, no cloud API, no login. NOOP ingests the file the user already owns and
 // maps it onto NOOP's DAILY metrics + sleep sessions (NOT workouts — workouts stay wave-1's lane).
 //
-//   • Oura   — Account → Export Data CSV/JSON: sleep periods (5-minute stages when present,
-//              durations/HRV/RHR/breath),
+//   • Oura   — Account → Export Data CSV/JSON: timestamped heart rate plus sleep periods
+//              (5-minute stages when present, durations/HRV/RHR/breath),
 //              daily readiness (RHR, temperature deviation, score), daily activity (steps/calories).
 //   • Fitbit — Google Takeout → Fitbit → JSON: per-day sleep-*.json, resting_heart_rate-*.json,
 //              steps-*.json, heart_rate-*.json.
@@ -41,7 +41,7 @@ public struct WearableExportImporter {
     static let maxEntryBytes = 256 << 20
     /// Max files we read out of a folder/zip — a real export is a few hundred per-day JSONs.
     static let maxFiles = 200_000
-    /// Max parsed rows (days / sleep periods) we retain — bounds memory against a crafted export.
+    /// Max parsed rows per category (days / sleep periods / HR samples) retained from a crafted export.
     static let maxRows = 5_000_000
 
     // MARK: - Public entry point
@@ -56,54 +56,71 @@ public struct WearableExportImporter {
             throw ImportError.emptyExport("Not an Oura, Fitbit or Garmin data export")
         }
 
-        let parsed: (days: [WearableDailyRow], sleeps: [WearableSleepSession])
+        let parsed: (
+            days: [WearableDailyRow],
+            sleeps: [WearableSleepSession],
+            heartRates: [WearableHeartRateSample]
+        )
         switch brand {
         case .oura:   parsed = OuraExportParser.parse(files)
-        case .fitbit: parsed = FitbitExportParser.parse(files)
-        case .garmin: parsed = GarminExportParser.parse(files)
+        case .fitbit:
+            let value = FitbitExportParser.parse(files)
+            parsed = (value.days, value.sleeps, [])
+        case .garmin:
+            let value = GarminExportParser.parse(files)
+            parsed = (value.days, value.sleeps, [])
         }
 
         let days = Array(parsed.days.sorted { $0.day < $1.day }.prefix(Self.maxRows))
         let sleeps = Array(parsed.sleeps.sorted { $0.start < $1.start }.prefix(Self.maxRows))
+        let heartRates = Array(parsed.heartRates.sorted { $0.timestamp < $1.timestamp }.prefix(Self.maxRows))
 
-        if days.isEmpty && sleeps.isEmpty {
-            // A lone Oura `heartrate.csv` is a raw HR-sample file, not a daily summary, so it carries no
-            // recovery/sleep/HRV NOOP can map. Say so plainly and point at the right file (#857) instead of
-            // a brand-generic "no usable data".
-            if brand == .oura, Self.onlyHeartRateCSV(files) {
-                throw ImportError.emptyExport(
-                    "That file is Oura's raw heart-rate log, which has no daily sleep or recovery values to "
-                    + "import. Export your Oura data as JSON (Account → Export Data), or pick the daily/readiness "
-                    + "CSV, and import that instead.")
-            }
-            throw ImportError.emptyExport("\(brand.displayName) export held no sleep or daily wellness data")
+        if days.isEmpty && sleeps.isEmpty && heartRates.isEmpty {
+            throw ImportError.emptyExport(
+                "\(brand.displayName) export held no usable sleep, daily wellness, or heart-rate data")
         }
-        return WearableImportResult(brand: brand, days: days, sleeps: sleeps,
-                                    summary: Self.summarize(brand: brand, days: days, sleeps: sleeps))
-    }
-
-    /// True when every collected file is a raw heart-rate CSV (no daily-summary CSV/JSON among them): the
-    /// exact case in #857 where the user picked Oura's `heartrate.csv`.
-    static func onlyHeartRateCSV(_ files: [String: Data]) -> Bool {
-        guard !files.isEmpty else { return false }
-        return files.keys.allSatisfy { name in
-            name.hasSuffix(".csv") && (name.contains("heartrate") || name.contains("heart_rate"))
-        }
+        return WearableImportResult(
+            brand: brand,
+            days: days,
+            sleeps: sleeps,
+            heartRates: heartRates,
+            summary: Self.summarize(
+                brand: brand,
+                days: days,
+                sleeps: sleeps,
+                heartRates: heartRates))
     }
 
     /// Pure entry point for tests: parse already-loaded files (lowercased filename → bytes) of a known
     /// brand. No filesystem / zip involved.
     public static func parse(brand: WearableBrand, files: [String: Data]) -> WearableImportResult {
-        let parsed: (days: [WearableDailyRow], sleeps: [WearableSleepSession])
+        let parsed: (
+            days: [WearableDailyRow],
+            sleeps: [WearableSleepSession],
+            heartRates: [WearableHeartRateSample]
+        )
         switch brand {
         case .oura:   parsed = OuraExportParser.parse(files)
-        case .fitbit: parsed = FitbitExportParser.parse(files)
-        case .garmin: parsed = GarminExportParser.parse(files)
+        case .fitbit:
+            let value = FitbitExportParser.parse(files)
+            parsed = (value.days, value.sleeps, [])
+        case .garmin:
+            let value = GarminExportParser.parse(files)
+            parsed = (value.days, value.sleeps, [])
         }
         let days = parsed.days.sorted { $0.day < $1.day }
         let sleeps = parsed.sleeps.sorted { $0.start < $1.start }
-        return WearableImportResult(brand: brand, days: days, sleeps: sleeps,
-                                    summary: summarize(brand: brand, days: days, sleeps: sleeps))
+        let heartRates = parsed.heartRates.sorted { $0.timestamp < $1.timestamp }
+        return WearableImportResult(
+            brand: brand,
+            days: days,
+            sleeps: sleeps,
+            heartRates: heartRates,
+            summary: summarize(
+                brand: brand,
+                days: days,
+                sleeps: sleeps,
+                heartRates: heartRates))
     }
 
     // MARK: - Brand detection (by content, not trust)
@@ -125,8 +142,8 @@ public struct WearableExportImporter {
         if names.contains(where: { $0.contains("oura") }) { return .oura }
         // Oura CSV export: the per-category files a user can download alongside (or instead of) the JSON,
         // e.g. `heartrate.csv` / `readiness.csv` / `sleep.csv`. Routing these to Oura (rather than failing
-        // brand detection) lets the importer give an HONEST per-file outcome instead of an opaque error
-        // (#857): a daily-summary CSV imports, a lone raw `heartrate.csv` reports "no daily wellness data".
+        // brand detection) lets a raw `heartrate.csv` import as a timestamped stream instead of producing
+        // an opaque or misleading daily-summary error (#857).
         if names.contains(where: { ouraCSVFilenames.contains(where: $0.contains) }) { return .oura }
 
         // Content probe: look at the shape of the sample files (JSON keys, or an Oura CSV header).
@@ -148,9 +165,7 @@ public struct WearableExportImporter {
         guard let obj = try? JSONSerialization.jsonObject(with: BOM.stripUTF8(data)) else { return nil }
         // Oura account export: a dict keyed by "sleep" / "daily_readiness" / "daily_activity".
         if let dict = obj as? [String: Any] {
-            let keys = Set(dict.keys.map { $0.lowercased() })
-            if !keys.isDisjoint(with: ["sleep", "daily_readiness", "daily_activity", "readiness", "activity"]),
-               OuraExportParser.looksLikeOura(dict) {
+            if OuraExportParser.looksLikeOura(dict) {
                 return .oura
             }
             // Garmin single-day blob.
@@ -267,16 +282,26 @@ public struct WearableExportImporter {
 
     // MARK: - Summary
 
-    static func summarize(brand: WearableBrand, days: [WearableDailyRow], sleeps: [WearableSleepSession]) -> ImportSummary {
+    static func summarize(
+        brand: WearableBrand,
+        days: [WearableDailyRow],
+        sleeps: [WearableSleepSession],
+        heartRates: [WearableHeartRateSample]
+    ) -> ImportSummary {
         var dates: [Date] = []
         for d in days { if let dt = dayDate(d.day) { dates.append(dt) } }
         dates += sleeps.map(\.start)
+        dates += heartRates.map(\.timestamp)
         return ImportSummary(
             sourceKind: brand.dataSourceKind,
-            recordCount: days.count + sleeps.count,
+            recordCount: days.count + sleeps.count + heartRates.count,
             earliest: dates.min(),
             latest: dates.max(),
-            countsByCategory: ["days": days.count, "sleepSessions": sleeps.count])
+            countsByCategory: [
+                "days": days.count,
+                "sleepSessions": sleeps.count,
+                "heartRateSamples": heartRates.count,
+            ])
     }
 
     /// A one-line human status string for the import UI. Honest: only what was imported.
@@ -284,7 +309,8 @@ public struct WearableExportImporter {
         var parts = ["Imported \(r.brand.displayName)"]
         if !r.days.isEmpty { parts.append("\(r.days.count) days") }
         if !r.sleeps.isEmpty { parts.append("\(r.sleeps.count) sleeps") }
-        if r.days.isEmpty && r.sleeps.isEmpty { parts.append("nothing usable") }
+        if !r.heartRates.isEmpty { parts.append("\(r.heartRates.count) HR samples") }
+        if r.days.isEmpty && r.sleeps.isEmpty && r.heartRates.isEmpty { parts.append("nothing usable") }
         if let first = r.days.first?.day, let last = r.days.last?.day, first != last {
             parts.append("\(first) to \(last)")
         }
