@@ -212,10 +212,7 @@ class OuraStreamMappingTest {
     }
 
     @Test
-    fun tierBAndActivityInfoNeverMapToAStream() {
-        // HONEST-DATA INVARIANT (PR #960): Tier-B raw summaries AND the decoded-but-unvalidated 0x50
-        // activity/MET events must never produce a durable stream row (in particular no step count is
-        // ever minted from MET - it is not one), exactly like the Swift twin's drop test.
+    fun tierBNeverMapsToAStream() {
         val s = OuraStreamMapping.streams(
             listOf(
                 OuraEvent.TierB(
@@ -224,15 +221,44 @@ class OuraStreamMappingTest {
                         kind = "real_steps",
                     ),
                 ),
-                OuraEvent.ActivityInfo(
-                    com.noop.oura.OuraActivityInfo(ringTimestamp = 100, state = 0x41, met = listOf(1.8, 1.9)),
-                ),
             ),
             anchor,
         )
         assertTrue(s.hr.isEmpty())
         assertTrue(s.rr.isEmpty())
         assertTrue(s.events.isEmpty())
+        assertTrue(s.battery.isEmpty())
+        assertTrue(s.spo2.isEmpty())
+        assertTrue(s.skinTemp.isEmpty())
+    }
+
+    @Test
+    fun activityMetSeriesIsRetainedAtomicallyWithoutInventingActivityMetrics() {
+        val s = OuraStreamMapping.streams(
+            listOf(
+                OuraEvent.ActivityInfo(
+                    com.noop.oura.OuraActivityInfo(
+                        ringTimestamp = 100,
+                        state = 0x41,
+                        met = listOf(1.8, 1.9, 7.4),
+                    ),
+                ),
+            ),
+            anchor,
+        )
+        assertEquals(1, s.events.size)
+        val event = s.events.single()
+        assertEquals(OuraStreamMapping.EVENT_ACTIVITY_MET_SERIES, event.kind)
+        assertEquals(base + 100, event.ts)
+        assertEquals(100L, event.payload["ring_timestamp"])
+        assertEquals(0x41, event.payload["state_raw"])
+        assertEquals(listOf(18, 19, 74), event.payload["met_x10"])
+        assertEquals(60, event.payload["sample_interval_seconds"])
+        assertEquals("wire_order", event.payload["sequence_order"])
+        assertEquals("record_anchor_only", event.payload["timestamp_semantics"])
+        assertEquals("tenths_met", event.payload["unit"])
+        assertTrue(s.hr.isEmpty())
+        assertTrue(s.rr.isEmpty())
         assertTrue(s.battery.isEmpty())
         assertTrue(s.spo2.isEmpty())
         assertTrue(s.skinTemp.isEmpty())

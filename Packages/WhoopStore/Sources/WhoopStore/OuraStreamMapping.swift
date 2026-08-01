@@ -22,8 +22,8 @@ import OuraProtocol
 /// missing stream stays empty here, never faked (Huami precedent).
 ///
 /// Tier-B (UNVERIFIED) events are dropped. Tier-A signals may enter production streams; explicitly
-/// named diagnostic events (sleep-phase series and raw SpO2 ratio/PI) are durable evidence but have
-/// no scoring consumer. An unverified summary can therefore never silently feed scoring.
+/// named diagnostic events (sleep-phase, raw SpO2 ratio/PI, motion, and activity-MET series) are durable
+/// evidence but have no scoring consumer. An unverified summary can therefore never silently feed scoring.
 public enum OuraStreamMapping {
     /// Oura's app-side Ring 4 / Oreo quadratic, kept distinct from a firmware percentage.
     public static let estimatedSpO2Unit = "estimated_tenths_percent"
@@ -43,6 +43,8 @@ public enum OuraStreamMapping {
     public static let motionSummaryEventKind = "OURA_MOTION_SUMMARY"
     /// Six units-neutral fixed-point values from `0x72 sleep_acm_period`.
     public static let sleepAcmPeriodEventKind = "OURA_SLEEP_ACM_PERIOD"
+    /// Ring 4-qualified `0x50` wire-order MET bins. The raw state and record anchor remain unresolved.
+    public static let activityMetSeriesEventKind = "OURA_ACTIVITY_MET_SERIES"
 
     /// Build a `Streams` from a batch of decoded Oura events, all stamped at the arrival wall-clock `ts`
     /// (unix seconds). Pure → unit-testable. Section-4 table:
@@ -53,10 +55,10 @@ public enum OuraStreamMapping {
     ///   - `.temp`       (0x46/0x75)                    → `skinTemp:[SkinTempSample(raw_adc)]`
     ///   - `.sleepPhase` (0x4E/0x5A ordered codes)      → one diagnostic series event per source record
     ///   - `.battery`                                   → `battery:[BatterySample]`
-    /// The hardware-backed `.motionSummary` / `.sleepAcmPeriod` cases become units-neutral diagnostic
-    /// events only. Packed `.motion`, lifecycle, transport, debug, and Tier-B cases remain non-durable.
-    /// In particular the 0x50 activity/MET decode NEVER mints a `steps` row: the formula is third-party
-    /// and unvalidated, and MET is not a step count.
+    /// The hardware-backed `.motionSummary`, `.sleepAcmPeriod`, and `.activityInfo` cases become
+    /// diagnostic events only. Packed `.motion`, lifecycle, transport, debug, and Tier-B cases remain
+    /// non-durable. In particular the 0x50 activity/MET decode NEVER mints a `steps`, calories, or workout
+    /// row: MET is not a step count, and the state/timestamp roles remain unresolved.
     public static func streams(from events: [OuraEvent], at ts: Int) -> Streams {
         var out = Streams()
         for e in events {
@@ -190,6 +192,22 @@ public enum OuraStreamMapping {
                     "unit": .string("fixed_point_raw"),
                 ]))
 
+            case .activityInfo(let v):
+                guard !v.met.isEmpty else { continue }
+                // The retained Ring 4 corpus validates one-minute bin cadence, but not whether the
+                // record timestamp names the first or last bin. Keep the ordered array atomic at the
+                // real record anchor; future offline re-decoding can resolve direction without ever
+                // reconnecting the ring. Integer tenths are lossless for the wire's 0.1/0.2-MET scales.
+                out.events.append(WhoopEvent(ts: ts, kind: activityMetSeriesEventKind, payload: [
+                    "ring_timestamp": .int(Int(v.ringTimestamp)),
+                    "state_raw": .int(v.state),
+                    "met_x10": .intArray(v.met.map { Int(($0 * 10).rounded()) }),
+                    "sample_interval_seconds": .int(60),
+                    "sequence_order": .string("wire_order"),
+                    "timestamp_semantics": .string("record_anchor_only"),
+                    "unit": .string("tenths_met"),
+                ]))
+
             case .battery(let v):
                 out.battery.append(BatterySample(
                     ts: ts,
@@ -197,10 +215,9 @@ public enum OuraStreamMapping {
                     mv: v.voltageMv,
                     charging: v.charging))
 
-            case .bedtimePeriod, .motion, .state, .timeSync, .rtcBeacon, .debugText, .tierB, .activityInfo:
+            case .bedtimePeriod, .motion, .state, .timeSync, .rtcBeacon, .debugText, .tierB:
                 // Not a durable per-device stream row (timeSync/rtcBeacon anchor the transport's clock;
-                // packed motion/state/debug remain non-durable; Tier-B / .activityInfo must never feed
-                // scoring or the steps stream).
+                // packed motion/state/debug remain non-durable; Tier-B must never feed scoring).
                 continue
             }
         }

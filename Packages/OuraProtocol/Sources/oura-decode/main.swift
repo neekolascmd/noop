@@ -162,7 +162,7 @@ func describe(_ e: OuraEvent) -> String {
     case .rtcBeacon(let v): return "RTC_BEACON unix=\(v.unixSeconds)"
     case .debugText(_, let t): return "DEBUG \(t)"
     case .tierB(let v): return "TIER_B[UNVERIFIED] tag=0x\(String(v.tag, radix: 16)) kind=\(v.kind) bytes=\(v.rawPayload.count)"
-    case .activityInfo(let v): return "ACTIVITY[TIER-B,UNVERIFIED] state=\(v.state) met=\(v.met) rt=\(v.ringTimestamp)"
+    case .activityInfo(let v): return "ACTIVITY[DIAGNOSTIC] state_raw=\(v.state) met=\(v.met) rt=\(v.ringTimestamp)"
     }
 }
 

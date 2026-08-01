@@ -586,17 +586,19 @@ object OuraDecoders {
         return OuraSleepAcmPeriod(ringTimestamp = rec.ringTimestamp, values = values)
     }
 
-    // MARK: - Activity info (0x50; s6.13) - Tier B, third-party formula
+    // MARK: - Activity info (0x50; s6.13) - hardware-backed diagnostic
 
     /**
      * Decode the 0x50 activity_info record: byte0 = a `state` code (activity-category; meaning
      * unconfirmed), every following byte = one MET sample. Formula (OURA_PROTOCOL.md s6.13, [oura-rs],
      * clean-room fact citation): `met = byte * 0.1` for byte < 0x80, else `met = 12.8 + (byte - 128) * 0.2`
-     * (a two-slope encoding: 0.1-MET resolution up to 12.7, coarser 0.2 steps above). THIRD-PARTY and NOT
-     * ground-truth-validated against the Oura app, so this stays Tier B end to end: OuraDriver gates it
-     * behind `allowTierB`, and OuraStreamMapping never folds it into a durable stream. Values are
-     * normalised to 2 decimal places so a decoded MET compares exactly against its fixture (0.1 is not
-     * exactly representable in binary floating point; same normalisation as the Swift twin, so both
+     * (a two-slope encoding: 0.1-MET resolution up to 12.7, coarser 0.2 steps above). Real Ring 4 history
+     * corroborates the record shape, low-byte branch, physiologic range, and one-minute cadence; the
+     * high-byte branch remains prior-art-only. The series is retained as a hardware-backed diagnostic.
+     * The raw state and timestamp direction remain unresolved, and OuraStreamMapping never turns it into
+     * a scored activity value. Values are normalised to 2 decimal
+     * places so a decoded MET compares exactly against its fixture (0.1 is not exactly representable in
+     * binary floating point; same normalisation as the Swift twin, so both
      * platforms decode identical doubles). Returns null on an empty body - a record with no state byte
      * decodes to nothing, never a guess.
      */

@@ -660,6 +660,11 @@ public final class OuraDriver {
             }
             return []
 
+        // --- Hardware-backed activity diagnostic ---
+        case .activityInfo:
+            guard let info = OuraDecoders.decodeActivityInfo(record) else { return [] }
+            return [.activityInfo(info)]
+
         // --- Tier B (only reached when allowTierB == true; otherwise dropped above) ---
         case .sleepPhaseInfo:
             return [.tierB(OuraTierBSummary(tag: record.type, ringTimestamp: record.ringTimestamp,
@@ -667,13 +672,6 @@ public final class OuraDriver {
         case .sleepSummary1, .sleepSummaryC, .sleepSummaryD, .sleepSummaryE, .sleepSummaryF:
             return [.tierB(OuraTierBSummary(tag: record.type, ringTimestamp: record.ringTimestamp,
                                             rawPayload: record.payload, kind: "sleep_summary"))]
-        case .activityInfo:
-            // Split out of the raw-bytes .tierB wrapper: this ONE activity tag has a plausible decode
-            // formula (Decoders.decodeActivityInfo, third-party [oura-rs], PR #960 investigation). Still
-            // Tier B - only reached behind allowTierB (gated above), and OuraStreamMapping never folds
-            // .activityInfo into a durable stream. 0x51/0x52 summaries stay raw below.
-            guard let info = OuraDecoders.decodeActivityInfo(record) else { return [] }
-            return [.activityInfo(info)]
         case .activitySummary1, .activitySummary2:
             return [.tierB(OuraTierBSummary(tag: record.type, ringTimestamp: record.ringTimestamp,
                                             rawPayload: record.payload, kind: "activity"))]

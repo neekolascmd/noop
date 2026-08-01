@@ -602,6 +602,7 @@ final class OuraDriverTests: XCTestCase {
         XCTAssertEqual(OuraEventTag.sleepPhaseAlt.tier, .diagnostic)
         XCTAssertEqual(OuraEventTag.motion.tier, .diagnostic)
         XCTAssertEqual(OuraEventTag.sleepAcmPeriod.tier, .diagnostic)
+        XCTAssertEqual(OuraEventTag.activityInfo.tier, .diagnostic)
         XCTAssertEqual(OuraEventTag.sleepPhaseInfo.tier, .tierB)
         XCTAssertEqual(OuraEventTag.sleepPhaseInfo.name, "SLEEP_PHASE_INFO")
     }
@@ -653,7 +654,7 @@ final class OuraDriverTests: XCTestCase {
         }
     }
 
-    // MARK: - Activity info (0x50, Tier B, third-party formula) - real Gen 3 captures (PR #960)
+    // MARK: - Activity info (0x50, diagnostic) - real Gen 3 + Ring 4 corroboration
     //
     // The six payloads below are byte-for-byte what a real Gen 3 ring sent across the PR #960
     // investigation sessions (2026-07-02): three short static captures, then a full day from steady
@@ -670,7 +671,7 @@ final class OuraDriverTests: XCTestCase {
         let events = d.ingest(record: rec)
         XCTAssertEqual(events, [.activityInfo(OuraActivityInfo(ringTimestamp: rt, state: 0x41,
                                                                met: [1.8, 1.9, 1.9, 3.2]))])
-        XCTAssertTrue(events[0].isTierB, "activityInfo must still report isTierB - the formula is UNVERIFIED")
+        XCTAssertFalse(events[0].isTierB, "Ring 4-qualified activityInfo is diagnostic, not Tier B")
     }
 
     func testActivityInfoDecodesRealCapture2() {
@@ -726,7 +727,7 @@ final class OuraDriverTests: XCTestCase {
                        [.activityInfo(OuraActivityInfo(ringTimestamp: rt, state: 139, met: [1.8, 7.4]))])
     }
 
-    func testActivityInfoHighByteBranchUsesCoarseSlope() {
+    func testActivityInfoPriorArtHighByteBranchUsesCoarseSlope() {
         // No real capture has hit the >= 0x80 MET branch yet (nothing above 7.4 MET seen), so pin it
         // with SYNTHETIC vectors recomputed from the s6.13 formula: met = 12.8 + (byte - 128) * 0.2.
         //   0x80 = 128 -> 12.8   |   0x90 = 144 -> 12.8 + 16*0.2 = 16.0   |   0xFF = 255 -> 12.8 + 127*0.2 = 38.2
@@ -736,11 +737,15 @@ final class OuraDriverTests: XCTestCase {
                        OuraActivityInfo(ringTimestamp: rt, state: 1, met: [12.8, 16.0, 38.2]))
     }
 
-    func testActivityInfoDroppedByDefaultLikeOtherTierB() {
+    func testActivityInfoEmitsByDefaultAsHardwareBackedDiagnostic() {
         let d = OuraDriver(ringGen: .gen3, authKey: key)   // allowTierB defaults to false
         let rec = OuraRecord(type: OuraEventTag.activityInfo.rawValue, ringTimestamp: rt,
                              payload: bytes("4112131320"))
-        XCTAssertEqual(d.ingest(record: rec), [], "the Tier-B gate must cover .activityInfo too")
+        XCTAssertEqual(d.ingest(record: rec), [
+            .activityInfo(OuraActivityInfo(
+                ringTimestamp: rt, state: 0x41, met: [1.8, 1.9, 1.9, 3.2]
+            )),
+        ])
     }
 
     func testActivityInfoEmptyPayloadDecodesToNil() {

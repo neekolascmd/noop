@@ -363,7 +363,7 @@ public struct OuraRtcBeacon: Equatable, Sendable, Codable {
     }
 }
 
-// MARK: - Tier-B (UNVERIFIED) decoded events
+// MARK: - Diagnostic and Tier-B decoded events
 
 /// A Tier-B sleep summary value (OURA_PROTOCOL.md s6.12). UNVERIFIED layout; carries the raw payload
 /// bytes plus the tag so a fixture test can validate before scoring trusts it. The driver only emits
@@ -378,13 +378,13 @@ public struct OuraTierBSummary: Equatable, Sendable, Codable {
     }
 }
 
-/// One decoded `0x50` activity_info record: a `state` code (activity-category; meaning unconfirmed)
-/// plus a per-sample MET (metabolic-equivalent) series. THIRD-PARTY FORMULA (OURA_PROTOCOL.md s6.13,
-/// [oura-rs] - clean-room fact citation, no code copied): plausible against six real Gen 3 captures
-/// from PR #960's investigation (resting ~0.9 MET through a vigorous-activity burst at 7.4 MET, all
-/// physiologically sane), but NOT independently ground-truth-validated against the Oura app's own
-/// numbers. It therefore stays Tier B: emitted only behind `OuraDriver.allowTierB`, and NEVER folded
-/// into `OuraStreamMapping`/`Streams`/scoring (steps stay honest - no step count is minted from MET).
+/// One decoded `0x50` activity_info record: an unresolved raw state byte plus a wire-order MET
+/// (metabolic-equivalent) series. Real Gen 3 and Ring 4 / FW 2.12.3 captures corroborate the low-byte
+/// formula, record shape, and physiologic output (OURA_PROTOCOL.md s6.13); the high-byte branch remains
+/// prior-art-only. The Ring 4 capture also establishes one-minute bin cadence, but not whether the record
+/// timestamp names the first or last bin. The value is therefore a hardware-backed diagnostic: emitted
+/// without the Tier-B investigation flag and retained atomically for offline replay, but never converted
+/// into steps, calories, workout labels, or individually timestamped samples.
 public struct OuraActivityInfo: Equatable, Sendable, Codable {
     public let ringTimestamp: UInt32
     public let state: Int
@@ -397,9 +397,9 @@ public struct OuraActivityInfo: Equatable, Sendable, Codable {
 // MARK: - The emitted event union
 
 /// What OuraDriver.ingest(record:) emits. A single record can yield several events (e.g. an IBI+amp
-/// record carries up to 6 IBIs). Tier-B events are wrapped in .tierB (or .activityInfo) and only
-/// emitted when the driver is configured to allow them; they must never feed scoring without passing
-/// a real-capture fixture.
+/// record carries up to 6 IBIs). Unverified Tier-B events are wrapped in `.tierB` and only emitted
+/// when the driver is configured to allow them. Diagnostic events may be retained losslessly but must
+/// not feed production metrics until their remaining semantic gates are independently qualified.
 public enum OuraEvent: Equatable, Sendable {
     case hr(OuraHR)
     case ibi(OuraIBI)
@@ -421,16 +421,14 @@ public enum OuraEvent: Equatable, Sendable {
     /// A Tier-B (UNVERIFIED) decoded value. Gated behind OuraDriver.allowTierB. Per the brief's TIER
     /// DISCIPLINE: do not let Tier B feed values silently.
     case tierB(OuraTierBSummary)
-    /// A decoded `0x50` activity_info record (state + MET series). Still Tier-B (see `OuraActivityInfo`
-    /// doc) - split out of the raw-bytes `.tierB` wrapper because this ONE tag has a plausible decode
-    /// formula, so an investigating consumer can log real MET numbers instead of hex. Same gate
-    /// (`allowTierB`), same discipline (never reaches `OuraStreamMapping`).
+    /// A hardware-backed diagnostic `0x50` activity_info record. The whole wire-order series is retained
+    /// at the record anchor; no per-bin timestamps or production activity metrics are invented.
     case activityInfo(OuraActivityInfo)
 
     /// True for Tier-B events, so a consumer can assert none leaked into a Tier-A-only sink.
     public var isTierB: Bool {
         switch self {
-        case .tierB, .activityInfo: return true
+        case .tierB: return true
         default: return false
         }
     }
