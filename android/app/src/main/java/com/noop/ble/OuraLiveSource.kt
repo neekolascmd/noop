@@ -1009,11 +1009,10 @@ class OuraLiveSource(
         // every connection), and a key provisioned since the last attempt is picked up here. allowKeyInstall
         // is wired straight from the connection's adoptIntent so the dangerous 0x24 write is reachable ONLY
         // under an explicit adopt consent (OURA_PROTOCOL.md s3.2).
-        // allowTierB = true - INVESTIGATION ONLY (activity/real_steps/sleep-summary/smoothed-SpO2 tags,
-        // OURA_PROTOCOL.md s7.3 Tier B, UNVERIFIED layouts; PR #960). This lets `emit` LOG what the ring
-        // actually sends (raw bytes per kind, decoded MET for 0x50) so the layouts can be validated
-        // against real captures. It can never leak a value into scoring: OuraStreamMapping drops
-        // TierB/ActivityInfo unconditionally - the Tier-discipline gate that matters lives there, not here.
+        // allowTierB = true - INVESTIGATION ONLY (real_steps/sleep-summary/smoothed-SpO2 tags,
+        // OURA_PROTOCOL.md s7.3 Tier B, UNVERIFIED layouts). This logs presence for future qualification.
+        // The Ring 4-backed 0x50 MET series is diagnostic and retained atomically, but OuraStreamMapping
+        // still cannot turn it into steps, calories, workouts, or scoring inputs.
         syncState = OuraSyncStateStore.read(appContext, deviceId)
         historyCursor = syncState.cursor
         driver = OuraDriver(
@@ -1788,9 +1787,9 @@ class OuraLiveSource(
      * their REAL ring-time-anchored UTC (s5.5) so last night's data is never mis-recorded as happening
      * right now; when no anchor has arrived yet this session, the event is PARKED
      * ([pendingAnchorEvents]) until one does, rather than immediately guessing wall-clock. A 0x42
-     * time-sync (the anchor) drains anything parked. Tier-B events (allowed for INVESTIGATION - see the
-     * driver construction comment) are LOGGED only, never enqueued: OuraStreamMapping drops them anyway,
-     * so an unverified layout can never feed a durable stream or scoring.
+     * time-sync (the anchor) drains anything parked. Tier-B events remain log-only. The Ring 4-qualified
+     * activity-MET series is retained as a diagnostic event, but cannot feed steps, calories, workouts,
+     * or scoring.
      */
     private fun emit(events: List<OuraEvent>, origin: EventOrigin) = guardedCallback("emit") {
         if (events.isEmpty()) return@guardedCallback
@@ -1905,8 +1904,9 @@ class OuraLiveSource(
             }
             is OuraEvent.ActivityInfo -> {
                 if (loggedTierBKinds.add("activity_info")) {
-                    log("Oura: unverified activity history observed (not persisted)")
+                    log("Oura: activity MET history decoded")
                 }
+                enqueueAnchoredOrPark(e, e.value.ringTimestamp, d)
             }
             // Packed motion / state / debugText are not durable Streams rows.
             else -> Unit

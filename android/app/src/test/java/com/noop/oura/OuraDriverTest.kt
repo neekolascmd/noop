@@ -711,6 +711,7 @@ class OuraDriverTest {
         assertEquals(TrustTier.DIAGNOSTIC, OuraEventTag.SLEEP_PHASE_ALT.tier)
         assertEquals(TrustTier.DIAGNOSTIC, OuraEventTag.MOTION.tier)
         assertEquals(TrustTier.DIAGNOSTIC, OuraEventTag.SLEEP_ACM_PERIOD.tier)
+        assertEquals(TrustTier.DIAGNOSTIC, OuraEventTag.ACTIVITY_INFO.tier)
         assertEquals(TrustTier.TIER_B, OuraEventTag.SLEEP_PHASE_INFO.tier)
         assertEquals("SLEEP_PHASE_INFO", OuraEventTag.SLEEP_PHASE_INFO.tagName)
     }
@@ -784,7 +785,7 @@ class OuraDriverTest {
         assertArrayEquals(bytes("01020304"), ev.value.rawPayload)
     }
 
-    // MARK: - Activity info (0x50, Tier B, third-party formula) - real Gen 3 captures (PR #960)
+    // MARK: - Activity info (0x50, diagnostic) - real Gen 3 + Ring 4 corroboration
     //
     // PARITY: the six payloads below are byte-for-byte the real Gen 3 captures pinned in the Swift
     // OuraDriverTests (PR #960 investigation, 2026-07-02): three short static captures, then a full day
@@ -808,7 +809,7 @@ class OuraDriverTest {
             ),
             events,
         )
-        assertTrue("activityInfo must still report isTierB - the formula is UNVERIFIED", events[0].isTierB)
+        assertTrue("Ring 4-qualified activityInfo is diagnostic, not Tier B", !events[0].isTierB)
     }
 
     @Test
@@ -897,7 +898,7 @@ class OuraDriverTest {
     }
 
     @Test
-    fun testActivityInfoHighByteBranchUsesCoarseSlope() {
+    fun testActivityInfoPriorArtHighByteBranchUsesCoarseSlope() {
         // No real capture has hit the >= 0x80 MET branch yet (nothing above 7.4 MET seen), so pin it
         // with SYNTHETIC vectors recomputed from the s6.13 formula: met = 12.8 + (byte - 128) * 0.2.
         //   0x80 = 128 -> 12.8  |  0x90 = 144 -> 12.8 + 16*0.2 = 16.0  |  0xFF = 255 -> 12.8 + 127*0.2 = 38.2
@@ -910,13 +911,16 @@ class OuraDriverTest {
     }
 
     @Test
-    fun testActivityInfoDroppedByDefaultLikeOtherTierB() {
+    fun testActivityInfoEmitsByDefaultAsHardwareBackedDiagnostic() {
         val d = OuraDriver(ringGen = OuraRingGen.GEN3, authKey = key)   // allowTierB defaults to false
         val rec = OuraRecord(type = OuraEventTag.ACTIVITY_INFO.raw, ringTimestamp = rt,
                              payload = bytes("4112131320"))
         assertEquals(
-            "the Tier-B gate must cover ActivityInfo too",
-            emptyList<OuraEvent>(),
+            listOf<OuraEvent>(
+                OuraEvent.ActivityInfo(
+                    OuraActivityInfo(rt, 0x41, listOf(1.8, 1.9, 1.9, 3.2)),
+                ),
+            ),
             d.ingest(rec),
         )
     }

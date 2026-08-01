@@ -200,12 +200,27 @@ final class OuraStreamMappingTests: XCTestCase {
             .timeSync(OuraTimeSync(ringTimestamp: 100, epochMs: 1_750_000_000_000, tzOffsetSeconds: 0)),
             .rtcBeacon(OuraRtcBeacon(ringTimestamp: 100, unixSeconds: 1_750_000_000)),
             .debugText(ringTimestamp: 100, text: "console"),
-            // 0x50 activity/MET (PR #960): decoded but Tier-B/unvalidated - in particular it must never
-            // mint a `steps` row (MET is not a step count; the per-source day-owner rules stay intact).
-            .activityInfo(OuraActivityInfo(ringTimestamp: 100, state: 0x41, met: [1.8, 1.9])),
         ], at: ts)
-        XCTAssertTrue(s.isEmpty, "Tier-B and diagnostic events must not produce any durable stream row")
+        XCTAssertTrue(s.isEmpty, "Tier-B and non-durable events must not produce any durable stream row")
+    }
+
+    func testActivityMetSeriesIsRetainedAtomicallyWithoutInventingActivityMetrics() {
+        let s = OuraStreamMapping.streams(from: [
+            .activityInfo(OuraActivityInfo(ringTimestamp: 100, state: 0x41, met: [1.8, 1.9, 7.4])),
+        ], at: ts)
+        XCTAssertEqual(s.events.count, 1)
+        let event = s.events[0]
+        XCTAssertEqual(event.kind, OuraStreamMapping.activityMetSeriesEventKind)
+        XCTAssertEqual(event.ts, ts)
+        XCTAssertEqual(event.payload["ring_timestamp"], .int(100))
+        XCTAssertEqual(event.payload["state_raw"], .int(0x41))
+        XCTAssertEqual(event.payload["met_x10"], .intArray([18, 19, 74]))
+        XCTAssertEqual(event.payload["sample_interval_seconds"], .int(60))
+        XCTAssertEqual(event.payload["sequence_order"], .string("wire_order"))
+        XCTAssertEqual(event.payload["timestamp_semantics"], .string("record_anchor_only"))
+        XCTAssertEqual(event.payload["unit"], .string("tenths_met"))
         XCTAssertTrue(s.steps.isEmpty, "activity/MET must never fabricate a steps row")
+        XCTAssertTrue(s.gravity.isEmpty)
     }
 
     // MARK: - Empty batch + multi-signal batch

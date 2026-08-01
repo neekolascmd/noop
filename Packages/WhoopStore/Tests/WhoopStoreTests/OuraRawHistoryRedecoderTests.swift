@@ -116,8 +116,8 @@ final class OuraRawHistoryRedecoderTests: XCTestCase {
         XCTAssertNil(event.payload["cadence_seconds"])
     }
 
-    func testPageDecoderRevisionFourRecoversMotionAndSpO2Diagnostics() {
-        XCTAssertEqual(OuraRawHistoryDecoderRevision.current, 4)
+    func testPageDecoderRevisionFiveRecoversMotionSpO2AndActivityDiagnostics() {
+        XCTAssertEqual(OuraRawHistoryDecoderRevision.current, 5)
         let anchor = OuraTimeAnchor(
             ringTimestamp: 1_000,
             utcMilliseconds: 1_700_000_000_000,
@@ -148,17 +148,30 @@ final class OuraRawHistoryRedecoderTests: XCTestCase {
             firstSeenAtUnixMs: 1,
             timeAnchor: anchor
         )
+        let activity = StoredOuraRawHistoryRecord(
+            archiveId: 4,
+            tag: OuraEventTag.activityInfo.rawValue,
+            ringTimestamp: 600,
+            payload: Data([0x41, 0x12, 0x13, 0x4A]),
+            firstSeenAtUnixMs: 1,
+            timeAnchor: anchor
+        )
 
-        let decoded = OuraRawHistoryPageDecoder.decode([motion, sleepAcm, spo2], ringGen: .gen4)
+        let decoded = OuraRawHistoryPageDecoder.decode(
+            [motion, sleepAcm, spo2, activity], ringGen: .gen4
+        )
         XCTAssertEqual(decoded.withheldEvents, 0)
         XCTAssertEqual(decoded.streams.events.map(\.kind), [
             OuraStreamMapping.motionSummaryEventKind,
             OuraStreamMapping.sleepAcmPeriodEventKind,
             OuraStreamMapping.spo2RatioEventKind,
+            OuraStreamMapping.activityMetSeriesEventKind,
         ])
         XCTAssertEqual(decoded.streams.events[0].ts, 1_699_999_990)
         XCTAssertEqual(decoded.streams.events[1].ts, 1_699_999_970)
         XCTAssertEqual(decoded.streams.events[2].ts, 1_699_999_980)
+        XCTAssertEqual(decoded.streams.events[3].ts, 1_699_999_960)
+        XCTAssertEqual(decoded.streams.events[3].payload["met_x10"], .intArray([18, 19, 74]))
         XCTAssertEqual(decoded.streams.spo2, [
             SpO2Sample(
                 ts: 1_699_999_980,

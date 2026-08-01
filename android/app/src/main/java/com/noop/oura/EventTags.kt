@@ -73,8 +73,8 @@ enum class OuraEventTag(val raw: Int) {
     SLEEP_PERIOD(0x6A),       // sleep_period_info_2 (open periodic measurements), s6.12
     BEDTIME_PERIOD(0x76),     // verified start/end ring-clock sleep bounds, s6.12
 
-    // --- Activity / MET (Tier B, UNVERIFIED) ---
-    ACTIVITY_INFO(0x50),      // activity_info (MET-class), OURA_PROTOCOL.md s6.13 (UNVERIFIED)
+    // --- Activity / MET diagnostics ---
+    ACTIVITY_INFO(0x50),      // Ring 4-qualified MET series; state/timestamp role remain diagnostic
     ACTIVITY_SUMMARY_1(0x51), // activity_summary, OURA_PROTOCOL.md s6.13 (UNVERIFIED)
     ACTIVITY_SUMMARY_2(0x52), // activity_summary, OURA_PROTOCOL.md s6.13 (UNVERIFIED)
 
@@ -91,10 +91,10 @@ enum class OuraEventTag(val raw: Int) {
      */
     val tier: TrustTier
         get() = when (this) {
-            SPO2_RATIO_PI, SLEEP_PHASE, SLEEP_PHASE_ALT, MOTION, SLEEP_ACM_PERIOD ->
+            SPO2_RATIO_PI, SLEEP_PHASE, SLEEP_PHASE_ALT, MOTION, SLEEP_ACM_PERIOD, ACTIVITY_INFO ->
                 TrustTier.DIAGNOSTIC
             SLEEP_SUMMARY_1, SLEEP_PHASE_INFO, SLEEP_SUMMARY_C, SLEEP_SUMMARY_D, SLEEP_SUMMARY_E,
-            SLEEP_SUMMARY_F, ACTIVITY_INFO, ACTIVITY_SUMMARY_1, ACTIVITY_SUMMARY_2,
+            SLEEP_SUMMARY_F, ACTIVITY_SUMMARY_1, ACTIVITY_SUMMARY_2,
             REAL_STEPS_1, REAL_STEPS_2, SPO2_SMOOTHED -> TrustTier.TIER_B
             else -> TrustTier.TIER_A
         }

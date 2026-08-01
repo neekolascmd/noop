@@ -69,8 +69,8 @@ public enum OuraEventTag: UInt8, Sendable, CaseIterable, Codable {
     case sleepPeriod      = 0x6A   // sleep_period_info_2 (open periodic measurements), s6.12
     case bedtimePeriod    = 0x76   // verified start/end ring-clock sleep bounds, s6.12
 
-    // --- Activity / MET (Tier B, UNVERIFIED) ---
-    case activityInfo     = 0x50   // activity_info (MET-class), OURA_PROTOCOL.md s6.13 (UNVERIFIED)
+    // --- Activity / MET diagnostics ---
+    case activityInfo     = 0x50   // Ring 4-qualified MET series; state/timestamp role remain diagnostic
     case activitySummary1 = 0x51   // activity_summary, OURA_PROTOCOL.md s6.13 (UNVERIFIED)
     case activitySummary2 = 0x52   // activity_summary, OURA_PROTOCOL.md s6.13 (UNVERIFIED)
 
@@ -85,10 +85,10 @@ public enum OuraEventTag: UInt8, Sendable, CaseIterable, Codable {
     /// behind an explicit allowTierB flag. Per OURA_PROTOCOL.md s7.3 and the brief's TIER DISCIPLINE.
     public var tier: TrustTier {
         switch self {
-        case .spo2RatioPI, .sleepPhase, .sleepPhaseAlt, .motion, .sleepAcmPeriod:
+        case .spo2RatioPI, .sleepPhase, .sleepPhaseAlt, .motion, .sleepAcmPeriod, .activityInfo:
             return .diagnostic
         case .sleepSummary1, .sleepPhaseInfo, .sleepSummaryC, .sleepSummaryD, .sleepSummaryE,
-             .sleepSummaryF, .activityInfo, .activitySummary1, .activitySummary2,
+             .sleepSummaryF, .activitySummary1, .activitySummary2,
              .realSteps1, .realSteps2, .spo2Smoothed:
             return .tierB
         default:

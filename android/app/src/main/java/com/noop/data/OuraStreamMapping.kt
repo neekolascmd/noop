@@ -55,6 +55,9 @@ object OuraStreamMapping {
     /** Six units-neutral fixed-point values from `0x72 sleep_acm_period`. */
     const val EVENT_SLEEP_ACM_PERIOD = "OURA_SLEEP_ACM_PERIOD"
 
+    /** Ring 4-qualified `0x50` wire-order MET bins; state/timestamp role remain diagnostic. */
+    const val EVENT_ACTIVITY_MET_SERIES = "OURA_ACTIVITY_MET_SERIES"
+
     /**
      * Fold a batch of decoded [events] into a protocol [Streams] for one flush. [anchor] maps a
      * ring-clock timestamp to wall-clock unix seconds (null => drop the sample). Pure: no BLE, no DB,
@@ -232,15 +235,38 @@ object OuraStreamMapping {
                     )
                 }
 
+                is OuraEvent.ActivityInfo -> {
+                    if (ev.value.met.isEmpty()) continue
+                    val ts = anchor(ev.value.ringTimestamp) ?: continue
+                    // The retained Ring 4 corpus validates one-minute bin cadence, but not whether the
+                    // record timestamp names the first or last bin. Preserve the ordered array at the
+                    // real record anchor. Integer tenths are lossless for the wire's 0.1/0.2-MET scales.
+                    out.events.add(
+                        WhoopEvent(
+                            ts,
+                            EVENT_ACTIVITY_MET_SERIES,
+                            linkedMapOf(
+                                "ring_timestamp" to ev.value.ringTimestamp,
+                                "state_raw" to ev.value.state,
+                                "met_x10" to ev.value.met.map { Math.round(it * 10.0).toInt() },
+                                "sample_interval_seconds" to 60,
+                                "sequence_order" to "wire_order",
+                                "timestamp_semantics" to "record_anchor_only",
+                                "unit" to "tenths_met",
+                            ),
+                        ),
+                    )
+                }
+
                 is OuraEvent.Battery -> {
                     // Live battery percent. No ring timestamp on a battery reading (it is a command
                     // response), so it is stamped by the live source's `onBattery` path, not persisted
                     // as a tied-to-ts row here. Leave the batch's battery list empty (honest: no faked ts).
                 }
 
-                // Packed motion / state / time-sync / rtc / debug / TierB / ActivityInfo never map
-                // onto a scored stream. The hardware-backed summary records above are diagnostic
-                // events only. In particular, 0x50 activity/MET NEVER mints a steps row.
+                // Packed motion / state / time-sync / rtc / debug / TierB never map onto a scored
+                // stream. Hardware-backed summary records above are diagnostic events only. In
+                // particular, 0x50 activity/MET NEVER mints steps, calories, or a workout row.
                 else -> Unit
             }
         }

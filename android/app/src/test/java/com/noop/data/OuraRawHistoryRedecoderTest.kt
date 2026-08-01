@@ -96,8 +96,8 @@ class OuraRawHistoryRedecoderTest {
     }
 
     @Test
-    fun pageDecoderRevisionFourRecoversMotionAndSpO2Diagnostics() {
-        assertEquals(4, OuraRawHistoryDecoderRevision.CURRENT)
+    fun pageDecoderRevisionFiveRecoversMotionSpO2AndActivityDiagnostics() {
+        assertEquals(5, OuraRawHistoryDecoderRevision.CURRENT)
         val anchor = OuraTimeAnchor(
             ringTimestamp = 1_000L,
             utcMilliseconds = 1_700_000_000_000L,
@@ -132,20 +132,33 @@ class OuraRawHistoryRedecoderTest {
             firstSeenAtUnixMs = 1,
             timeAnchor = anchor,
         )
+        val activity = StoredOuraRawHistoryRecord(
+            archiveId = 4,
+            tag = OuraEventTag.ACTIVITY_INFO.raw,
+            ringTimestamp = 600L,
+            payload = byteArrayOf(0x41, 0x12, 0x13, 0x4A),
+            firstSeenAtUnixMs = 1,
+            timeAnchor = anchor,
+        )
 
-        val decoded = OuraRawHistoryPageDecoder.decode(listOf(motion, sleepAcm, spo2), OuraRingGen.GEN4)
+        val decoded = OuraRawHistoryPageDecoder.decode(
+            listOf(motion, sleepAcm, spo2, activity), OuraRingGen.GEN4,
+        )
         assertEquals(0, decoded.withheldEvents)
         assertEquals(
             listOf(
                 OuraStreamMapping.EVENT_MOTION_SUMMARY,
                 OuraStreamMapping.EVENT_SLEEP_ACM_PERIOD,
                 OuraStreamMapping.EVENT_SPO2_RATIO_PI,
+                OuraStreamMapping.EVENT_ACTIVITY_MET_SERIES,
             ),
             decoded.batch.events.map { it.kind },
         )
         assertEquals(1_699_999_990L, decoded.batch.events[0].ts)
         assertEquals(1_699_999_970L, decoded.batch.events[1].ts)
         assertEquals(1_699_999_980L, decoded.batch.events[2].ts)
+        assertEquals(1_699_999_960L, decoded.batch.events[3].ts)
+        assertTrue(decoded.batch.events[3].payloadJSON.contains("\"met_x10\":[18,19,74]"))
         assertEquals(1, decoded.batch.spo2.size)
         assertEquals(1_699_999_980L, decoded.batch.spo2.single().ts)
         assertEquals(932, decoded.batch.spo2.single().red)

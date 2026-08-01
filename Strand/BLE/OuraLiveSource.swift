@@ -222,10 +222,9 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     /// Logs once per history fetch when a decoded 0x42 record fails to establish the active fetch's
     /// fresh anchor. Presence-only diagnostics keep token/counter values and biometric data private.
     private var loggedUncorrelatedTimeSync = false
-    /// Tier-B (UNVERIFIED) kinds ("activity" / "real_steps" / "sleep_summary" / "spo2_smoothed") already
-    /// logged this session, so a repeated tag logs once per KIND, not once per record. INVESTIGATION
-    /// ONLY (see the `allowTierB: true` comment at driver construction) - the log is how we collect raw
-    /// captures to validate these layouts; nothing here ever persists or scores. Reset on stop/disconnect.
+    /// Diagnostic/Tier-B kinds already logged this session, so a repeated tag logs once per KIND, not once
+    /// per record. Tier-B values remain presence-only; the qualified activity series is parked and retained
+    /// separately as a diagnostic event but never scores. Reset on stop/disconnect.
     private var loggedTierBKinds: Set<String> = []
     /// Every history-fetched event stays parked with its ring timestamp until the batch summary. Only then,
     /// after a UTC anchor authorizes the fetch, is the complete batch awaited into SQLite before the cursor
@@ -1404,11 +1403,12 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                     log("Oura: unverified \(summary.kind) history observed (not persisted)")
                 }
 
-            case .activityInfo:
+            case .activityInfo(let v):
                 if !loggedTierBKinds.contains("activity_info") {
                     loggedTierBKinds.insert("activity_info")
-                    log("Oura: unverified activity history observed (not persisted)")
+                    log("Oura: activity MET history decoded")
                 }
+                parkHistoryEvent(e, ringTimestamp: v.ringTimestamp)
 
             default:
                 break   // packed motion/state/debugText are not durable Streams rows
@@ -1587,11 +1587,10 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         // driver's `allowKeyInstall` is gated on this connection's adopt consent ONLY: with no consent the
         // dangerous `0x24` installKey can never be sequenced, so a read-only / Advanced-key connect stays
         // honest (it announces needs-pairing instead of provisioning). Per OURA_PROTOCOL.md s3.2.
-        // allowTierB: true - INVESTIGATION ONLY (activity/real_steps/sleep-summary/smoothed-SpO2 tags,
-        // OURA_PROTOCOL.md s7.3 Tier B, UNVERIFIED layouts; PR #960). This lets `ingest` LOG what the
-        // ring actually sends (raw bytes per kind, decoded MET for 0x50) so the layouts can be validated
-        // against real captures. It can never leak a value into scoring: OuraStreamMapping drops
-        // .tierB/.activityInfo unconditionally - the Tier-discipline gate that matters lives there, not here.
+        // allowTierB: true - INVESTIGATION ONLY (real_steps/sleep-summary/smoothed-SpO2 tags,
+        // OURA_PROTOCOL.md s7.3 Tier B, UNVERIFIED layouts). This lets `ingest` log presence for future
+        // qualification. The Ring 4-backed 0x50 MET series is now diagnostic and retained atomically,
+        // but OuraStreamMapping still cannot turn it into steps, calories, workouts, or scoring inputs.
         // Cursor + validated durable time anchor are one coherent state. The driver may use the saved
         // mapping for timestamp conversion after reconnect, but it independently re-authorizes cursor
         // commits only after monotonic ring-clock continuity is proven.
