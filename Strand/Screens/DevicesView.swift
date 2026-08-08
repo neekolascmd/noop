@@ -57,6 +57,7 @@ private struct DevicesContent: View {
     @State private var removeTarget: PairedDevice?
     @State private var deleteDataTarget: PairedDevice?
     @State private var confirmSpO2Enable = false
+    @State private var confirmActivityEnable = false
     /// After removing the ACTIVE device with other devices still paired, prompt to pick a new active one.
     @State private var pickNewActive = false
 
@@ -106,6 +107,10 @@ private struct DevicesContent: View {
                     onRemove: { removeTarget = device })
                     .staggeredAppear(index: idx)
                 if device.sourceKind == .oura && device.status == .active {
+                    OuraActivitySetting(
+                        connected: live.connected,
+                        enabled: model.ouraActivityTrackingEnabled,
+                        onEnable: { confirmActivityEnable = true })
                     OuraSpO2Setting(
                         connected: live.connected,
                         enabled: model.ouraSpO2AutomaticEnabled,
@@ -133,6 +138,13 @@ private struct DevicesContent: View {
             Button("Enable") { model.enableOuraAutomaticSpO2() }
         } message: {
             Text("This changes the ring's measurement setting and may use more battery. It does not reset the ring or erase data. NOOP will read only the percentage records the ring stores overnight.")
+        }
+        .alert("Enable automatic activity tracking?",
+               isPresented: $confirmActivityEnable) {
+            Button("Cancel", role: .cancel) { }
+            Button("Enable") { model.enableOuraAutomaticActivityTracking() }
+        } message: {
+            Text("This enables the ring's Real Steps and Exercise HR background modes and may use more battery. It does not reset the ring or erase data. Any activity records the ring produces sync directly into NOOP; exact step fields remain experimental until a real capture qualifies them.")
         }
         // Switch confirm
         .alert("Make this your active strap?",
@@ -277,6 +289,50 @@ private struct DevicesContent: View {
                 pickNewActive = true
             }
         }
+    }
+}
+
+/// Explicit opt-in for the ring-side activity DSP. The read-only status arrives during normal Oura
+/// history setup; writes remain behind the confirmation above because they can affect ring battery.
+private struct OuraActivitySetting: View {
+    let connected: Bool
+    let enabled: Bool?
+    let onEnable: () -> Void
+
+    var body: some View {
+        StrandCard(padding: 14) {
+            HStack(spacing: 12) {
+                Image(systemName: "figure.walk.motion")
+                    .foregroundStyle(StrandPalette.textSecondary)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Automatic activity tracking")
+                        .font(StrandFont.subhead)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                    Text(statusText)
+                        .font(StrandFont.footnote)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                }
+                Spacer()
+                if enabled == true {
+                    StatePill("On", tone: .positive)
+                } else if connected && enabled == false {
+                    Button("Enable", action: onEnable)
+                        .buttonStyle(.bordered)
+                } else {
+                    StatePill(connected ? "Checking…" : "Connect ring",
+                              tone: .neutral, showsDot: false)
+                }
+            }
+        }
+    }
+
+    private var statusText: String {
+        if enabled == true { return String(localized: "Ring activity modes are on; available records sync automatically.") }
+        if enabled == false { return String(localized: "Off on this ring. Enable it for direct activity data.") }
+        return connected
+            ? String(localized: "Reading the ring's activity modes.")
+            : String(localized: "Connect the ring to read its activity modes.")
     }
 }
 

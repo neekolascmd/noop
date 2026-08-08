@@ -477,6 +477,11 @@ final class SourceCoordinator: ObservableObject {
         ouraSource?.requestAutomaticSpO2Enable()
     }
 
+    /// Forward the Devices-screen's explicit activity-mode opt-in to the active Oura source.
+    func requestOuraAutomaticActivityTrackingEnable() {
+        ouraSource?.requestAutomaticActivityTrackingEnable()
+    }
+
     /// Stop whichever non-WHOOP source (standard strap, FTMS machine, Huami device, or Oura ring) is live,
     /// and drop the reference. Idempotent. Exactly one is ever live, but we stop all defensively.
     private func tearDownNonWhoopSource() {

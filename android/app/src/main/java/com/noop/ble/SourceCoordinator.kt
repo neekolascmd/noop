@@ -126,6 +126,10 @@ class SourceCoordinator(
     private val _ouraSpO2AutomaticEnabled = MutableStateFlow<Boolean?>(null)
     val ouraSpO2AutomaticEnabled: StateFlow<Boolean?> = _ouraSpO2AutomaticEnabled.asStateFlow()
 
+    /** Aggregate Real Steps + Exercise HR background-mode state for the active ring. */
+    private val _ouraActivityTrackingEnabled = MutableStateFlow<Boolean?>(null)
+    val ouraActivityTrackingEnabled: StateFlow<Boolean?> = _ouraActivityTrackingEnabled.asStateFlow()
+
     /** Collects the active Oura source's adoptPhase / needsPairing into the mirrors above; cancelled and
      *  nulled on teardown so a forgotten ring never leaks a stale outcome. */
     private var ouraStateJob: kotlinx.coroutines.Job? = null
@@ -435,6 +439,7 @@ class SourceCoordinator(
                 launch { source.adoptPhase.collect { _ouraAdoptPhase.value = it } }
                 launch { source.needsPairing.collect { _ouraNeedsPairing.value = it } }
                 launch { source.spo2AutomaticEnabled.collect { _ouraSpO2AutomaticEnabled.value = it } }
+                launch { source.activityTrackingEnabled.collect { _ouraActivityTrackingEnabled.value = it } }
             }
             if (!address.isNullOrEmpty()) source.connect(address) else source.scan()
             ouraSource = source
@@ -475,6 +480,11 @@ class SourceCoordinator(
         ouraSource?.requestAutomaticSpO2Enable()
     }
 
+    /** Forward the Devices-screen's explicit activity-mode opt-in to the active Oura source. */
+    fun requestOuraAutomaticActivityTrackingEnable() {
+        ouraSource?.requestAutomaticActivityTrackingEnable()
+    }
+
     /** Stop whichever non-WHOOP source (standard strap, FTMS machine, Huami device, or Oura ring) is live,
      *  and drop the reference. Idempotent. Exactly one is ever live, but we stop all defensively. */
     private fun tearDownNonWhoopSource() {
@@ -488,6 +498,7 @@ class SourceCoordinator(
         _ouraAdoptPhase.value = OuraLiveSource.AdoptPhase.Idle
         _ouraNeedsPairing.value = null
         _ouraSpO2AutomaticEnabled.value = null
+        _ouraActivityTrackingEnabled.value = null
         // A stale speed/cadence/power readout must not outlive the strap session (the source's own stop()
         // already pushes an empty SensorMetrics, but reset here too so leaving for WHOOP / FTMS / Huami —
         // none of which feed this flow — is clean and immediate).

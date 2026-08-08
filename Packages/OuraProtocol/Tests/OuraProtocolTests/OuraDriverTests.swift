@@ -605,6 +605,8 @@ final class OuraDriverTests: XCTestCase {
         XCTAssertEqual(OuraEventTag.activityInfo.tier, .diagnostic)
         XCTAssertEqual(OuraEventTag.sleepPhaseInfo.tier, .tierB)
         XCTAssertEqual(OuraEventTag.sleepPhaseInfo.name, "SLEEP_PHASE_INFO")
+        XCTAssertEqual(OuraEventTag.exerciseHRTrace.tier, .tierB)
+        XCTAssertEqual(OuraEventTag.exerciseHRTrace.name, "EXERCISE_HR_TRACE")
     }
 
     func testIngestRoutesHardwareBackedMotionDiagnosticsWithoutTierBFlag() {
@@ -776,6 +778,14 @@ final class OuraDriverTests: XCTestCase {
         XCTAssertEqual(d.handleSecureFrame(spo2Status),
                        .featureStatus(OuraFeatureStatus(feature: 0x04, mode: 0x01,
                                                         status: 0, state: 0, subscription: 0)))
+        let stepsStatus = OuraSecureFrame(subop: 0x21, subBody: bytes("0b01000000"))
+        XCTAssertEqual(d.handleSecureFrame(stepsStatus),
+                       .featureStatus(OuraFeatureStatus(feature: 0x0B, mode: 0x01,
+                                                        status: 0, state: 0, subscription: 0)))
+        let exerciseStatus = OuraSecureFrame(subop: 0x21, subBody: bytes("0300000000"))
+        XCTAssertEqual(d.handleSecureFrame(exerciseStatus),
+                       .featureStatus(OuraFeatureStatus(feature: 0x03, mode: 0x00,
+                                                        status: 0, state: 0, subscription: 0)))
 
         // The push subBody is the 14 bytes AFTER `2f 0f 28` from the s5.6 wire frame (IBI at [5..6]).
         let pushBody = bytes("020002000001040000000000007f")
@@ -860,5 +870,19 @@ final class OuraDriverTests: XCTestCase {
         XCTAssertEqual(OuraCommands.spO2ReadStatus().bytes, [0x2F, 0x02, 0x20, 0x04])
         XCTAssertEqual(OuraCommands.spO2EnableAutomatic().bytes, [0x2F, 0x03, 0x22, 0x04, 0x01])
         XCTAssertEqual(OuraCommands.spO2EnableAutomatic().label, "spo2_enable_automatic")
+    }
+
+    func testAutomaticActivityCommandsAreByteExactAndExplicitlyNamed() {
+        XCTAssertEqual(OuraCommands.realStepsReadStatus().bytes, [0x2F, 0x02, 0x20, 0x0B])
+        XCTAssertEqual(OuraCommands.exerciseHRReadStatus().bytes, [0x2F, 0x02, 0x20, 0x03])
+        XCTAssertEqual(OuraCommands.realStepsEnableAutomatic().bytes, [0x2F, 0x03, 0x22, 0x0B, 0x01])
+        XCTAssertEqual(OuraCommands.exerciseHREnableAutomatic().bytes, [0x2F, 0x03, 0x22, 0x03, 0x01])
+        XCTAssertEqual(OuraCommands.realStepsEnableAutomatic().label, "real_steps_enable_automatic")
+        XCTAssertEqual(OuraCommands.exerciseHREnableAutomatic().label, "exercise_hr_enable_automatic")
+
+        XCTAssertEqual(OuraFeatureStatus(feature: 0x0B, mode: 0x01, status: 0, state: 0,
+                                         subscription: 0).isRealStepsAutomatic, true)
+        XCTAssertEqual(OuraFeatureStatus(feature: 0x03, mode: 0x00, status: 0, state: 0,
+                                         subscription: 0).isExerciseHRAutomatic, false)
     }
 }

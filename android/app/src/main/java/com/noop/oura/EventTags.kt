@@ -78,6 +78,10 @@ enum class OuraEventTag(val raw: Int) {
     ACTIVITY_SUMMARY_1(0x51), // activity_summary, OURA_PROTOCOL.md s6.13 (UNVERIFIED)
     ACTIVITY_SUMMARY_2(0x52), // activity_summary, OURA_PROTOCOL.md s6.13 (UNVERIFIED)
 
+    // --- Exercise HR (Tier B, presence-only until a real NOOP capture qualifies layouts) ---
+    EXERCISE_HR_TRACE(0x73),     // ehr_trace_event, OURA_PROTOCOL.md s6.13 (UNVERIFIED)
+    EXERCISE_HR_INTENSITY(0x74), // ehr_acm_intensity_event, OURA_PROTOCOL.md s6.13 (UNVERIFIED)
+
     // --- Real steps (Tier B, UNVERIFIED) ---
     REAL_STEPS_1(0x7E),       // real_steps_features_1, OURA_PROTOCOL.md s6.13 (UNVERIFIED)
     REAL_STEPS_2(0x7F),       // real_steps_features_2, OURA_PROTOCOL.md s6.13 (UNVERIFIED)
@@ -95,6 +99,7 @@ enum class OuraEventTag(val raw: Int) {
                 TrustTier.DIAGNOSTIC
             SLEEP_SUMMARY_1, SLEEP_PHASE_INFO, SLEEP_SUMMARY_C, SLEEP_SUMMARY_D, SLEEP_SUMMARY_E,
             SLEEP_SUMMARY_F, ACTIVITY_SUMMARY_1, ACTIVITY_SUMMARY_2,
+            EXERCISE_HR_TRACE, EXERCISE_HR_INTENSITY,
             REAL_STEPS_1, REAL_STEPS_2, SPO2_SMOOTHED -> TrustTier.TIER_B
             else -> TrustTier.TIER_A
         }
@@ -137,6 +142,8 @@ enum class OuraEventTag(val raw: Int) {
             ACTIVITY_INFO -> "ACTIVITY_INFO"
             ACTIVITY_SUMMARY_1 -> "ACTIVITY_SUMMARY_1"
             ACTIVITY_SUMMARY_2 -> "ACTIVITY_SUMMARY_2"
+            EXERCISE_HR_TRACE -> "EXERCISE_HR_TRACE"
+            EXERCISE_HR_INTENSITY -> "EXERCISE_HR_INTENSITY"
             REAL_STEPS_1 -> "REAL_STEPS_1"
             REAL_STEPS_2 -> "REAL_STEPS_2"
             SPO2_SMOOTHED -> "SPO2_SMOOTHED"

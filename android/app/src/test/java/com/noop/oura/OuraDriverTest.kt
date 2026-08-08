@@ -714,6 +714,8 @@ class OuraDriverTest {
         assertEquals(TrustTier.DIAGNOSTIC, OuraEventTag.ACTIVITY_INFO.tier)
         assertEquals(TrustTier.TIER_B, OuraEventTag.SLEEP_PHASE_INFO.tier)
         assertEquals("SLEEP_PHASE_INFO", OuraEventTag.SLEEP_PHASE_INFO.tagName)
+        assertEquals(TrustTier.TIER_B, OuraEventTag.EXERCISE_HR_TRACE.tier)
+        assertEquals("EXERCISE_HR_TRACE", OuraEventTag.EXERCISE_HR_TRACE.tagName)
     }
 
     @Test
@@ -962,6 +964,16 @@ class OuraDriverTest {
             OuraDriver.SecureRouting.FeatureStatus(OuraFeatureStatus(0x04, 0x01, 0, 0, 0)),
             d.handleSecureFrame(spo2Status),
         )
+        val stepsStatus = OuraSecureFrame(subop = 0x21, subBody = bytes("0b01000000"))
+        assertEquals(
+            OuraDriver.SecureRouting.FeatureStatus(OuraFeatureStatus(0x0B, 0x01, 0, 0, 0)),
+            d.handleSecureFrame(stepsStatus),
+        )
+        val exerciseStatus = OuraSecureFrame(subop = 0x21, subBody = bytes("0300000000"))
+        assertEquals(
+            OuraDriver.SecureRouting.FeatureStatus(OuraFeatureStatus(0x03, 0x00, 0, 0, 0)),
+            d.handleSecureFrame(exerciseStatus),
+        )
 
         // The push subBody is the 14 bytes AFTER `2f 0f 28` from the s5.6 wire frame (IBI at [5..6]).
         val pushBody = bytes("020002000001040000000000007f")
@@ -1058,5 +1070,23 @@ class OuraDriverTest {
             OuraCommands.spO2EnableAutomatic().bytes,
         )
         assertEquals("spo2_enable_automatic", OuraCommands.spO2EnableAutomatic().label)
+    }
+
+    @Test
+    fun testAutomaticActivityCommandsAreByteExactAndExplicitlyNamed() {
+        assertArrayEquals(intArrayOf(0x2F, 0x02, 0x20, 0x0B), OuraCommands.realStepsReadStatus().bytes)
+        assertArrayEquals(intArrayOf(0x2F, 0x02, 0x20, 0x03), OuraCommands.exerciseHRReadStatus().bytes)
+        assertArrayEquals(
+            intArrayOf(0x2F, 0x03, 0x22, 0x0B, 0x01),
+            OuraCommands.realStepsEnableAutomatic().bytes,
+        )
+        assertArrayEquals(
+            intArrayOf(0x2F, 0x03, 0x22, 0x03, 0x01),
+            OuraCommands.exerciseHREnableAutomatic().bytes,
+        )
+        assertEquals("real_steps_enable_automatic", OuraCommands.realStepsEnableAutomatic().label)
+        assertEquals("exercise_hr_enable_automatic", OuraCommands.exerciseHREnableAutomatic().label)
+        assertEquals(true, OuraFeatureStatus(0x0B, 0x01, 0, 0, 0).isRealStepsAutomatic)
+        assertEquals(false, OuraFeatureStatus(0x03, 0x00, 0, 0, 0).isExerciseHRAutomatic)
     }
 }

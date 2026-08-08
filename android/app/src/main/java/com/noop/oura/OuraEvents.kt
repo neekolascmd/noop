@@ -102,7 +102,7 @@ data class OuraTemp(val ringTimestamp: Long, val celsius: Double)
  */
 data class OuraBattery(val percent: Int, val voltageMv: Int? = null, val charging: Boolean? = null)
 
-/** Read-only 0x21 feature status; feature 0x04 is automatic SpO2 and mode 1 is automatic. */
+/** Read-only 0x21 feature status; mode 1 means automatic background operation. */
 data class OuraFeatureStatus(
     val feature: Int,
     val mode: Int,
@@ -111,6 +111,8 @@ data class OuraFeatureStatus(
     val subscription: Int,
 ) {
     val isSpO2Automatic: Boolean? get() = if (feature == 0x04) mode == 0x01 else null
+    val isRealStepsAutomatic: Boolean? get() = if (feature == 0x0B) mode == 0x01 else null
+    val isExerciseHRAutomatic: Boolean? get() = if (feature == 0x03) mode == 0x01 else null
 }
 
 /**

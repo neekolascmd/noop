@@ -243,8 +243,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val ouraSpO2AutomaticEnabled: StateFlow<Boolean?> =
         noopApp.sourceCoordinator.ouraSpO2AutomaticEnabled
 
+    /** Aggregate Real Steps + Exercise HR background-mode state for the active ring. */
+    val ouraActivityTrackingEnabled: StateFlow<Boolean?> =
+        noopApp.sourceCoordinator.ouraActivityTrackingEnabled
+
     /** Called only after the Devices-screen confirmation. */
     fun enableOuraAutomaticSpO2() = noopApp.sourceCoordinator.requestOuraAutomaticSpO2Enable()
+
+    /** Called only after the Devices-screen confirmation. */
+    fun enableOuraAutomaticActivityTracking() =
+        noopApp.sourceCoordinator.requestOuraAutomaticActivityTrackingEnable()
 
     /**
      * Point the WHOOP scan at a specific family, then present nearby straps WITHOUT auto-connecting (the

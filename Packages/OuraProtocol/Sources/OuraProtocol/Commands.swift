@@ -20,6 +20,10 @@ public enum OuraCommands {
     public static let featureDaytimeHR: UInt8 = 0x02
     // The SpO2 feature id. Per OURA_PROTOCOL.md s7.1.
     public static let featureSpO2: UInt8 = 0x04
+    // Ring-side activity DSP features. Real Steps is the prerequisite for Exercise HR in the official
+    // Gen 3+ setup sequence. Both are explicit device-setting writes in NOOP.
+    public static let featureExerciseHR: UInt8 = 0x03
+    public static let featureRealSteps: UInt8 = 0x0B
 
     // MARK: - Pre-auth / identity (unauthenticated OK)
 
@@ -194,6 +198,32 @@ public enum OuraCommands {
     /// This changes a ring sensor setting and must only follow an explicit user action.
     public static func spO2EnableAutomatic() -> OuraCommand {
         OuraCommand(label: "spo2_enable_automatic", bytes: [0x2F, 0x03, 0x22, featureSpO2, 0x01])
+    }
+
+    // MARK: - Automatic activity tracking (explicit user opt-in only)
+
+    /// Read the ring-side Real Steps feature mode without changing it.
+    public static func realStepsReadStatus() -> OuraCommand {
+        OuraCommand(label: "real_steps_read", bytes: [0x2F, 0x02, 0x20, featureRealSteps])
+    }
+
+    /// Read the ring-side Exercise HR feature mode without changing it.
+    public static func exerciseHRReadStatus() -> OuraCommand {
+        OuraCommand(label: "exercise_hr_read", bytes: [0x2F, 0x02, 0x20, featureExerciseHR])
+    }
+
+    /// Enable the on-ring step/gait DSP in background mode. Real Steps produces banked 0x7E/0x7F
+    /// records; it is also the official prerequisite for automatic Exercise HR.
+    public static func realStepsEnableAutomatic() -> OuraCommand {
+        OuraCommand(label: "real_steps_enable_automatic",
+                    bytes: [0x2F, 0x03, 0x22, featureRealSteps, 0x01])
+    }
+
+    /// Enable automatic Exercise HR after Real Steps. This is not the connected-live HR mode used by
+    /// the Live screen; it asks the ring to bank exercise-focused history while worn.
+    public static func exerciseHREnableAutomatic() -> OuraCommand {
+        OuraCommand(label: "exercise_hr_enable_automatic",
+                    bytes: [0x2F, 0x03, 0x22, featureExerciseHR, 0x01])
     }
 }
 
