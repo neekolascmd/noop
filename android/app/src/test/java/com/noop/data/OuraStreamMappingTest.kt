@@ -271,9 +271,14 @@ class OuraStreamMappingTest {
                 OuraEvent.ExerciseHRIntensity(
                     com.noop.oura.OuraExerciseHRIntensity(101, listOf(0x1234, 0x00FF)),
                 ),
+                OuraEvent.AlwaysOnHR(
+                    com.noop.oura.OuraAlwaysOnHRSeries(
+                        102, 1, 5, bpm = listOf(60, 61, 62), quality = listOf(1, 2, 3),
+                    ),
+                ),
                 OuraEvent.RealStepsFeatures(
                     com.noop.oura.OuraRealStepsFeatures(
-                        102, 0x7E, listOf(3, 4, 6, 4, 5, 6, 7, 8, 19, 20, 22, 12, 13, 14),
+                        103, 0x7E, listOf(3, 4, 6, 4, 5, 6, 7, 8, 19, 20, 22, 12, 13, 14),
                     ),
                 ),
             ),
@@ -282,18 +287,23 @@ class OuraStreamMappingTest {
         assertEquals(
             listOf(
                 OuraStreamMapping.EVENT_EXERCISE_HR_INTENSITY,
+                OuraStreamMapping.EVENT_ALWAYS_ON_HR_SERIES,
                 OuraStreamMapping.EVENT_REAL_STEPS_FEATURES,
             ),
             s.events.map { it.kind },
         )
         assertEquals(listOf(0x1234, 0x00FF), s.events[0].payload["intensity_u16"])
         assertEquals("unvalidated", s.events[0].payload["field_semantics"])
-        assertEquals(0x7E, s.events[1].payload["source_tag"])
+        assertEquals(listOf(60, 61, 62), s.events[1].payload["bpm_u8"])
+        assertEquals(listOf(1, 2, 3), s.events[1].payload["quality_u8"])
+        assertEquals(1_920, s.events[1].payload["interval_ms"])
+        assertEquals("unvalidated", s.events[1].payload["field_semantics"])
+        assertEquals(0x7E, s.events[2].payload["source_tag"])
         assertEquals(
             listOf(3, 4, 6, 4, 5, 6, 7, 8, 19, 20, 22, 12, 13, 14),
-            s.events[1].payload["feature_fields_u16"],
+            s.events[2].payload["feature_fields_u16"],
         )
-        assertEquals("stateful_unknown", s.events[1].payload["part_relationship"])
+        assertEquals("stateful_unknown", s.events[2].payload["part_relationship"])
         assertTrue(s.hr.isEmpty())
         assertTrue(s.rr.isEmpty())
     }

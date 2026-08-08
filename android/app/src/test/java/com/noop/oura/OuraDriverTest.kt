@@ -713,6 +713,7 @@ class OuraDriverTest {
         assertEquals(TrustTier.DIAGNOSTIC, OuraEventTag.SLEEP_ACM_PERIOD.tier)
         assertEquals(TrustTier.DIAGNOSTIC, OuraEventTag.ACTIVITY_INFO.tier)
         assertEquals(TrustTier.DIAGNOSTIC, OuraEventTag.EXERCISE_HR_INTENSITY.tier)
+        assertEquals(TrustTier.DIAGNOSTIC, OuraEventTag.ALWAYS_ON_HR.tier)
         assertEquals(TrustTier.DIAGNOSTIC, OuraEventTag.REAL_STEPS_1.tier)
         assertEquals(TrustTier.DIAGNOSTIC, OuraEventTag.REAL_STEPS_2.tier)
         assertEquals(TrustTier.TIER_B, OuraEventTag.SLEEP_PHASE_INFO.tier)
@@ -964,6 +965,30 @@ class OuraDriverTest {
                 ),
             )
         }
+    }
+
+    @Test
+    fun testAlwaysOnHRDecodesExactNativeShapeAsDiagnostic() {
+        val record = OuraRecord(
+            OuraEventTag.ALWAYS_ON_HR.raw, rt,
+            intArrayOf(0x81, 0x05, 0x03, 60, 1, 61, 2, 62, 3),
+        )
+        val expected = OuraAlwaysOnHRSeries(rt, 1, 5, bpm = listOf(60, 61, 62), quality = listOf(1, 2, 3))
+        assertEquals(expected, OuraDecoders.decodeAlwaysOnHR(record))
+        assertEquals(
+            listOf(OuraEvent.AlwaysOnHR(expected)),
+            OuraDriver(OuraRingGen.GEN4, key).ingest(record),
+        )
+    }
+
+    @Test
+    fun testAlwaysOnHRRejectsWrongTagAndCountMismatch() {
+        assertNull(OuraDecoders.decodeAlwaysOnHR(
+            OuraRecord(OuraEventTag.ACTIVITY_INFO.raw, rt, intArrayOf(1, 0, 1, 60, 1)),
+        ))
+        assertNull(OuraDecoders.decodeAlwaysOnHR(
+            OuraRecord(OuraEventTag.ALWAYS_ON_HR.raw, rt, intArrayOf(1, 0, 2, 60, 1)),
+        ))
     }
 
     @Test

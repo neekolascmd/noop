@@ -604,6 +604,7 @@ final class OuraDriverTests: XCTestCase {
         XCTAssertEqual(OuraEventTag.sleepAcmPeriod.tier, .diagnostic)
         XCTAssertEqual(OuraEventTag.activityInfo.tier, .diagnostic)
         XCTAssertEqual(OuraEventTag.exerciseHRIntensity.tier, .diagnostic)
+        XCTAssertEqual(OuraEventTag.alwaysOnHR.tier, .diagnostic)
         XCTAssertEqual(OuraEventTag.realSteps1.tier, .diagnostic)
         XCTAssertEqual(OuraEventTag.realSteps2.tier, .diagnostic)
         XCTAssertEqual(OuraEventTag.sleepPhaseInfo.tier, .tierB)
@@ -778,6 +779,28 @@ final class OuraDriverTests: XCTestCase {
                 payload: payload
             )))
         }
+    }
+
+    func testAlwaysOnHRDecodesExactNativeShapeAsDiagnostic() {
+        let record = OuraRecord(type: OuraEventTag.alwaysOnHR.rawValue,
+                                ringTimestamp: rt,
+                                payload: [0x81, 0x05, 0x03, 60, 1, 61, 2, 62, 3])
+        let expected = OuraAlwaysOnHRSeries(ringTimestamp: rt, flag: 1, baseOffset: 5,
+                                            bpm: [60, 61, 62], quality: [1, 2, 3])
+        XCTAssertEqual(OuraDecoders.decodeAlwaysOnHR(record), expected)
+        XCTAssertEqual(OuraDriver(ringGen: .gen4, authKey: key).ingest(record: record),
+                       [.alwaysOnHR(expected)])
+    }
+
+    func testAlwaysOnHRRejectsWrongTagAndCountMismatch() {
+        XCTAssertNil(OuraDecoders.decodeAlwaysOnHR(OuraRecord(
+            type: OuraEventTag.activityInfo.rawValue, ringTimestamp: rt,
+            payload: [0x01, 0x00, 0x01, 60, 1]
+        )))
+        XCTAssertNil(OuraDecoders.decodeAlwaysOnHR(OuraRecord(
+            type: OuraEventTag.alwaysOnHR.rawValue, ringTimestamp: rt,
+            payload: [0x01, 0x00, 0x02, 60, 1]
+        )))
     }
 
     func testRealStepsFeaturesMirrorNativeUnpackerWithoutMintingSteps() {

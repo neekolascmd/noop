@@ -529,6 +529,9 @@ public final class OuraDriver {
             return (OuraDecoders.decodeIBIAmplitude(record) ?? []).map { OuraEvent.ibi($0) }
         case .greenIbiQuality:
             return (OuraDecoders.decodeGreenIBIQuality(record) ?? []).map { OuraEvent.ibi($0) }
+        case .alwaysOnHR:
+            guard let value = OuraDecoders.decodeAlwaysOnHR(record) else { return [] }
+            return [.alwaysOnHR(value)]
         case .spo2IbiAmplitude:
             return (OuraDecoders.decodeSpO2IBI(record) ?? []).map { OuraEvent.ibi($0) }
         case .ibi:

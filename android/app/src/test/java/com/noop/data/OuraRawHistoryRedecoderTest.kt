@@ -96,8 +96,8 @@ class OuraRawHistoryRedecoderTest {
     }
 
     @Test
-    fun pageDecoderRevisionSixRecoversMotionSpO2AndActivityDiagnostics() {
-        assertEquals(6, OuraRawHistoryDecoderRevision.CURRENT)
+    fun pageDecoderRevisionSevenRecoversMotionSpO2ActivityAndAlwaysOnHRDiagnostics() {
+        assertEquals(7, OuraRawHistoryDecoderRevision.CURRENT)
         val anchor = OuraTimeAnchor(
             ringTimestamp = 1_000L,
             utcMilliseconds = 1_700_000_000_000L,
@@ -159,9 +159,17 @@ class OuraRawHistoryRedecoderTest {
             firstSeenAtUnixMs = 1,
             timeAnchor = anchor,
         )
+        val alwaysOnHR = StoredOuraRawHistoryRecord(
+            archiveId = 7,
+            tag = OuraEventTag.ALWAYS_ON_HR.raw,
+            ringTimestamp = 300L,
+            payload = byteArrayOf(0x81.toByte(), 0x05, 0x03, 60, 1, 61, 2, 62, 3),
+            firstSeenAtUnixMs = 1,
+            timeAnchor = anchor,
+        )
 
         val decoded = OuraRawHistoryPageDecoder.decode(
-            listOf(motion, sleepAcm, spo2, activity, exerciseIntensity, realSteps), OuraRingGen.GEN4,
+            listOf(motion, sleepAcm, spo2, activity, exerciseIntensity, realSteps, alwaysOnHR), OuraRingGen.GEN4,
         )
         assertEquals(0, decoded.withheldEvents)
         assertEquals(
@@ -172,6 +180,7 @@ class OuraRawHistoryRedecoderTest {
                 OuraStreamMapping.EVENT_ACTIVITY_MET_SERIES,
                 OuraStreamMapping.EVENT_EXERCISE_HR_INTENSITY,
                 OuraStreamMapping.EVENT_REAL_STEPS_FEATURES,
+                OuraStreamMapping.EVENT_ALWAYS_ON_HR_SERIES,
             ),
             decoded.batch.events.map { it.kind },
         )
@@ -186,6 +195,9 @@ class OuraRawHistoryRedecoderTest {
         assertTrue(decoded.batch.events[5].payloadJSON.contains(
             "\"feature_fields_u16\":[3,4,6,4,5,6,7,8,19,20,22,12,13,14]",
         ))
+        assertEquals(1_699_999_930L, decoded.batch.events[6].ts)
+        assertTrue(decoded.batch.events[6].payloadJSON.contains("\"bpm_u8\":[60,61,62]"))
+        assertTrue(decoded.batch.events[6].payloadJSON.contains("\"quality_u8\":[1,2,3]"))
         assertEquals(1, decoded.batch.spo2.size)
         assertEquals(1_699_999_980L, decoded.batch.spo2.single().ts)
         assertEquals(932, decoded.batch.spo2.single().red)

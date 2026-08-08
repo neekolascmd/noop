@@ -228,21 +228,30 @@ final class OuraStreamMappingTests: XCTestCase {
             .exerciseHRIntensity(OuraExerciseHRIntensity(
                 ringTimestamp: 101, values: [0x1234, 0x00FF]
             )),
+            .alwaysOnHR(OuraAlwaysOnHRSeries(
+                ringTimestamp: 102, flag: 1, baseOffset: 5,
+                bpm: [60, 61, 62], quality: [1, 2, 3]
+            )),
             .realStepsFeatures(OuraRealStepsFeatures(
-                ringTimestamp: 102, sourceTag: 0x7E,
+                ringTimestamp: 103, sourceTag: 0x7E,
                 fields: [3, 4, 6, 4, 5, 6, 7, 8, 19, 20, 22, 12, 13, 14]
             )),
         ], at: ts)
         XCTAssertEqual(s.events.map(\.kind), [
             OuraStreamMapping.exerciseHRIntensityEventKind,
+            OuraStreamMapping.alwaysOnHRSeriesEventKind,
             OuraStreamMapping.realStepsFeaturesEventKind,
         ])
         XCTAssertEqual(s.events[0].payload["intensity_u16"], .intArray([0x1234, 0x00FF]))
         XCTAssertEqual(s.events[0].payload["field_semantics"], .string("unvalidated"))
-        XCTAssertEqual(s.events[1].payload["source_tag"], .int(0x7E))
-        XCTAssertEqual(s.events[1].payload["feature_fields_u16"],
+        XCTAssertEqual(s.events[1].payload["bpm_u8"], .intArray([60, 61, 62]))
+        XCTAssertEqual(s.events[1].payload["quality_u8"], .intArray([1, 2, 3]))
+        XCTAssertEqual(s.events[1].payload["interval_ms"], .int(1_920))
+        XCTAssertEqual(s.events[1].payload["field_semantics"], .string("unvalidated"))
+        XCTAssertEqual(s.events[2].payload["source_tag"], .int(0x7E))
+        XCTAssertEqual(s.events[2].payload["feature_fields_u16"],
                        .intArray([3, 4, 6, 4, 5, 6, 7, 8, 19, 20, 22, 12, 13, 14]))
-        XCTAssertEqual(s.events[1].payload["part_relationship"], .string("stateful_unknown"))
+        XCTAssertEqual(s.events[2].payload["part_relationship"], .string("stateful_unknown"))
         XCTAssertTrue(s.hr.isEmpty)
         XCTAssertTrue(s.rr.isEmpty)
         XCTAssertTrue(s.steps.isEmpty)

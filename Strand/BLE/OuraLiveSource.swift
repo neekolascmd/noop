@@ -1475,6 +1475,13 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 }
                 parkHistoryEvent(e, ringTimestamp: v.ringTimestamp)
 
+            case .alwaysOnHR(let v):
+                if !loggedTierBKinds.contains("always_on_hr") {
+                    loggedTierBKinds.insert("always_on_hr")
+                    log("Oura: always-on HR diagnostic history decoded")
+                }
+                parkHistoryEvent(e, ringTimestamp: v.ringTimestamp)
+
             case .realStepsFeatures(let v):
                 if !loggedTierBKinds.contains("real_steps_features") {
                     loggedTierBKinds.insert("real_steps_features")

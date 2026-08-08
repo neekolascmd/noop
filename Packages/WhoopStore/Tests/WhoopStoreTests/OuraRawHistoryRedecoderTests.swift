@@ -116,8 +116,8 @@ final class OuraRawHistoryRedecoderTests: XCTestCase {
         XCTAssertNil(event.payload["cadence_seconds"])
     }
 
-    func testPageDecoderRevisionSixRecoversMotionSpO2AndActivityDiagnostics() {
-        XCTAssertEqual(OuraRawHistoryDecoderRevision.current, 6)
+    func testPageDecoderRevisionSevenRecoversMotionSpO2ActivityAndAlwaysOnHRDiagnostics() {
+        XCTAssertEqual(OuraRawHistoryDecoderRevision.current, 7)
         let anchor = OuraTimeAnchor(
             ringTimestamp: 1_000,
             utcMilliseconds: 1_700_000_000_000,
@@ -173,9 +173,17 @@ final class OuraRawHistoryRedecoderTests: XCTestCase {
             firstSeenAtUnixMs: 1,
             timeAnchor: anchor
         )
+        let alwaysOnHR = StoredOuraRawHistoryRecord(
+            archiveId: 7,
+            tag: OuraEventTag.alwaysOnHR.rawValue,
+            ringTimestamp: 300,
+            payload: Data([0x81, 0x05, 0x03, 60, 1, 61, 2, 62, 3]),
+            firstSeenAtUnixMs: 1,
+            timeAnchor: anchor
+        )
 
         let decoded = OuraRawHistoryPageDecoder.decode(
-            [motion, sleepAcm, spo2, activity, exerciseIntensity, realSteps], ringGen: .gen4
+            [motion, sleepAcm, spo2, activity, exerciseIntensity, realSteps, alwaysOnHR], ringGen: .gen4
         )
         XCTAssertEqual(decoded.withheldEvents, 0)
         XCTAssertEqual(decoded.streams.events.map(\.kind), [
@@ -185,6 +193,7 @@ final class OuraRawHistoryRedecoderTests: XCTestCase {
             OuraStreamMapping.activityMetSeriesEventKind,
             OuraStreamMapping.exerciseHRIntensityEventKind,
             OuraStreamMapping.realStepsFeaturesEventKind,
+            OuraStreamMapping.alwaysOnHRSeriesEventKind,
         ])
         XCTAssertEqual(decoded.streams.events[0].ts, 1_699_999_990)
         XCTAssertEqual(decoded.streams.events[1].ts, 1_699_999_970)
@@ -196,6 +205,9 @@ final class OuraRawHistoryRedecoderTests: XCTestCase {
         XCTAssertEqual(decoded.streams.events[5].ts, 1_699_999_940)
         XCTAssertEqual(decoded.streams.events[5].payload["feature_fields_u16"],
                        .intArray([3, 4, 6, 4, 5, 6, 7, 8, 19, 20, 22, 12, 13, 14]))
+        XCTAssertEqual(decoded.streams.events[6].ts, 1_699_999_930)
+        XCTAssertEqual(decoded.streams.events[6].payload["bpm_u8"], .intArray([60, 61, 62]))
+        XCTAssertEqual(decoded.streams.events[6].payload["quality_u8"], .intArray([1, 2, 3]))
         XCTAssertEqual(decoded.streams.spo2, [
             SpO2Sample(
                 ts: 1_699_999_980,

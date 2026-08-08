@@ -633,6 +633,9 @@ class OuraDriver(
                 (OuraDecoders.decodeIBIAmplitude(record) ?: emptyList()).map { OuraEvent.Ibi(it) }
             OuraEventTag.GREEN_IBI_QUALITY ->
                 (OuraDecoders.decodeGreenIBIQuality(record) ?: emptyList()).map { OuraEvent.Ibi(it) }
+            OuraEventTag.ALWAYS_ON_HR ->
+                OuraDecoders.decodeAlwaysOnHR(record)?.let { listOf(OuraEvent.AlwaysOnHR(it)) }
+                    ?: emptyList()
             OuraEventTag.SPO2_IBI_AMPLITUDE ->
                 (OuraDecoders.decodeSpO2IBI(record) ?: emptyList()).map { OuraEvent.Ibi(it) }
             OuraEventTag.IBI ->

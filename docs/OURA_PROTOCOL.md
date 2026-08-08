@@ -374,6 +374,15 @@ flags   = byte1 >> 5
 out-of-range values are withheld rather than allowed to corrupt HRV/recovery. Seven samples fit in a
 14-byte record. [oura-rs]
 
+### 6.4a Always-on HR - `0x86` `aohr_event` (3 + 2n B body)
+- Native parser layout: byte 0 low bit=`flag`, byte 1=`base_offset`, byte 2=`count`, followed by exactly
+  `count` `(bpm:u8, quality:u8)` pairs. The parser declares a **1,920 ms** sample interval. A body whose
+  length is not exactly `3 + 2×count` is rejected. [oura-rs]
+- The quality codebook, base-offset use, record-anchor direction, and Ring 4 emission are not yet
+  repository-hardware-qualified. NOOP therefore retains a complete record as
+  `OURA_ALWAYS_ON_HR_SERIES` with raw BPM/quality arrays and the real record anchor, but creates no HR,
+  R-R, workout, or scoring row. This is a native-parser-backed diagnostic, not measured HR yet.
+
 ### 6.5 SpO2 per-sample - `0x6F` `spo2_event` (5–18 B, 1 s spacing)
 - Byte 6 is a status/header field; it is **not** added to the following values. [ringverse]
 - One direct `uint8` SpO2 percentage per second from byte 7 onward; optional `0xFF` terminator. Values
@@ -583,7 +592,7 @@ out-of-range values are withheld rather than allowed to corrupt HRV/recovery. Se
 ### 7.3 NOOP decoder build guidance
 1. **Single TLV parser** (§2.3) for all generations - the framing is generation-invariant. Branch only on: MTU clamp (203 vs 247) and Gen-4/5 extra-char presence (discover but ignore in v1).
 2. **Generation detection:** read product info (`0x18 03 18 00 10`) → hardware id (`ORE_06` on the tested Ring 4), and firmware (`0x08`). Map to Gen 3/4/5 to set MTU and pick verified-vs-unverified layout confidence.
-3. **Trust tiers in the decoder:** Tier A (hardware-backed, may feed production metrics) = TLV framing, auth, GetEvents cursor, live-HR `0x02`, `0x60` IBI, `0x46`/`0x69`/`0x75` temp, Ring 4 `0x6F` percentage SpO2 plus raw `0x77` DC, `0x6A` raw sleep-period measurements, `0x76` bedtime bounds, `0x42` time-sync, `0x0D` battery, `0x45`/`0x53` state, `0x6B` motion. The corrected `0x80` layout is also Tier A: external real Ring 5 captures contain more than 1,100 coherent beats and validate the split-bitfield layout; a repository-owned capture remains useful corroboration, not a production gate. Diagnostic / explicitly estimated = Ring 4 `0x8B` emission and wire shape are now hardware-backed; raw ratio/PI stays diagnostic, while the qualified Oura Simple result may feed only the separately labelled `oura_simple_gen4` estimate path until reference-sensor comparison is recorded. The atomic `0x4E`/`0x5A` phase series is diagnostic because cadence/direction are not qualified. Ring 4 `0x50` is also diagnostic: its record shape, low-byte MET formula, and cadence are qualified, while the high-byte branch, raw state, and record-anchor direction are not. Native-parser-backed `0x74` and `0x7E/0x7F` shapes are structural diagnostics only: no field semantics or production metric is assigned. Tier B (UNVERIFIED, fixture-gate before use) items = sleep summaries, the `0x4B` body layout, sleep-stage cadence, `0x51/0x52` activity summaries, `0x73` Exercise HR trace, legacy `0x70`/`0x7B` on Ring 4, and the protobuf `0x55/0x59` interpretation (do **not** ship).
+3. **Trust tiers in the decoder:** Tier A (hardware-backed, may feed production metrics) = TLV framing, auth, GetEvents cursor, live-HR `0x02`, `0x60` IBI, `0x46`/`0x69`/`0x75` temp, Ring 4 `0x6F` percentage SpO2 plus raw `0x77` DC, `0x6A` raw sleep-period measurements, `0x76` bedtime bounds, `0x42` time-sync, `0x0D` battery, `0x45`/`0x53` state, `0x6B` motion. The corrected `0x80` layout is also Tier A: external real Ring 5 captures contain more than 1,100 coherent beats and validate the split-bitfield layout; a repository-owned capture remains useful corroboration, not a production gate. Diagnostic / explicitly estimated = Ring 4 `0x8B` emission and wire shape are now hardware-backed; raw ratio/PI stays diagnostic, while the qualified Oura Simple result may feed only the separately labelled `oura_simple_gen4` estimate path until reference-sensor comparison is recorded. The atomic `0x4E`/`0x5A` phase series is diagnostic because cadence/direction are not qualified. Ring 4 `0x50` is also diagnostic: its record shape, low-byte MET formula, and cadence are qualified, while the high-byte branch, raw state, and record-anchor direction are not. Native-parser-backed `0x74`, `0x7E/0x7F`, and `0x86` shapes are structural diagnostics only: no unqualified field is assigned to a production metric. Tier B (UNVERIFIED, fixture-gate before use) items = sleep summaries, the `0x4B` body layout, sleep-stage cadence, `0x51/0x52` activity summaries, `0x73` Exercise HR trace, legacy `0x70`/`0x7B` on Ring 4, and the protobuf `0x55/0x59` interpretation (do **not** ship).
 4. **HRV/sleep:** consume `0x5D` HRV, preserve `0x6A` without naming its states, and use `0x76` for stage-less sleep bounds. Preserve `0x4E`/`0x5A` as atomic diagnostic series, but do not timestamp individual codes or stage a night until a real fixture proves cadence/direction. Never read Oura feature `0x06` (encrypted API).
 
 ### 7.4 Passive record inventory and local raw archive
@@ -638,6 +647,8 @@ downstream; raw replay alone never turns the estimate into a firmware or clinica
 Decoder revision 5 replays retained `0x50` records as atomic `OURA_ACTIVITY_MET_SERIES` diagnostics.
 Decoder revision 6 adds the structurally decoded `0x74` and `0x7E`/`0x7F` diagnostic series. It preserves
 their real record anchors and raw field order but deliberately creates no HR, steps, strain, or workout row.
+Decoder revision 7 adds `0x86` as an atomic `OURA_ALWAYS_ON_HR_SERIES`; it retains parser-declared cadence
+and raw BPM/quality pairs without promoting them to heart rate before owned-ring qualification.
 
 The `oura-decode` CLI uses the same inventory while replaying an opt-in capture. It counts reassembled TLVs,
 not capture fragments, so a split record or several records packed into one notification cannot create a

@@ -61,6 +61,9 @@ object OuraStreamMapping {
     /** Native-parser-backed 0x74 values with unresolved physical meaning. */
     const val EVENT_EXERCISE_HR_INTENSITY = "OURA_EXERCISE_HR_INTENSITY_SERIES"
 
+    /** Native-parser-backed 0x86 arrays; never production HR until hardware-qualified. */
+    const val EVENT_ALWAYS_ON_HR_SERIES = "OURA_ALWAYS_ON_HR_SERIES"
+
     /** Native-parser-backed 0x7E/0x7F fields with unresolved names and cross-part state. */
     const val EVENT_REAL_STEPS_FEATURES = "OURA_REAL_STEPS_FEATURES"
 
@@ -277,6 +280,28 @@ object OuraStreamMapping {
                                 "sequence_order" to "wire_order",
                                 "timestamp_semantics" to "record_anchor_only",
                                 "unit" to "raw_u16",
+                                "field_semantics" to "unvalidated",
+                            ),
+                        ),
+                    )
+                }
+
+                is OuraEvent.AlwaysOnHR -> {
+                    if (ev.value.bpm.isEmpty() || ev.value.bpm.size != ev.value.quality.size) continue
+                    val ts = anchor(ev.value.ringTimestamp) ?: continue
+                    out.events.add(
+                        WhoopEvent(
+                            ts,
+                            EVENT_ALWAYS_ON_HR_SERIES,
+                            linkedMapOf(
+                                "ring_timestamp" to ev.value.ringTimestamp,
+                                "flag_raw" to ev.value.flag,
+                                "base_offset_raw" to ev.value.baseOffset,
+                                "interval_ms" to ev.value.intervalMs,
+                                "bpm_u8" to ev.value.bpm,
+                                "quality_u8" to ev.value.quality,
+                                "sequence_order" to "wire_order",
+                                "timestamp_semantics" to "record_anchor_only",
                                 "field_semantics" to "unvalidated",
                             ),
                         ),
