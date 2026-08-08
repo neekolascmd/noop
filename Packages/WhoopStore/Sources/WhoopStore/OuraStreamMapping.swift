@@ -22,7 +22,7 @@ import OuraProtocol
 /// missing stream stays empty here, never faked (Huami precedent).
 ///
 /// Tier-B (UNVERIFIED) events are dropped. Tier-A signals may enter production streams; explicitly
-/// named diagnostic events (sleep-phase, raw SpO2 ratio/PI, motion, and activity-MET series) are durable
+/// named diagnostic events (sleep-phase, raw SpO2 ratio/PI, motion, and activity series) are durable
 /// evidence but have no scoring consumer. An unverified summary can therefore never silently feed scoring.
 public enum OuraStreamMapping {
     /// Oura's app-side Ring 4 / Oreo quadratic, kept distinct from a firmware percentage.
@@ -45,6 +45,10 @@ public enum OuraStreamMapping {
     public static let sleepAcmPeriodEventKind = "OURA_SLEEP_ACM_PERIOD"
     /// Ring 4-qualified `0x50` wire-order MET bins. The raw state and record anchor remain unresolved.
     public static let activityMetSeriesEventKind = "OURA_ACTIVITY_MET_SERIES"
+    /// Native-parser-backed 0x74 values with unresolved physical meaning.
+    public static let exerciseHRIntensityEventKind = "OURA_EXERCISE_HR_INTENSITY_SERIES"
+    /// Native-parser-backed 0x7E/0x7F fields with unresolved names and cross-part state.
+    public static let realStepsFeaturesEventKind = "OURA_REAL_STEPS_FEATURES"
 
     /// Build a `Streams` from a batch of decoded Oura events, all stamped at the arrival wall-clock `ts`
     /// (unix seconds). Pure → unit-testable. Section-4 table:
@@ -206,6 +210,29 @@ public enum OuraStreamMapping {
                     "sequence_order": .string("wire_order"),
                     "timestamp_semantics": .string("record_anchor_only"),
                     "unit": .string("tenths_met"),
+                ]))
+
+            case .exerciseHRIntensity(let v):
+                guard !v.values.isEmpty else { continue }
+                out.events.append(WhoopEvent(ts: ts, kind: exerciseHRIntensityEventKind, payload: [
+                    "ring_timestamp": .int(Int(v.ringTimestamp)),
+                    "intensity_u16": .intArray(v.values),
+                    "sequence_order": .string("wire_order"),
+                    "timestamp_semantics": .string("record_anchor_only"),
+                    "unit": .string("raw_u16"),
+                    "field_semantics": .string("unvalidated"),
+                ]))
+
+            case .realStepsFeatures(let v):
+                guard v.fields.count == 14 else { continue }
+                out.events.append(WhoopEvent(ts: ts, kind: realStepsFeaturesEventKind, payload: [
+                    "ring_timestamp": .int(Int(v.ringTimestamp)),
+                    "source_tag": .int(Int(v.sourceTag)),
+                    "feature_fields_u16": .intArray(v.fields),
+                    "sequence_order": .string("wire_order"),
+                    "timestamp_semantics": .string("record_anchor_only"),
+                    "field_semantics": .string("unvalidated"),
+                    "part_relationship": .string("stateful_unknown"),
                 ]))
 
             case .battery(let v):

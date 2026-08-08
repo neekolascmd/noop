@@ -743,6 +743,12 @@ class OuraDriver(
                 // The mapping retains this atomically and cannot derive steps/calories/workouts.
                 OuraDecoders.decodeActivityInfo(record)?.let { listOf(OuraEvent.ActivityInfo(it)) }
                     ?: emptyList()
+            OuraEventTag.EXERCISE_HR_INTENSITY ->
+                OuraDecoders.decodeExerciseHRIntensity(record)
+                    ?.let { listOf(OuraEvent.ExerciseHRIntensity(it)) } ?: emptyList()
+            OuraEventTag.REAL_STEPS_1, OuraEventTag.REAL_STEPS_2 ->
+                OuraDecoders.decodeRealStepsFeatures(record)
+                    ?.let { listOf(OuraEvent.RealStepsFeatures(it)) } ?: emptyList()
 
             // --- Tier B (only reached when allowTierB == true; otherwise dropped above) ---
             OuraEventTag.SLEEP_PHASE_INFO ->
@@ -773,21 +779,12 @@ class OuraDriver(
                         ),
                     ),
                 )
-            OuraEventTag.EXERCISE_HR_TRACE, OuraEventTag.EXERCISE_HR_INTENSITY ->
+            OuraEventTag.EXERCISE_HR_TRACE ->
                 listOf(
                     OuraEvent.TierB(
                         OuraTierBSummary(
                             tag = record.type, ringTimestamp = record.ringTimestamp,
                             rawPayload = record.payload, kind = "exercise_hr",
-                        ),
-                    ),
-                )
-            OuraEventTag.REAL_STEPS_1, OuraEventTag.REAL_STEPS_2 ->
-                listOf(
-                    OuraEvent.TierB(
-                        OuraTierBSummary(
-                            tag = record.type, ringTimestamp = record.ringTimestamp,
-                            rawPayload = record.payload, kind = "real_steps",
                         ),
                     ),
                 )

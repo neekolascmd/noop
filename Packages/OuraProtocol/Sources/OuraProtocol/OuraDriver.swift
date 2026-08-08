@@ -664,6 +664,12 @@ public final class OuraDriver {
         case .activityInfo:
             guard let info = OuraDecoders.decodeActivityInfo(record) else { return [] }
             return [.activityInfo(info)]
+        case .exerciseHRIntensity:
+            guard let value = OuraDecoders.decodeExerciseHRIntensity(record) else { return [] }
+            return [.exerciseHRIntensity(value)]
+        case .realSteps1, .realSteps2:
+            guard let value = OuraDecoders.decodeRealStepsFeatures(record) else { return [] }
+            return [.realStepsFeatures(value)]
 
         // --- Tier B (only reached when allowTierB == true; otherwise dropped above) ---
         case .sleepPhaseInfo:
@@ -675,12 +681,9 @@ public final class OuraDriver {
         case .activitySummary1, .activitySummary2:
             return [.tierB(OuraTierBSummary(tag: record.type, ringTimestamp: record.ringTimestamp,
                                             rawPayload: record.payload, kind: "activity"))]
-        case .exerciseHRTrace, .exerciseHRIntensity:
+        case .exerciseHRTrace:
             return [.tierB(OuraTierBSummary(tag: record.type, ringTimestamp: record.ringTimestamp,
                                             rawPayload: record.payload, kind: "exercise_hr"))]
-        case .realSteps1, .realSteps2:
-            return [.tierB(OuraTierBSummary(tag: record.type, ringTimestamp: record.ringTimestamp,
-                                            rawPayload: record.payload, kind: "real_steps"))]
         case .spo2Smoothed:
             return [.tierB(OuraTierBSummary(tag: record.type, ringTimestamp: record.ringTimestamp,
                                             rawPayload: record.payload, kind: "spo2_smoothed"))]

@@ -58,6 +58,12 @@ object OuraStreamMapping {
     /** Ring 4-qualified `0x50` wire-order MET bins; state/timestamp role remain diagnostic. */
     const val EVENT_ACTIVITY_MET_SERIES = "OURA_ACTIVITY_MET_SERIES"
 
+    /** Native-parser-backed 0x74 values with unresolved physical meaning. */
+    const val EVENT_EXERCISE_HR_INTENSITY = "OURA_EXERCISE_HR_INTENSITY_SERIES"
+
+    /** Native-parser-backed 0x7E/0x7F fields with unresolved names and cross-part state. */
+    const val EVENT_REAL_STEPS_FEATURES = "OURA_REAL_STEPS_FEATURES"
+
     /**
      * Fold a batch of decoded [events] into a protocol [Streams] for one flush. [anchor] maps a
      * ring-clock timestamp to wall-clock unix seconds (null => drop the sample). Pure: no BLE, no DB,
@@ -253,6 +259,45 @@ object OuraStreamMapping {
                                 "sequence_order" to "wire_order",
                                 "timestamp_semantics" to "record_anchor_only",
                                 "unit" to "tenths_met",
+                            ),
+                        ),
+                    )
+                }
+
+                is OuraEvent.ExerciseHRIntensity -> {
+                    if (ev.value.values.isEmpty()) continue
+                    val ts = anchor(ev.value.ringTimestamp) ?: continue
+                    out.events.add(
+                        WhoopEvent(
+                            ts,
+                            EVENT_EXERCISE_HR_INTENSITY,
+                            linkedMapOf(
+                                "ring_timestamp" to ev.value.ringTimestamp,
+                                "intensity_u16" to ev.value.values,
+                                "sequence_order" to "wire_order",
+                                "timestamp_semantics" to "record_anchor_only",
+                                "unit" to "raw_u16",
+                                "field_semantics" to "unvalidated",
+                            ),
+                        ),
+                    )
+                }
+
+                is OuraEvent.RealStepsFeatures -> {
+                    if (ev.value.fields.size != 14) continue
+                    val ts = anchor(ev.value.ringTimestamp) ?: continue
+                    out.events.add(
+                        WhoopEvent(
+                            ts,
+                            EVENT_REAL_STEPS_FEATURES,
+                            linkedMapOf(
+                                "ring_timestamp" to ev.value.ringTimestamp,
+                                "source_tag" to ev.value.sourceTag,
+                                "feature_fields_u16" to ev.value.fields,
+                                "sequence_order" to "wire_order",
+                                "timestamp_semantics" to "record_anchor_only",
+                                "field_semantics" to "unvalidated",
+                                "part_relationship" to "stateful_unknown",
                             ),
                         ),
                     )

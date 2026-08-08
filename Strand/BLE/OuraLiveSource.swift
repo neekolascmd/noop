@@ -1468,6 +1468,20 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 }
                 parkHistoryEvent(e, ringTimestamp: v.ringTimestamp)
 
+            case .exerciseHRIntensity(let v):
+                if !loggedTierBKinds.contains("exercise_hr_intensity") {
+                    loggedTierBKinds.insert("exercise_hr_intensity")
+                    log("Oura: exercise-HR intensity history decoded")
+                }
+                parkHistoryEvent(e, ringTimestamp: v.ringTimestamp)
+
+            case .realStepsFeatures(let v):
+                if !loggedTierBKinds.contains("real_steps_features") {
+                    loggedTierBKinds.insert("real_steps_features")
+                    log("Oura: real-steps feature history decoded")
+                }
+                parkHistoryEvent(e, ringTimestamp: v.ringTimestamp)
+
             default:
                 break   // packed motion/state/debugText are not durable Streams rows
             }

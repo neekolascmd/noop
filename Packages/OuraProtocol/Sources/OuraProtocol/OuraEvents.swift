@@ -380,6 +380,36 @@ public struct OuraTierBSummary: Equatable, Sendable, Codable {
     }
 }
 
+/// One structurally decoded `0x74 ehr_acm_intensity_event` record. Oura's native parser treats the
+/// body as a bounded wire-order series of little-endian unsigned 16-bit values. The physical unit,
+/// cadence, and whether the record timestamp names the first or last sample are not yet qualified,
+/// so this is durable diagnostic evidence only and must never become HR, strain, or a workout metric.
+public struct OuraExerciseHRIntensity: Equatable, Sendable, Codable {
+    public let ringTimestamp: UInt32
+    public let values: [Int]
+
+    public init(ringTimestamp: UInt32, values: [Int]) {
+        self.ringTimestamp = ringTimestamp
+        self.values = values
+    }
+}
+
+/// One structurally decoded `0x7E`/`0x7F real_steps_features` record. The official native parser
+/// requires exactly 14 bytes and unpacks the two four-byte groups with their carry bits. Field names
+/// and the stateful relationship between parts 1 and 2 remain unknown, so the ordered fields are kept
+/// losslessly as diagnostics and are deliberately not converted into a steps row.
+public struct OuraRealStepsFeatures: Equatable, Sendable, Codable {
+    public let ringTimestamp: UInt32
+    public let sourceTag: UInt8
+    public let fields: [Int]
+
+    public init(ringTimestamp: UInt32, sourceTag: UInt8, fields: [Int]) {
+        self.ringTimestamp = ringTimestamp
+        self.sourceTag = sourceTag
+        self.fields = fields
+    }
+}
+
 /// One decoded `0x50` activity_info record: an unresolved raw state byte plus a wire-order MET
 /// (metabolic-equivalent) series. Real Gen 3 and Ring 4 / FW 2.12.3 captures corroborate the low-byte
 /// formula, record shape, and physiologic output (OURA_PROTOCOL.md s6.13); the high-byte branch remains
@@ -426,6 +456,10 @@ public enum OuraEvent: Equatable, Sendable {
     /// A hardware-backed diagnostic `0x50` activity_info record. The whole wire-order series is retained
     /// at the record anchor; no per-bin timestamps or production activity metrics are invented.
     case activityInfo(OuraActivityInfo)
+    /// Structurally decoded activity-sensing records. They remain diagnostics until a controlled ring
+    /// capture qualifies units, cadence, field names, and cross-record state.
+    case exerciseHRIntensity(OuraExerciseHRIntensity)
+    case realStepsFeatures(OuraRealStepsFeatures)
 
     /// True for Tier-B events, so a consumer can assert none leaked into a Tier-A-only sink.
     public var isTierB: Bool {

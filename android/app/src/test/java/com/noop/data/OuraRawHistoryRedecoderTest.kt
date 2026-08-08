@@ -96,8 +96,8 @@ class OuraRawHistoryRedecoderTest {
     }
 
     @Test
-    fun pageDecoderRevisionFiveRecoversMotionSpO2AndActivityDiagnostics() {
-        assertEquals(5, OuraRawHistoryDecoderRevision.CURRENT)
+    fun pageDecoderRevisionSixRecoversMotionSpO2AndActivityDiagnostics() {
+        assertEquals(6, OuraRawHistoryDecoderRevision.CURRENT)
         val anchor = OuraTimeAnchor(
             ringTimestamp = 1_000L,
             utcMilliseconds = 1_700_000_000_000L,
@@ -140,9 +140,28 @@ class OuraRawHistoryRedecoderTest {
             firstSeenAtUnixMs = 1,
             timeAnchor = anchor,
         )
+        val exerciseIntensity = StoredOuraRawHistoryRecord(
+            archiveId = 5,
+            tag = OuraEventTag.EXERCISE_HR_INTENSITY.raw,
+            ringTimestamp = 500L,
+            payload = byteArrayOf(0x34, 0x12, 0xFF.toByte(), 0x00),
+            firstSeenAtUnixMs = 1,
+            timeAnchor = anchor,
+        )
+        val realSteps = StoredOuraRawHistoryRecord(
+            archiveId = 6,
+            tag = OuraEventTag.REAL_STEPS_1.raw,
+            ringTimestamp = 400L,
+            payload = byteArrayOf(
+                0x01, 0x02, 0x03, 0x84.toByte(), 0x05, 0x06, 0x07, 0x08,
+                0x09, 0x0A, 0x0B, 0x8C.toByte(), 0x0D, 0x0E,
+            ),
+            firstSeenAtUnixMs = 1,
+            timeAnchor = anchor,
+        )
 
         val decoded = OuraRawHistoryPageDecoder.decode(
-            listOf(motion, sleepAcm, spo2, activity), OuraRingGen.GEN4,
+            listOf(motion, sleepAcm, spo2, activity, exerciseIntensity, realSteps), OuraRingGen.GEN4,
         )
         assertEquals(0, decoded.withheldEvents)
         assertEquals(
@@ -151,6 +170,8 @@ class OuraRawHistoryRedecoderTest {
                 OuraStreamMapping.EVENT_SLEEP_ACM_PERIOD,
                 OuraStreamMapping.EVENT_SPO2_RATIO_PI,
                 OuraStreamMapping.EVENT_ACTIVITY_MET_SERIES,
+                OuraStreamMapping.EVENT_EXERCISE_HR_INTENSITY,
+                OuraStreamMapping.EVENT_REAL_STEPS_FEATURES,
             ),
             decoded.batch.events.map { it.kind },
         )
@@ -159,6 +180,12 @@ class OuraRawHistoryRedecoderTest {
         assertEquals(1_699_999_980L, decoded.batch.events[2].ts)
         assertEquals(1_699_999_960L, decoded.batch.events[3].ts)
         assertTrue(decoded.batch.events[3].payloadJSON.contains("\"met_x10\":[18,19,74]"))
+        assertEquals(1_699_999_950L, decoded.batch.events[4].ts)
+        assertTrue(decoded.batch.events[4].payloadJSON.contains("\"intensity_u16\":[4660,255]"))
+        assertEquals(1_699_999_940L, decoded.batch.events[5].ts)
+        assertTrue(decoded.batch.events[5].payloadJSON.contains(
+            "\"feature_fields_u16\":[3,4,6,4,5,6,7,8,19,20,22,12,13,14]",
+        ))
         assertEquals(1, decoded.batch.spo2.size)
         assertEquals(1_699_999_980L, decoded.batch.spo2.single().ts)
         assertEquals(932, decoded.batch.spo2.single().red)

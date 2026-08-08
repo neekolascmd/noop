@@ -1980,6 +1980,18 @@ class OuraLiveSource(
                 }
                 enqueueAnchoredOrPark(e, e.value.ringTimestamp, d)
             }
+            is OuraEvent.ExerciseHRIntensity -> {
+                if (loggedTierBKinds.add("exercise_hr_intensity")) {
+                    log("Oura: exercise-HR intensity history decoded")
+                }
+                enqueueAnchoredOrPark(e, e.value.ringTimestamp, d)
+            }
+            is OuraEvent.RealStepsFeatures -> {
+                if (loggedTierBKinds.add("real_steps_features")) {
+                    log("Oura: real-steps feature history decoded")
+                }
+                enqueueAnchoredOrPark(e, e.value.ringTimestamp, d)
+            }
             // Packed motion / state / debugText are not durable Streams rows.
             else -> Unit
         }

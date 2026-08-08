@@ -320,6 +320,45 @@ public enum OuraDecoders {
         return out.isEmpty ? nil : out
     }
 
+    // MARK: - Activity diagnostics (0x74 / 0x7E / 0x7F; s6.13)
+
+    /// Decode the native-parser-backed shape of `ehr_acm_intensity_event`: up to seven unsigned
+    /// 16-bit little-endian values in wire order. Their units and cadence are not qualified, so this
+    /// function returns an explicitly diagnostic value rather than heart-rate or workout samples.
+    public static func decodeExerciseHRIntensity(_ rec: OuraRecord) -> OuraExerciseHRIntensity? {
+        let b = rec.payload
+        guard rec.type == OuraEventTag.exerciseHRIntensity.rawValue,
+              !b.isEmpty, b.count <= 14, b.count.isMultiple(of: 2) else { return nil }
+        var values: [Int] = []
+        for index in stride(from: 0, to: b.count, by: 2) {
+            values.append(u16le(b, index))
+        }
+        return OuraExerciseHRIntensity(ringTimestamp: rec.ringTimestamp, values: values)
+    }
+
+    /// Decode either exact 14-byte `real_steps_features` part. This mirrors the recovered native
+    /// unpacker while intentionally leaving all 14 field names and the cross-part state unresolved.
+    public static func decodeRealStepsFeatures(_ rec: OuraRecord) -> OuraRealStepsFeatures? {
+        let p = rec.payload
+        guard (rec.type == OuraEventTag.realSteps1.rawValue ||
+               rec.type == OuraEventTag.realSteps2.rawValue), p.count == 14 else { return nil }
+        let fields = [
+            Int(p[3] >> 7) | (Int(p[0]) << 1),
+            Int(p[1]) << 1,
+            Int(p[2]) << 1,
+            Int(p[3] & 0x7F),
+            Int(p[4]), Int(p[5]), Int(p[6]), Int(p[7]),
+            Int(p[11] >> 7) | (Int(p[8]) << 1),
+            Int(p[9]) << 1,
+            Int(p[10]) << 1,
+            Int(p[11] & 0x7F),
+            Int(p[12]), Int(p[13]),
+        ]
+        return OuraRealStepsFeatures(ringTimestamp: rec.ringTimestamp,
+                                     sourceTag: rec.type,
+                                     fields: fields)
+    }
+
     // MARK: - Battery (0x0D outer response; s6.10)
 
     /// Decode the 0x0D battery response BODY (the 8 bytes after `0d <len>`). percent at body[0];

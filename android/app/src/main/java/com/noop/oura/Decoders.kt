@@ -349,6 +349,42 @@ object OuraDecoders {
         return if (out.isEmpty()) null else out
     }
 
+    // MARK: - Activity diagnostics (0x74 / 0x7E / 0x7F; s6.13)
+
+    /** Decode up to seven wire-order little-endian u16 values without assigning units or cadence. */
+    fun decodeExerciseHRIntensity(rec: OuraRecord): OuraExerciseHRIntensity? {
+        val b = rec.payload
+        if (rec.type != OuraEventTag.EXERCISE_HR_INTENSITY.raw ||
+            b.isEmpty() || b.size > 14 || b.size % 2 != 0) return null
+        val values = ArrayList<Int>(b.size / 2)
+        for (index in b.indices step 2) values.add(u16le(b, index))
+        return OuraExerciseHRIntensity(ringTimestamp = rec.ringTimestamp, values = values)
+    }
+
+    /** Mirror the recovered exact 14-byte native unpacker while keeping every field unnamed. */
+    fun decodeRealStepsFeatures(rec: OuraRecord): OuraRealStepsFeatures? {
+        val p = rec.payload
+        if ((rec.type != OuraEventTag.REAL_STEPS_1.raw &&
+             rec.type != OuraEventTag.REAL_STEPS_2.raw) || p.size != 14) return null
+        val fields = listOf(
+            (p[3] ushr 7) or (p[0] shl 1),
+            p[1] shl 1,
+            p[2] shl 1,
+            p[3] and 0x7F,
+            p[4], p[5], p[6], p[7],
+            (p[11] ushr 7) or (p[8] shl 1),
+            p[9] shl 1,
+            p[10] shl 1,
+            p[11] and 0x7F,
+            p[12], p[13],
+        )
+        return OuraRealStepsFeatures(
+            ringTimestamp = rec.ringTimestamp,
+            sourceTag = rec.type,
+            fields = fields,
+        )
+    }
+
     // MARK: - Battery (0x0D outer response; s6.10)
 
     /**

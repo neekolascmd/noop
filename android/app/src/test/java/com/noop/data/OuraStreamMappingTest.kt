@@ -263,4 +263,38 @@ class OuraStreamMappingTest {
         assertTrue(s.spo2.isEmpty())
         assertTrue(s.skinTemp.isEmpty())
     }
+
+    @Test
+    fun activityFeatureDiagnosticsAreRetainedWithoutMintingBiometricStreams() {
+        val s = OuraStreamMapping.streams(
+            listOf(
+                OuraEvent.ExerciseHRIntensity(
+                    com.noop.oura.OuraExerciseHRIntensity(101, listOf(0x1234, 0x00FF)),
+                ),
+                OuraEvent.RealStepsFeatures(
+                    com.noop.oura.OuraRealStepsFeatures(
+                        102, 0x7E, listOf(3, 4, 6, 4, 5, 6, 7, 8, 19, 20, 22, 12, 13, 14),
+                    ),
+                ),
+            ),
+            anchor,
+        )
+        assertEquals(
+            listOf(
+                OuraStreamMapping.EVENT_EXERCISE_HR_INTENSITY,
+                OuraStreamMapping.EVENT_REAL_STEPS_FEATURES,
+            ),
+            s.events.map { it.kind },
+        )
+        assertEquals(listOf(0x1234, 0x00FF), s.events[0].payload["intensity_u16"])
+        assertEquals("unvalidated", s.events[0].payload["field_semantics"])
+        assertEquals(0x7E, s.events[1].payload["source_tag"])
+        assertEquals(
+            listOf(3, 4, 6, 4, 5, 6, 7, 8, 19, 20, 22, 12, 13, 14),
+            s.events[1].payload["feature_fields_u16"],
+        )
+        assertEquals("stateful_unknown", s.events[1].payload["part_relationship"])
+        assertTrue(s.hr.isEmpty())
+        assertTrue(s.rr.isEmpty())
+    }
 }

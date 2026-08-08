@@ -13,7 +13,7 @@ import kotlinx.coroutines.ensureActive
 
 /** Bump only when retained TLVs can yield new durable information; independent of app releases. */
 object OuraRawHistoryDecoderRevision {
-    const val CURRENT = 5
+    const val CURRENT = 6
 }
 
 data class OuraRawHistoryRedecodeReport(
@@ -135,6 +135,8 @@ internal object OuraRawHistoryPageDecoder {
         is OuraEvent.MotionSummaryEvent,
         is OuraEvent.SleepAcmPeriodEvent,
         is OuraEvent.ActivityInfo,
+        is OuraEvent.ExerciseHRIntensity,
+        is OuraEvent.RealStepsFeatures,
         -> true
         else -> false
     }
@@ -158,6 +160,8 @@ internal object OuraRawHistoryPageDecoder {
         is OuraEvent.DebugTextEvent -> ringTimestamp
         is OuraEvent.TierB -> value.ringTimestamp
         is OuraEvent.ActivityInfo -> value.ringTimestamp
+        is OuraEvent.ExerciseHRIntensity -> value.ringTimestamp
+        is OuraEvent.RealStepsFeatures -> value.ringTimestamp
         is OuraEvent.Battery -> 0L
     }
 }
