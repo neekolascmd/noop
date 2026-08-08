@@ -36,6 +36,7 @@ enum class OuraEventTag(val raw: Int) {
     GREEN_IBI_AMP(0x71),      // green_ibi_and_amp_event, OURA_PROTOCOL.md s6.2
     SPO2_IBI_AMPLITUDE(0x6E), // spo2_ibi_and_amplitude_event (REVERSE byte order), OURA_PROTOCOL.md s6.3
     GREEN_IBI_QUALITY(0x80),  // green_ibi_quality_event (bit-packed across bytes), OURA_PROTOCOL.md s6.4
+    ALWAYS_ON_HR(0x86),       // aohr_event; native-parser-backed diagnostic series, s6.4a
     IBI(0x44),                // ibi event (Tier-A IBI tag per the brief), OURA_PROTOCOL.md s6 / s0
 
     // --- HRV / RMSSD (Tier A) ---
@@ -95,7 +96,7 @@ enum class OuraEventTag(val raw: Int) {
      */
     val tier: TrustTier
         get() = when (this) {
-            SPO2_RATIO_PI, SLEEP_PHASE, SLEEP_PHASE_ALT, MOTION, SLEEP_ACM_PERIOD, ACTIVITY_INFO,
+            ALWAYS_ON_HR, SPO2_RATIO_PI, SLEEP_PHASE, SLEEP_PHASE_ALT, MOTION, SLEEP_ACM_PERIOD, ACTIVITY_INFO,
             EXERCISE_HR_INTENSITY, REAL_STEPS_1, REAL_STEPS_2 ->
                 TrustTier.DIAGNOSTIC
             SLEEP_SUMMARY_1, SLEEP_PHASE_INFO, SLEEP_SUMMARY_C, SLEEP_SUMMARY_D, SLEEP_SUMMARY_E,
@@ -117,6 +118,7 @@ enum class OuraEventTag(val raw: Int) {
             GREEN_IBI_AMP -> "GREEN_IBI_AMP"
             SPO2_IBI_AMPLITUDE -> "SPO2_IBI_AMPLITUDE"
             GREEN_IBI_QUALITY -> "GREEN_IBI_QUALITY"
+            ALWAYS_ON_HR -> "ALWAYS_ON_HR"
             IBI -> "IBI"
             HRV_RMSSD -> "HRV_RMSSD"
             SPO2_PER_SAMPLE -> "SPO2_PER_SAMPLE"

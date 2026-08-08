@@ -265,6 +265,20 @@ data class OuraTierBSummary(
 data class OuraExerciseHRIntensity(val ringTimestamp: Long, val values: List<Int>)
 
 /**
+ * One structurally decoded `0x86 aohr_event` record. The native parser fixes the body shape and
+ * 1,920 ms cadence, but owned-ring evidence has not qualified the flag, base offset, quality codebook,
+ * or record-anchor direction. This remains an atomic diagnostic, not production heart rate.
+ */
+data class OuraAlwaysOnHRSeries(
+    val ringTimestamp: Long,
+    val flag: Int,
+    val baseOffset: Int,
+    val intervalMs: Int = 1_920,
+    val bpm: List<Int>,
+    val quality: List<Int>,
+)
+
+/**
  * One structurally decoded exact 14-byte `0x7E`/`0x7F real_steps_features` record. Field names and
  * the stateful relationship between the two parts remain unresolved; this is not a step count.
  */
@@ -332,6 +346,7 @@ sealed class OuraEvent {
     /** Structurally decoded activity-sensing diagnostics; never production metrics. */
     data class ExerciseHRIntensity(val value: OuraExerciseHRIntensity) : OuraEvent()
     data class RealStepsFeatures(val value: OuraRealStepsFeatures) : OuraEvent()
+    data class AlwaysOnHR(val value: OuraAlwaysOnHRSeries) : OuraEvent()
 
     /** True for Tier-B events, so a consumer can assert none leaked into a Tier-A-only sink. */
     val isTierB: Boolean get() = this is TierB

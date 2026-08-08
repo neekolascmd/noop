@@ -165,6 +165,8 @@ func describe(_ e: OuraEvent) -> String {
     case .activityInfo(let v): return "ACTIVITY[DIAGNOSTIC] state_raw=\(v.state) met=\(v.met) rt=\(v.ringTimestamp)"
     case .exerciseHRIntensity(let v):
         return "EXERCISE_HR_INTENSITY[DIAGNOSTIC] raw_u16=\(v.values) rt=\(v.ringTimestamp)"
+    case .alwaysOnHR(let v):
+        return "ALWAYS_ON_HR[DIAGNOSTIC] bpm=\(v.bpm) quality=\(v.quality) rt=\(v.ringTimestamp)"
     case .realStepsFeatures(let v):
         return "REAL_STEPS_FEATURES[DIAGNOSTIC] tag=0x\(String(v.sourceTag, radix: 16)) fields=\(v.fields) rt=\(v.ringTimestamp)"
     }

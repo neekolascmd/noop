@@ -394,6 +394,29 @@ public struct OuraExerciseHRIntensity: Equatable, Sendable, Codable {
     }
 }
 
+/// One structurally decoded `0x86 aohr_event` (always-on heart rate) record. The native parser fixes
+/// the body shape and 1,920 ms sample interval, but no owned-ring capture has yet qualified the flag,
+/// base-offset, quality codebook, or record-anchor direction. BPM and quality arrays therefore remain
+/// atomic diagnostics and must not feed production heart-rate or scoring rows.
+public struct OuraAlwaysOnHRSeries: Equatable, Sendable, Codable {
+    public let ringTimestamp: UInt32
+    public let flag: Int
+    public let baseOffset: Int
+    public let intervalMs: Int
+    public let bpm: [Int]
+    public let quality: [Int]
+
+    public init(ringTimestamp: UInt32, flag: Int, baseOffset: Int,
+                intervalMs: Int = 1_920, bpm: [Int], quality: [Int]) {
+        self.ringTimestamp = ringTimestamp
+        self.flag = flag
+        self.baseOffset = baseOffset
+        self.intervalMs = intervalMs
+        self.bpm = bpm
+        self.quality = quality
+    }
+}
+
 /// One structurally decoded `0x7E`/`0x7F real_steps_features` record. The official native parser
 /// requires exactly 14 bytes and unpacks the two four-byte groups with their carry bits. Field names
 /// and the stateful relationship between parts 1 and 2 remain unknown, so the ordered fields are kept
@@ -460,6 +483,7 @@ public enum OuraEvent: Equatable, Sendable {
     /// capture qualifies units, cadence, field names, and cross-record state.
     case exerciseHRIntensity(OuraExerciseHRIntensity)
     case realStepsFeatures(OuraRealStepsFeatures)
+    case alwaysOnHR(OuraAlwaysOnHRSeries)
 
     /// True for Tier-B events, so a consumer can assert none leaked into a Tier-A-only sink.
     public var isTierB: Bool {

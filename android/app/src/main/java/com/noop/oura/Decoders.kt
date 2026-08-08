@@ -349,6 +349,33 @@ object OuraDecoders {
         return if (out.isEmpty()) null else out
     }
 
+    // MARK: - Always-on HR diagnostic (0x86; s6.4a)
+
+    /**
+     * Decode the native-parser-backed `aohr_event`: flag byte, unresolved base offset, count, then
+     * exact `(bpm, quality)` byte pairs at the parser-declared 1,920 ms cadence. This stays atomic and
+     * diagnostic until owned-ring evidence qualifies its codebook and timestamp direction.
+     */
+    fun decodeAlwaysOnHR(rec: OuraRecord): OuraAlwaysOnHRSeries? {
+        val b = rec.payload
+        if (rec.type != OuraEventTag.ALWAYS_ON_HR.raw || b.size < 3) return null
+        val count = b[2]
+        if (b.size != 3 + count * 2) return null
+        val bpm = ArrayList<Int>(count)
+        val quality = ArrayList<Int>(count)
+        repeat(count) { index ->
+            bpm.add(b[3 + index * 2])
+            quality.add(b[4 + index * 2])
+        }
+        return OuraAlwaysOnHRSeries(
+            ringTimestamp = rec.ringTimestamp,
+            flag = b[0] and 0x01,
+            baseOffset = b[1],
+            bpm = bpm,
+            quality = quality,
+        )
+    }
+
     // MARK: - Activity diagnostics (0x74 / 0x7E / 0x7F; s6.13)
 
     /** Decode up to seven wire-order little-endian u16 values without assigning units or cadence. */

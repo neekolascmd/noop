@@ -320,6 +320,31 @@ public enum OuraDecoders {
         return out.isEmpty ? nil : out
     }
 
+    // MARK: - Always-on HR diagnostic (0x86; s6.4a)
+
+    /// Decode the native-parser-backed `aohr_event` body. Byte 0 carries a one-bit flag, byte 1 an
+    /// unresolved base offset, byte 2 the sample count, followed by exact `(bpm, quality)` byte pairs.
+    /// The parser declares a 1,920 ms cadence. Until an owned-ring capture validates the quality
+    /// codebook and timestamp direction, this remains an atomic diagnostic and never becomes HR rows.
+    public static func decodeAlwaysOnHR(_ rec: OuraRecord) -> OuraAlwaysOnHRSeries? {
+        let b = rec.payload
+        guard rec.type == OuraEventTag.alwaysOnHR.rawValue, b.count >= 3 else { return nil }
+        let count = Int(b[2])
+        guard b.count == 3 + count * 2 else { return nil }
+        var bpm: [Int] = []
+        var quality: [Int] = []
+        bpm.reserveCapacity(count)
+        quality.reserveCapacity(count)
+        for index in 0..<count {
+            bpm.append(Int(b[3 + index * 2]))
+            quality.append(Int(b[4 + index * 2]))
+        }
+        return OuraAlwaysOnHRSeries(ringTimestamp: rec.ringTimestamp,
+                                    flag: Int(b[0] & 0x01),
+                                    baseOffset: Int(b[1]),
+                                    bpm: bpm, quality: quality)
+    }
+
     // MARK: - Activity diagnostics (0x74 / 0x7E / 0x7F; s6.13)
 
     /// Decode the native-parser-backed shape of `ehr_acm_intensity_event`: up to seven unsigned

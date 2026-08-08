@@ -1986,6 +1986,12 @@ class OuraLiveSource(
                 }
                 enqueueAnchoredOrPark(e, e.value.ringTimestamp, d)
             }
+            is OuraEvent.AlwaysOnHR -> {
+                if (loggedTierBKinds.add("always_on_hr")) {
+                    log("Oura: always-on HR diagnostic history decoded")
+                }
+                enqueueAnchoredOrPark(e, e.value.ringTimestamp, d)
+            }
             is OuraEvent.RealStepsFeatures -> {
                 if (loggedTierBKinds.add("real_steps_features")) {
                     log("Oura: real-steps feature history decoded")

@@ -47,6 +47,8 @@ public enum OuraStreamMapping {
     public static let activityMetSeriesEventKind = "OURA_ACTIVITY_MET_SERIES"
     /// Native-parser-backed 0x74 values with unresolved physical meaning.
     public static let exerciseHRIntensityEventKind = "OURA_EXERCISE_HR_INTENSITY_SERIES"
+    /// Native-parser-backed 0x86 always-on HR arrays; not production HR until hardware-qualified.
+    public static let alwaysOnHRSeriesEventKind = "OURA_ALWAYS_ON_HR_SERIES"
     /// Native-parser-backed 0x7E/0x7F fields with unresolved names and cross-part state.
     public static let realStepsFeaturesEventKind = "OURA_REAL_STEPS_FEATURES"
 
@@ -220,6 +222,20 @@ public enum OuraStreamMapping {
                     "sequence_order": .string("wire_order"),
                     "timestamp_semantics": .string("record_anchor_only"),
                     "unit": .string("raw_u16"),
+                    "field_semantics": .string("unvalidated"),
+                ]))
+
+            case .alwaysOnHR(let v):
+                guard !v.bpm.isEmpty, v.bpm.count == v.quality.count else { continue }
+                out.events.append(WhoopEvent(ts: ts, kind: alwaysOnHRSeriesEventKind, payload: [
+                    "ring_timestamp": .int(Int(v.ringTimestamp)),
+                    "flag_raw": .int(v.flag),
+                    "base_offset_raw": .int(v.baseOffset),
+                    "interval_ms": .int(v.intervalMs),
+                    "bpm_u8": .intArray(v.bpm),
+                    "quality_u8": .intArray(v.quality),
+                    "sequence_order": .string("wire_order"),
+                    "timestamp_semantics": .string("record_anchor_only"),
                     "field_semantics": .string("unvalidated"),
                 ]))
 
