@@ -894,6 +894,8 @@ final class AppModel: ObservableObject {
     /// Read-only feature-0x04 state for the active ring. nil until the ring replies or when no Oura
     /// source is connected; false is surfaced so the user can explicitly opt in from Devices.
     @Published private(set) var ouraSpO2AutomaticEnabled: Bool?
+    /// Read-only aggregate of the ring's Real Steps + Exercise HR background modes.
+    @Published private(set) var ouraActivityTrackingEnabled: Bool?
     /// Combine subscriptions mirroring the live Oura source's `adoptPhase` / `needsPairing` into the two
     /// published properties above. Re-bound whenever the active Oura source changes.
     private var ouraAdoptCancellables = Set<AnyCancellable>()
@@ -915,6 +917,11 @@ final class AppModel: ObservableObject {
     /// Called only after the Devices-screen confirmation explains the ring-setting change.
     func enableOuraAutomaticSpO2() {
         sourceCoordinator?.requestOuraAutomaticSpO2Enable()
+    }
+
+    /// Called only after the Devices-screen confirmation explains the ring-setting change.
+    func enableOuraAutomaticActivityTracking() {
+        sourceCoordinator?.requestOuraAutomaticActivityTrackingEnable()
     }
 
     /// (Re)bind the adopt-outcome mirror to whichever `OuraLiveSource` the coordinator has live now and on
@@ -946,6 +953,14 @@ final class AppModel: ObservableObject {
             }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] in self?.ouraSpO2AutomaticEnabled = $0 }
+            .store(in: &ouraAdoptCancellables)
+        coordinator.$ouraSource
+            .flatMap { source -> AnyPublisher<Bool?, Never> in
+                source?.$activityTrackingEnabled.eraseToAnyPublisher()
+                    ?? Just(nil).eraseToAnyPublisher()
+            }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in self?.ouraActivityTrackingEnabled = $0 }
             .store(in: &ouraAdoptCancellables)
     }
 

@@ -74,6 +74,10 @@ public enum OuraEventTag: UInt8, Sendable, CaseIterable, Codable {
     case activitySummary1 = 0x51   // activity_summary, OURA_PROTOCOL.md s6.13 (UNVERIFIED)
     case activitySummary2 = 0x52   // activity_summary, OURA_PROTOCOL.md s6.13 (UNVERIFIED)
 
+    // --- Exercise HR (Tier B, presence-only until a real NOOP capture qualifies the layouts) ---
+    case exerciseHRTrace     = 0x73 // ehr_trace_event, OURA_PROTOCOL.md s6.13 (UNVERIFIED)
+    case exerciseHRIntensity = 0x74 // ehr_acm_intensity_event, OURA_PROTOCOL.md s6.13 (UNVERIFIED)
+
     // --- Real steps (Tier B, UNVERIFIED) ---
     case realSteps1       = 0x7E   // real_steps_features_1, OURA_PROTOCOL.md s6.13 (UNVERIFIED)
     case realSteps2       = 0x7F   // real_steps_features_2, OURA_PROTOCOL.md s6.13 (UNVERIFIED)
@@ -89,7 +93,7 @@ public enum OuraEventTag: UInt8, Sendable, CaseIterable, Codable {
             return .diagnostic
         case .sleepSummary1, .sleepPhaseInfo, .sleepSummaryC, .sleepSummaryD, .sleepSummaryE,
              .sleepSummaryF, .activitySummary1, .activitySummary2,
-             .realSteps1, .realSteps2, .spo2Smoothed:
+             .exerciseHRTrace, .exerciseHRIntensity, .realSteps1, .realSteps2, .spo2Smoothed:
             return .tierB
         default:
             return .tierA
@@ -134,6 +138,8 @@ public enum OuraEventTag: UInt8, Sendable, CaseIterable, Codable {
         case .activityInfo: return "ACTIVITY_INFO"
         case .activitySummary1: return "ACTIVITY_SUMMARY_1"
         case .activitySummary2: return "ACTIVITY_SUMMARY_2"
+        case .exerciseHRTrace: return "EXERCISE_HR_TRACE"
+        case .exerciseHRIntensity: return "EXERCISE_HR_INTENSITY"
         case .realSteps1: return "REAL_STEPS_1"
         case .realSteps2: return "REAL_STEPS_2"
         case .spo2Smoothed: return "SPO2_SMOOTHED"

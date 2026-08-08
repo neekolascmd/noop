@@ -174,7 +174,7 @@ public struct OuraBattery: Equatable, Sendable, Codable {
     }
 }
 
-/// Read-only `0x21` feature-status reply. Feature 0x04 is automatic SpO2; mode 1 means automatic.
+/// Read-only `0x21` feature-status reply. Mode 1 means the feature runs automatically in the background.
 public struct OuraFeatureStatus: Equatable, Sendable, Codable {
     public let feature: UInt8
     public let mode: UInt8
@@ -182,6 +182,8 @@ public struct OuraFeatureStatus: Equatable, Sendable, Codable {
     public let state: UInt8
     public let subscription: UInt8
     public var isSpO2Automatic: Bool? { feature == 0x04 ? mode == 0x01 : nil }
+    public var isRealStepsAutomatic: Bool? { feature == 0x0B ? mode == 0x01 : nil }
+    public var isExerciseHRAutomatic: Bool? { feature == 0x03 ? mode == 0x01 : nil }
 }
 
 /// Native `SleepPhase_OSSAv1` code (OURA_PROTOCOL.md s6.12). The values also match Oura's public

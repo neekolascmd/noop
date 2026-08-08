@@ -162,6 +162,11 @@ class OuraLiveSource(
     private val _spo2AutomaticEnabled = MutableStateFlow<Boolean?>(null)
     /** Read-only state from feature 0x04; null until the ring replies. */
     val spo2AutomaticEnabled: StateFlow<Boolean?> = _spo2AutomaticEnabled.asStateFlow()
+    private val _activityTrackingEnabled = MutableStateFlow<Boolean?>(null)
+    /** Aggregate of Real Steps + Exercise HR automatic modes; null until both replies arrive. */
+    val activityTrackingEnabled: StateFlow<Boolean?> = _activityTrackingEnabled.asStateFlow()
+    private var realStepsAutomaticEnabled: Boolean? = null
+    private var exerciseHRAutomaticEnabled: Boolean? = null
     /** The connected ring's battery percent, 0-100, once decoded; null until then or after disconnect
      *  (a stale value must not outlive the link). Surfaced on the device card like the WHOOP battery. */
     val batteryPct: StateFlow<Int?> = _batteryPct.asStateFlow()
@@ -237,6 +242,8 @@ class OuraLiveSource(
     /** Set only by the explicit Devices-screen confirmation. Cleared on disconnect so consent never
      * leaks into a later session. */
     private var pendingSpO2AutomaticEnable = false
+    /** Explicit Devices-screen activity opt-in; cleared on every stop/disconnect. */
+    private var pendingActivityTrackingEnable = false
     /** Logs the FIRST skin-temp sample DECODED THIS SESSION only (never every record); reset on
      *  stop/disconnect. These are last-night values from the history fetch, not live pushes, but we still
      *  only want one log line, not one per sample. Twin of [loggedFirstHr]. */
@@ -1028,10 +1035,12 @@ class OuraLiveSource(
         pendingInstallKey = null       // a new connection starts with no install in flight
         _adoptPhase.value = AdoptPhase.Idle   // a stale outcome must never drive the wizard's transition
         _spo2AutomaticEnabled.value = null
+        resetActivityTrackingStatus()
         // A fresh session: reset the one-shot streaming/anchor state, and never replay a stale-anchor guess.
         reachedStreaming = false
         historyPersistenceInFlight = false
         pendingSpO2AutomaticEnable = false
+        pendingActivityTrackingEnable = false
         loggedFirstTemp = false
         loggedFirstSpo2 = false
         loggedFirstBedtime = false
@@ -1101,12 +1110,14 @@ class OuraLiveSource(
         loggedTierBKinds.clear()
         reachedStreaming = false
         pendingSpO2AutomaticEnable = false
+        pendingActivityTrackingEnable = false
         // A stop MID-install is an honest failure (no ack will come); a stop after streaming leaves the
         // completed Streaming outcome intact so the wizard's success transition is not undone.
         if (_adoptPhase.value == AdoptPhase.InstallingKey) _adoptPhase.value = AdoptPhase.Failed
         pendingInstallKey = null
         _batteryPct.value = null   // a stale charge must not outlive the link
         _spo2AutomaticEnabled.value = null
+        resetActivityTrackingStatus()
         flush()
     }
 
@@ -1265,6 +1276,7 @@ class OuraLiveSource(
                     loggedFirstHr = false   // a reconnect should log its first sample again
                     _batteryPct.value = null
                     _spo2AutomaticEnabled.value = null
+                    resetActivityTrackingStatus()
                     cancelReengage()
                     cancelHistoryFetch()
                     cancelTimeSyncReleaseFallback()
@@ -1284,6 +1296,7 @@ class OuraLiveSource(
                     loggedTierBKinds.clear()
                     reachedStreaming = false
                     pendingSpO2AutomaticEnable = false
+                    pendingActivityTrackingEnable = false
                     pendingEventCategoryResponses = 0
                     acknowledgedEventCategoryResponses = 0
                     postFetchAnchorRetryIssued = false
@@ -1468,13 +1481,22 @@ class OuraLiveSource(
                     pendingInstallKey = null
                     log("Oura: live HR enabled - streaming")
                     scheduleReengage()
-                    // Pull last night's banked temp/SpO2/HRV/sleep-phase right away + keep a periodic pass
-                    // running, and ask for battery once (the 0x0D reply routes to onBattery).
+                    // Ask for battery + read-only sensor modes before history so an unanswered caught-up
+                    // GetEvents cannot strand the Devices UI at "Checking". Explicit reads also cover
+                    // Gen 3/5, which do not use the Ring 4 parameter sweep.
                     scheduleHistoryFetch()
+                    enqueueCommands(
+                        listOf(
+                            OuraCommands.getBattery(),
+                            OuraCommands.spO2ReadStatus(),
+                            OuraCommands.realStepsReadStatus(),
+                            OuraCommands.exerciseHRReadStatus(),
+                        ),
+                    )
                     fetchHistoryIfIdle()
-                    enqueueCommands(listOf(OuraCommands.getBattery()))
                 }
                 sendPendingSpO2AutomaticEnableIfReady()
+                sendPendingActivityTrackingEnableIfReady()
             }
             OuraDriverPhase.NeedsKeyInstall -> {
                 // Factory-reset ring (auth status 0x02) or no key. The dangerous key install is the ONLY
@@ -1505,6 +1527,46 @@ class OuraLiveSource(
         if (!pendingSpO2AutomaticEnable || driver?.phase != OuraDriverPhase.Streaming) return
         pendingSpO2AutomaticEnable = false
         enqueueCommands(listOf(OuraCommands.spO2EnableAutomatic(), OuraCommands.spO2ReadStatus()))
+    }
+
+    /** Queue the official Gen 3+ activity prerequisite chain after explicit Devices confirmation. */
+    fun requestAutomaticActivityTrackingEnable() = guardedCallback("activity-opt-in") {
+        if (_activityTrackingEnabled.value == true) {
+            log("Oura: automatic activity tracking is already on")
+            return@guardedCallback
+        }
+        pendingActivityTrackingEnable = true
+        log("Oura: automatic activity tracking enable requested by user")
+        sendPendingActivityTrackingEnableIfReady()
+    }
+
+    private fun sendPendingActivityTrackingEnableIfReady() {
+        if (!pendingActivityTrackingEnable || driver?.phase != OuraDriverPhase.Streaming) return
+        pendingActivityTrackingEnable = false
+        // Real Steps first: the official client treats it as Exercise HR's prerequisite. Read both
+        // modes back after the writes; only those replies can turn the UI aggregate on.
+        enqueueCommands(
+            listOf(
+                OuraCommands.realStepsEnableAutomatic(),
+                OuraCommands.exerciseHREnableAutomatic(),
+                OuraCommands.realStepsReadStatus(),
+                OuraCommands.exerciseHRReadStatus(),
+            ),
+        )
+    }
+
+    private fun refreshActivityTrackingStatus() {
+        _activityTrackingEnabled.value = when {
+            realStepsAutomaticEnabled == true && exerciseHRAutomaticEnabled == true -> true
+            realStepsAutomaticEnabled == false || exerciseHRAutomaticEnabled == false -> false
+            else -> null
+        }
+    }
+
+    private fun resetActivityTrackingStatus() {
+        realStepsAutomaticEnabled = null
+        exerciseHRAutomaticEnabled = null
+        _activityTrackingEnabled.value = null
     }
 
     // MARK: - Adopt key-install handshake (s3.2) - ONLY ever reached with explicit adopt consent
@@ -1730,6 +1792,16 @@ class OuraLiveSource(
                 routing.value.isSpO2Automatic?.let { enabled ->
                     _spo2AutomaticEnabled.value = enabled
                     log("Oura: automatic SpO2 measurement is ${if (enabled) "on" else "off"}")
+                }
+                routing.value.isRealStepsAutomatic?.let { enabled ->
+                    realStepsAutomaticEnabled = enabled
+                    refreshActivityTrackingStatus()
+                    log("Oura: Real Steps background mode is ${if (enabled) "on" else "off"}")
+                }
+                routing.value.isExerciseHRAutomatic?.let { enabled ->
+                    exerciseHRAutomaticEnabled = enabled
+                    refreshActivityTrackingStatus()
+                    log("Oura: Exercise HR background mode is ${if (enabled) "on" else "off"}")
                 }
             }
             is OuraDriver.SecureRouting.LiveHRPush -> emit(d.ingestLiveHRPush(routing.body), EventOrigin.LIVE)

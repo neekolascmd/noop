@@ -115,6 +115,11 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     @Published public private(set) var batteryPct: Int? = nil
     /// Read-only state from feature 0x04; nil until the ring replies.
     @Published public private(set) var spo2AutomaticEnabled: Bool? = nil
+    /// Read-only aggregate of the Real Steps (0x0B) + Exercise HR (0x03) background modes. nil until
+    /// both status replies arrive; false means at least one required ring-side activity feature is off.
+    @Published public private(set) var activityTrackingEnabled: Bool? = nil
+    private var realStepsAutomaticEnabled: Bool?
+    private var exerciseHRAutomaticEnabled: Bool?
     /// Set to an HONEST explanation string when the ring needs a pairing/key handshake NOOP can't complete
     /// (no install key, or the ring is in factory reset, or the key was rejected). nil otherwise. The UI
     /// surfaces this instead of a fake reading. Cleared on stop/disconnect.
@@ -241,6 +246,8 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     /// write waits until the driver returns to streaming; it is cleared on disconnect so consent never
     /// leaks into a later session.
     private var pendingSpO2AutomaticEnable = false
+    /// Explicit Devices-screen activity opt-in, deferred until the driver is idle-streaming.
+    private var pendingActivityTrackingEnable = false
     /// The freshly-generated 16-byte key written to the ring during an adopt key install. Held in memory
     /// ONLY between writing the `0x24` install and receiving the `0x25` ack: it is persisted to the keystore
     /// ONLY on an OK ack (so a failed/absent ack never leaves a key the next session would wrongly trust).
@@ -885,10 +892,12 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         loggedTierBKinds.removeAll()
         reachedStreaming = false
         pendingSpO2AutomaticEnable = false
+        pendingActivityTrackingEnable = false
         pendingInstallKey = nil
         adoptPhase = .idle
         batteryPct = nil
         spo2AutomaticEnabled = nil
+        resetActivityTrackingStatus()
         needsPairing = nil
         historyCaptureRecorder.flush()
         finishHistoryInventory(outcome: "stopped")
@@ -991,13 +1000,20 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 log("Oura: live-HR enabled - streaming HR / IBI")
                 startReengageTimer()
                 startHistoryFetchTimer()
-                // Ask for battery BEFORE starting GetEvents. Tested Ring 4 firmware can leave an
-                // already-caught-up history request unanswered; putting battery behind that request made
-                // a healthy reconnect look battery-less even though the initial adoption read it fine.
-                write([OuraCommands.getBattery()])   // the 0x0D reply routes to onBattery
+                // Ask for battery + read-only sensor modes BEFORE starting GetEvents. Tested Ring 4
+                // firmware can leave an already-caught-up history request unanswered; putting these
+                // reads behind that request made a healthy reconnect look battery-less / permanently
+                // "Checking". Explicit reads also cover Gen 3/5, which do not use the Ring 4 sweep.
+                write([
+                    OuraCommands.getBattery(),
+                    OuraCommands.spO2ReadStatus(),
+                    OuraCommands.realStepsReadStatus(),
+                    OuraCommands.exerciseHRReadStatus(),
+                ])
                 fetchHistoryIfIdle()   // then pull last night's banked temp/SpO2/HRV/sleep-phase
             }
             sendPendingSpO2AutomaticEnableIfReady()
+            sendPendingActivityTrackingEnableIfReady()
         default:
             break
         }
@@ -1054,6 +1070,48 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         guard pendingSpO2AutomaticEnable, driver?.phase == .streaming else { return }
         pendingSpO2AutomaticEnable = false
         write([OuraCommands.spO2EnableAutomatic(), OuraCommands.spO2ReadStatus()])
+    }
+
+    /// Queue the official Gen 3+ activity prerequisite chain only after the Devices confirmation. These
+    /// ordinary feature-mode writes do not reset, re-key, erase, or subscribe to entitlement-gated RData.
+    public func requestAutomaticActivityTrackingEnable() {
+        guard feedsLive else { return }
+        guard activityTrackingEnabled != true else {
+            log("Oura: automatic activity tracking is already on")
+            return
+        }
+        pendingActivityTrackingEnable = true
+        log("Oura: automatic activity tracking enable requested by user")
+        sendPendingActivityTrackingEnableIfReady()
+    }
+
+    private func sendPendingActivityTrackingEnableIfReady() {
+        guard pendingActivityTrackingEnable, driver?.phase == .streaming else { return }
+        pendingActivityTrackingEnable = false
+        // Real Steps first: the official client treats it as Exercise HR's prerequisite. Only the two
+        // readbacks below can turn the UI's aggregate state on.
+        write([
+            OuraCommands.realStepsEnableAutomatic(),
+            OuraCommands.exerciseHREnableAutomatic(),
+            OuraCommands.realStepsReadStatus(),
+            OuraCommands.exerciseHRReadStatus(),
+        ])
+    }
+
+    private func refreshActivityTrackingStatus() {
+        if realStepsAutomaticEnabled == true, exerciseHRAutomaticEnabled == true {
+            activityTrackingEnabled = true
+        } else if realStepsAutomaticEnabled == false || exerciseHRAutomaticEnabled == false {
+            activityTrackingEnabled = false
+        } else {
+            activityTrackingEnabled = nil
+        }
+    }
+
+    private func resetActivityTrackingStatus() {
+        realStepsAutomaticEnabled = nil
+        exerciseHRAutomaticEnabled = nil
+        activityTrackingEnabled = nil
     }
 
     // MARK: - Adopt key-install handshake (s3.2) - ONLY ever reached with explicit adopt consent
@@ -1611,6 +1669,7 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
                             persistedTimeAnchor: syncState.anchor)
         reachedStreaming = false
         pendingSpO2AutomaticEnable = false
+        pendingActivityTrackingEnable = false
         loggedFirstHR = false
         loggedFirstTemp = false
         loggedFirstSpo2 = false
@@ -1623,6 +1682,7 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         pendingInstallKey = nil
         adoptPhase = .idle
         spo2AutomaticEnabled = nil
+        resetActivityTrackingStatus()
         reassembler.reset()
         peripheral.discoverServices([Self.service])
     }
@@ -1681,12 +1741,14 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         loggedTierBKinds.removeAll()
         reachedStreaming = false
         pendingSpO2AutomaticEnable = false
+        pendingActivityTrackingEnable = false
         pendingInstallKey = nil
         // A disconnect MID-install is an honest failure (no ack came); a disconnect after streaming leaves
         // the completed `.streaming` outcome intact so the wizard's success transition isn't undone.
         if adoptPhase == .installingKey { adoptPhase = .failed }
         batteryPct = nil
         spo2AutomaticEnabled = nil
+        resetActivityTrackingStatus()
         historyCaptureRecorder.flush()
         finishHistoryInventory(outcome: "disconnected")
         flush()
@@ -1919,6 +1981,16 @@ extension OuraLiveSource: @preconcurrency CBPeripheralDelegate {
             if let enabled = status.isSpO2Automatic {
                 spo2AutomaticEnabled = enabled
                 log("Oura: automatic SpO2 measurement is \(enabled ? "on" : "off")")
+            }
+            if let enabled = status.isRealStepsAutomatic {
+                realStepsAutomaticEnabled = enabled
+                refreshActivityTrackingStatus()
+                log("Oura: Real Steps background mode is \(enabled ? "on" : "off")")
+            }
+            if let enabled = status.isExerciseHRAutomatic {
+                exerciseHRAutomaticEnabled = enabled
+                refreshActivityTrackingStatus()
+                log("Oura: Exercise HR background mode is \(enabled ? "on" : "off")")
             }
         case .liveHRPush(let body):
             guard let driver else { return }

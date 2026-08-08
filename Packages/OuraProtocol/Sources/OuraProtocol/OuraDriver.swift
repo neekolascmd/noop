@@ -675,6 +675,9 @@ public final class OuraDriver {
         case .activitySummary1, .activitySummary2:
             return [.tierB(OuraTierBSummary(tag: record.type, ringTimestamp: record.ringTimestamp,
                                             rawPayload: record.payload, kind: "activity"))]
+        case .exerciseHRTrace, .exerciseHRIntensity:
+            return [.tierB(OuraTierBSummary(tag: record.type, ringTimestamp: record.ringTimestamp,
+                                            rawPayload: record.payload, kind: "exercise_hr"))]
         case .realSteps1, .realSteps2:
             return [.tierB(OuraTierBSummary(tag: record.type, ringTimestamp: record.ringTimestamp,
                                             rawPayload: record.payload, kind: "real_steps"))]
@@ -722,8 +725,13 @@ public final class OuraDriver {
         // Live-HR enable ACKs advance the triplet (s5.6): 0x21 is the dhr_read feature-read ACK from
         // step 1 (`2f 06 21 02 01 11 02 00`), 0x23 acks the enable write (step 2), 0x27 acks the
         // subscribe write (step 3). All three must be recognised or the sequencer stalls at step 0.
-        if frame.subop == 0x21, phase != .enablingLiveHR,
-           frame.subBody.count >= 5, frame.subBody[0] == 0x04 {
+        // Every complete non-DHR 0x21 reply is a read-only feature status. Feature 0x02 must remain an
+        // enableAck even if a test/client feeds it outside `.enablingLiveHR`: it is step 1 of the live-HR
+        // triplet. The transport consumes known SpO2 / Real Steps / Exercise HR ids and safely ignores
+        // other feature statuses from Ring 4's official parameter sweep.
+        if frame.subop == 0x21,
+           frame.subBody.first != OuraCommands.featureDaytimeHR,
+           frame.subBody.count >= 5 {
             return .featureStatus(OuraFeatureStatus(feature: frame.subBody[0],
                                                     mode: frame.subBody[1],
                                                     status: frame.subBody[2],

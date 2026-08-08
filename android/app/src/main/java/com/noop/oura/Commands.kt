@@ -31,6 +31,10 @@ object OuraCommands {
     // The SpO2 feature id. Per OURA_PROTOCOL.md s7.1.
     const val featureSpO2 = 0x04
 
+    // Ring-side activity DSP features. Real Steps is the official prerequisite for Exercise HR.
+    const val featureExerciseHR = 0x03
+    const val featureRealSteps = 0x0B
+
     // MARK: - Pre-auth / identity (unauthenticated OK)
 
     /** GetFirmwareVersion: `08 03 00 00 00`. Pre-auth readable. Per OURA_PROTOCOL.md s4.1 / s3.6. */
@@ -193,6 +197,24 @@ object OuraCommands {
     /** Enable automatic overnight SpO2. Must only follow an explicit user action. */
     fun spO2EnableAutomatic(): OuraCommand =
         OuraCommand("spo2_enable_automatic", intArrayOf(0x2F, 0x03, 0x22, featureSpO2, 0x01))
+
+    // MARK: - Automatic activity tracking (explicit user opt-in only)
+
+    /** Read Real Steps mode without changing it. */
+    fun realStepsReadStatus(): OuraCommand =
+        OuraCommand("real_steps_read", intArrayOf(0x2F, 0x02, 0x20, featureRealSteps))
+
+    /** Read Exercise HR mode without changing it. */
+    fun exerciseHRReadStatus(): OuraCommand =
+        OuraCommand("exercise_hr_read", intArrayOf(0x2F, 0x02, 0x20, featureExerciseHR))
+
+    /** Enable the ring-side step/gait DSP in automatic background mode. */
+    fun realStepsEnableAutomatic(): OuraCommand =
+        OuraCommand("real_steps_enable_automatic", intArrayOf(0x2F, 0x03, 0x22, featureRealSteps, 0x01))
+
+    /** Enable automatic exercise-focused HR history after Real Steps. */
+    fun exerciseHREnableAutomatic(): OuraCommand =
+        OuraCommand("exercise_hr_enable_automatic", intArrayOf(0x2F, 0x03, 0x22, featureExerciseHR, 0x01))
 }
 
 // MARK: - Dangerous commands (quarantined)

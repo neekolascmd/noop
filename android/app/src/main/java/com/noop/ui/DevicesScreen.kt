@@ -96,6 +96,7 @@ fun DevicesScreen(
     val scope = rememberCoroutineScope()
     val live by viewModel.live.collectAsStateWithLifecycle()
     val ouraSpO2AutomaticEnabled by viewModel.ouraSpO2AutomaticEnabled.collectAsStateWithLifecycle()
+    val ouraActivityTrackingEnabled by viewModel.ouraActivityTrackingEnabled.collectAsStateWithLifecycle()
 
     // Liquid sky backdrop gate — the SAME "Day-cycle background" preference the liquid Today honours (#698,
     // default ON). Off falls back to the flat dark canvas, so the setting governs every liquid screen alike.
@@ -116,6 +117,7 @@ fun DevicesScreen(
     var removeTarget by remember { mutableStateOf<PairedDeviceRow?>(null) }
     var deleteDataTarget by remember { mutableStateOf<PairedDeviceRow?>(null) }
     var confirmSpO2Enable by remember { mutableStateOf(false) }
+    var confirmActivityEnable by remember { mutableStateOf(false) }
     // After removing the ACTIVE device with other devices still paired, prompt to pick a new active one.
     var pickNewActive by remember { mutableStateOf(false) }
 
@@ -167,6 +169,11 @@ fun DevicesScreen(
                 onRemove = { removeTarget = device },
             )
             if (device.sourceKind == SourceKind.oura.name && device.status == DeviceStatus.active.name) {
+                OuraActivitySetting(
+                    connected = live.connected,
+                    enabled = ouraActivityTrackingEnabled,
+                    onEnable = { confirmActivityEnable = true },
+                )
                 OuraSpO2Setting(
                     connected = live.connected,
                     enabled = ouraSpO2AutomaticEnabled,
@@ -228,6 +235,30 @@ fun DevicesScreen(
             },
             dismissButton = {
                 TextButton(onClick = { confirmSpO2Enable = false }) { Text("Cancel") }
+            },
+        )
+    }
+
+    if (confirmActivityEnable) {
+        AlertDialog(
+            onDismissRequest = { confirmActivityEnable = false },
+            title = { Text("Enable automatic activity tracking?") },
+            text = {
+                Text(
+                    "This enables the ring's Real Steps and Exercise HR background modes and may use " +
+                        "more battery. It does not reset the ring or erase data. Any activity records " +
+                        "the ring produces sync directly into NOOP; exact step fields remain experimental " +
+                        "until a real capture qualifies them.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.enableOuraAutomaticActivityTracking()
+                    confirmActivityEnable = false
+                }) { Text("Enable") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmActivityEnable = false }) { Text("Cancel") }
             },
         )
     }
@@ -309,6 +340,42 @@ fun DevicesScreen(
             },
             onLeaveNone = { pickNewActive = false },
         )
+    }
+}
+
+/** Explicit opt-in for the ring-side activity DSP; status reads are automatic. */
+@Composable
+private fun OuraActivitySetting(
+    connected: Boolean,
+    enabled: Boolean?,
+    onEnable: () -> Unit,
+) {
+    NoopCard(padding = 14.dp) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Icon(Icons.AutoMirrored.Filled.DirectionsRun, contentDescription = null, tint = Palette.textSecondary)
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Automatic activity tracking", style = NoopType.subhead, color = Palette.textPrimary)
+                Text(
+                    when (enabled) {
+                        true -> "Ring activity modes are on; available records sync automatically."
+                        false -> "Off on this ring. Enable it for direct activity data."
+                        null -> if (connected) "Reading the ring's activity modes."
+                            else "Connect the ring to read its activity modes."
+                    },
+                    style = NoopType.footnote,
+                    color = Palette.textTertiary,
+                )
+            }
+            when {
+                enabled == true -> StatePill("On", tone = StrandTone.Positive)
+                connected && enabled == false -> TextButton(onClick = onEnable) { Text("Enable") }
+                else -> StatePill(if (connected) "Checking…" else "Connect ring", tone = StrandTone.Neutral)
+            }
+        }
     }
 }
 

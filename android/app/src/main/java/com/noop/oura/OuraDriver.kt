@@ -773,6 +773,15 @@ class OuraDriver(
                         ),
                     ),
                 )
+            OuraEventTag.EXERCISE_HR_TRACE, OuraEventTag.EXERCISE_HR_INTENSITY ->
+                listOf(
+                    OuraEvent.TierB(
+                        OuraTierBSummary(
+                            tag = record.type, ringTimestamp = record.ringTimestamp,
+                            rawPayload = record.payload, kind = "exercise_hr",
+                        ),
+                    ),
+                )
             OuraEventTag.REAL_STEPS_1, OuraEventTag.REAL_STEPS_2 ->
                 listOf(
                     OuraEvent.TierB(
@@ -835,8 +844,11 @@ class OuraDriver(
         // Live-HR enable ACKs advance the triplet (s5.6): 0x21 is the dhr_read feature-read ACK from
         // step 1 (`2f 06 21 02 01 11 02 00`), 0x23 acks the enable write (step 2), 0x27 acks the
         // subscribe write (step 3). All three must be recognised or the sequencer stalls at step 0.
-        if (frame.subop == 0x21 && phase != OuraDriverPhase.EnablingLiveHR &&
-            frame.subBody.size >= 5 && frame.subBody[0] == 0x04) {
+        // Every complete non-DHR 0x21 reply is a read-only feature status. Feature 0x02 must remain an
+        // EnableAck even if a test/client feeds it outside EnablingLiveHR: it is step 1 of the live-HR
+        // triplet. The transport consumes known sensor ids and ignores the rest of Ring 4's sweep.
+        if (frame.subop == 0x21 && frame.subBody.firstOrNull() != OuraCommands.featureDaytimeHR &&
+            frame.subBody.size >= 5) {
             return SecureRouting.FeatureStatus(
                 OuraFeatureStatus(
                     feature = frame.subBody[0],
