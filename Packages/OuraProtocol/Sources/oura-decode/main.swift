@@ -163,6 +163,10 @@ func describe(_ e: OuraEvent) -> String {
     case .debugText(_, let t): return "DEBUG \(t)"
     case .tierB(let v): return "TIER_B[UNVERIFIED] tag=0x\(String(v.tag, radix: 16)) kind=\(v.kind) bytes=\(v.rawPayload.count)"
     case .activityInfo(let v): return "ACTIVITY[DIAGNOSTIC] state_raw=\(v.state) met=\(v.met) rt=\(v.ringTimestamp)"
+    case .exerciseHRIntensity(let v):
+        return "EXERCISE_HR_INTENSITY[DIAGNOSTIC] raw_u16=\(v.values) rt=\(v.ringTimestamp)"
+    case .realStepsFeatures(let v):
+        return "REAL_STEPS_FEATURES[DIAGNOSTIC] tag=0x\(String(v.sourceTag, radix: 16)) fields=\(v.fields) rt=\(v.ringTimestamp)"
     }
 }
 

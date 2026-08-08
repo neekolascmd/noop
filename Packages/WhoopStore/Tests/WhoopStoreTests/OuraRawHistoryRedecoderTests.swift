@@ -116,8 +116,8 @@ final class OuraRawHistoryRedecoderTests: XCTestCase {
         XCTAssertNil(event.payload["cadence_seconds"])
     }
 
-    func testPageDecoderRevisionFiveRecoversMotionSpO2AndActivityDiagnostics() {
-        XCTAssertEqual(OuraRawHistoryDecoderRevision.current, 5)
+    func testPageDecoderRevisionSixRecoversMotionSpO2AndActivityDiagnostics() {
+        XCTAssertEqual(OuraRawHistoryDecoderRevision.current, 6)
         let anchor = OuraTimeAnchor(
             ringTimestamp: 1_000,
             utcMilliseconds: 1_700_000_000_000,
@@ -156,9 +156,26 @@ final class OuraRawHistoryRedecoderTests: XCTestCase {
             firstSeenAtUnixMs: 1,
             timeAnchor: anchor
         )
+        let exerciseIntensity = StoredOuraRawHistoryRecord(
+            archiveId: 5,
+            tag: OuraEventTag.exerciseHRIntensity.rawValue,
+            ringTimestamp: 500,
+            payload: Data([0x34, 0x12, 0xFF, 0x00]),
+            firstSeenAtUnixMs: 1,
+            timeAnchor: anchor
+        )
+        let realSteps = StoredOuraRawHistoryRecord(
+            archiveId: 6,
+            tag: OuraEventTag.realSteps1.rawValue,
+            ringTimestamp: 400,
+            payload: Data([0x01, 0x02, 0x03, 0x84, 0x05, 0x06, 0x07, 0x08,
+                           0x09, 0x0A, 0x0B, 0x8C, 0x0D, 0x0E]),
+            firstSeenAtUnixMs: 1,
+            timeAnchor: anchor
+        )
 
         let decoded = OuraRawHistoryPageDecoder.decode(
-            [motion, sleepAcm, spo2, activity], ringGen: .gen4
+            [motion, sleepAcm, spo2, activity, exerciseIntensity, realSteps], ringGen: .gen4
         )
         XCTAssertEqual(decoded.withheldEvents, 0)
         XCTAssertEqual(decoded.streams.events.map(\.kind), [
@@ -166,12 +183,19 @@ final class OuraRawHistoryRedecoderTests: XCTestCase {
             OuraStreamMapping.sleepAcmPeriodEventKind,
             OuraStreamMapping.spo2RatioEventKind,
             OuraStreamMapping.activityMetSeriesEventKind,
+            OuraStreamMapping.exerciseHRIntensityEventKind,
+            OuraStreamMapping.realStepsFeaturesEventKind,
         ])
         XCTAssertEqual(decoded.streams.events[0].ts, 1_699_999_990)
         XCTAssertEqual(decoded.streams.events[1].ts, 1_699_999_970)
         XCTAssertEqual(decoded.streams.events[2].ts, 1_699_999_980)
         XCTAssertEqual(decoded.streams.events[3].ts, 1_699_999_960)
         XCTAssertEqual(decoded.streams.events[3].payload["met_x10"], .intArray([18, 19, 74]))
+        XCTAssertEqual(decoded.streams.events[4].ts, 1_699_999_950)
+        XCTAssertEqual(decoded.streams.events[4].payload["intensity_u16"], .intArray([0x1234, 0x00FF]))
+        XCTAssertEqual(decoded.streams.events[5].ts, 1_699_999_940)
+        XCTAssertEqual(decoded.streams.events[5].payload["feature_fields_u16"],
+                       .intArray([3, 4, 6, 4, 5, 6, 7, 8, 19, 20, 22, 12, 13, 14]))
         XCTAssertEqual(decoded.streams.spo2, [
             SpO2Sample(
                 ts: 1_699_999_980,

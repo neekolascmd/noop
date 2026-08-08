@@ -223,6 +223,31 @@ final class OuraStreamMappingTests: XCTestCase {
         XCTAssertTrue(s.gravity.isEmpty)
     }
 
+    func testActivityFeatureDiagnosticsAreRetainedWithoutMintingBiometricStreams() {
+        let s = OuraStreamMapping.streams(from: [
+            .exerciseHRIntensity(OuraExerciseHRIntensity(
+                ringTimestamp: 101, values: [0x1234, 0x00FF]
+            )),
+            .realStepsFeatures(OuraRealStepsFeatures(
+                ringTimestamp: 102, sourceTag: 0x7E,
+                fields: [3, 4, 6, 4, 5, 6, 7, 8, 19, 20, 22, 12, 13, 14]
+            )),
+        ], at: ts)
+        XCTAssertEqual(s.events.map(\.kind), [
+            OuraStreamMapping.exerciseHRIntensityEventKind,
+            OuraStreamMapping.realStepsFeaturesEventKind,
+        ])
+        XCTAssertEqual(s.events[0].payload["intensity_u16"], .intArray([0x1234, 0x00FF]))
+        XCTAssertEqual(s.events[0].payload["field_semantics"], .string("unvalidated"))
+        XCTAssertEqual(s.events[1].payload["source_tag"], .int(0x7E))
+        XCTAssertEqual(s.events[1].payload["feature_fields_u16"],
+                       .intArray([3, 4, 6, 4, 5, 6, 7, 8, 19, 20, 22, 12, 13, 14]))
+        XCTAssertEqual(s.events[1].payload["part_relationship"], .string("stateful_unknown"))
+        XCTAssertTrue(s.hr.isEmpty)
+        XCTAssertTrue(s.rr.isEmpty)
+        XCTAssertTrue(s.steps.isEmpty)
+    }
+
     // MARK: - Empty batch + multi-signal batch
 
     func testEmptyBatchYieldsEmptyStreams() {

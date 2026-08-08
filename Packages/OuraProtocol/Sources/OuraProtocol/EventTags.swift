@@ -74,13 +74,13 @@ public enum OuraEventTag: UInt8, Sendable, CaseIterable, Codable {
     case activitySummary1 = 0x51   // activity_summary, OURA_PROTOCOL.md s6.13 (UNVERIFIED)
     case activitySummary2 = 0x52   // activity_summary, OURA_PROTOCOL.md s6.13 (UNVERIFIED)
 
-    // --- Exercise HR (Tier B, presence-only until a real NOOP capture qualifies the layouts) ---
+    // --- Exercise HR (trace remains Tier B; intensity has a native-parser-backed diagnostic shape) ---
     case exerciseHRTrace     = 0x73 // ehr_trace_event, OURA_PROTOCOL.md s6.13 (UNVERIFIED)
-    case exerciseHRIntensity = 0x74 // ehr_acm_intensity_event, OURA_PROTOCOL.md s6.13 (UNVERIFIED)
+    case exerciseHRIntensity = 0x74 // bounded LE-u16 series; field units/cadence remain unqualified
 
-    // --- Real steps (Tier B, UNVERIFIED) ---
-    case realSteps1       = 0x7E   // real_steps_features_1, OURA_PROTOCOL.md s6.13 (UNVERIFIED)
-    case realSteps2       = 0x7F   // real_steps_features_2, OURA_PROTOCOL.md s6.13 (UNVERIFIED)
+    // --- Real steps (native-parser-backed structure; field meanings remain unqualified) ---
+    case realSteps1       = 0x7E   // exact 14-byte real_steps_features_1 diagnostic
+    case realSteps2       = 0x7F   // exact 14-byte real_steps_features_2 diagnostic
 
     // --- Smoothed SpO2 (Tier B, UNVERIFIED) ---
     case spo2Smoothed     = 0x70   // spo2_smoothed, OURA_PROTOCOL.md s6.6 (UNVERIFIED)
@@ -89,11 +89,12 @@ public enum OuraEventTag: UInt8, Sendable, CaseIterable, Codable {
     /// behind an explicit allowTierB flag. Per OURA_PROTOCOL.md s7.3 and the brief's TIER DISCIPLINE.
     public var tier: TrustTier {
         switch self {
-        case .spo2RatioPI, .sleepPhase, .sleepPhaseAlt, .motion, .sleepAcmPeriod, .activityInfo:
+        case .spo2RatioPI, .sleepPhase, .sleepPhaseAlt, .motion, .sleepAcmPeriod, .activityInfo,
+             .exerciseHRIntensity, .realSteps1, .realSteps2:
             return .diagnostic
         case .sleepSummary1, .sleepPhaseInfo, .sleepSummaryC, .sleepSummaryD, .sleepSummaryE,
              .sleepSummaryF, .activitySummary1, .activitySummary2,
-             .exerciseHRTrace, .exerciseHRIntensity, .realSteps1, .realSteps2, .spo2Smoothed:
+             .exerciseHRTrace, .spo2Smoothed:
             return .tierB
         default:
             return .tierA

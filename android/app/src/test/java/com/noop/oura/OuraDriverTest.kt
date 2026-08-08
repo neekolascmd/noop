@@ -712,6 +712,9 @@ class OuraDriverTest {
         assertEquals(TrustTier.DIAGNOSTIC, OuraEventTag.MOTION.tier)
         assertEquals(TrustTier.DIAGNOSTIC, OuraEventTag.SLEEP_ACM_PERIOD.tier)
         assertEquals(TrustTier.DIAGNOSTIC, OuraEventTag.ACTIVITY_INFO.tier)
+        assertEquals(TrustTier.DIAGNOSTIC, OuraEventTag.EXERCISE_HR_INTENSITY.tier)
+        assertEquals(TrustTier.DIAGNOSTIC, OuraEventTag.REAL_STEPS_1.tier)
+        assertEquals(TrustTier.DIAGNOSTIC, OuraEventTag.REAL_STEPS_2.tier)
         assertEquals(TrustTier.TIER_B, OuraEventTag.SLEEP_PHASE_INFO.tier)
         assertEquals("SLEEP_PHASE_INFO", OuraEventTag.SLEEP_PHASE_INFO.tagName)
         assertEquals(TrustTier.TIER_B, OuraEventTag.EXERCISE_HR_TRACE.tier)
@@ -933,6 +936,62 @@ class OuraDriverTest {
         assertNull(
             OuraDecoders.decodeActivityInfo(
                 OuraRecord(type = OuraEventTag.ACTIVITY_INFO.raw, ringTimestamp = rt, payload = intArrayOf()),
+            ),
+        )
+    }
+
+    // MARK: - Activity feature diagnostics (0x74 / 0x7E / 0x7F)
+
+    @Test
+    fun testExerciseHRIntensityDecodesBoundedLittleEndianSeriesByDefault() {
+        val record = OuraRecord(
+            OuraEventTag.EXERCISE_HR_INTENSITY.raw, rt, intArrayOf(0x34, 0x12, 0xFF, 0x00),
+        )
+        val expected = OuraExerciseHRIntensity(rt, listOf(0x1234, 0x00FF))
+        assertEquals(expected, OuraDecoders.decodeExerciseHRIntensity(record))
+        assertEquals(
+            listOf(OuraEvent.ExerciseHRIntensity(expected)),
+            OuraDriver(ringGen = OuraRingGen.GEN4, authKey = key).ingest(record),
+        )
+    }
+
+    @Test
+    fun testExerciseHRIntensityRejectsMalformedShapes() {
+        listOf(intArrayOf(), intArrayOf(0x01), IntArray(16)).forEach { payload ->
+            assertNull(
+                OuraDecoders.decodeExerciseHRIntensity(
+                    OuraRecord(OuraEventTag.EXERCISE_HR_INTENSITY.raw, rt, payload),
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun testRealStepsFeaturesMirrorNativeUnpackerWithoutMintingSteps() {
+        val payload = intArrayOf(
+            0x01, 0x02, 0x03, 0x84, 0x05, 0x06, 0x07, 0x08,
+            0x09, 0x0A, 0x0B, 0x8C, 0x0D, 0x0E,
+        )
+        val fields = listOf(3, 4, 6, 4, 5, 6, 7, 8, 19, 20, 22, 12, 13, 14)
+        val driver = OuraDriver(ringGen = OuraRingGen.GEN4, authKey = key)
+        listOf(OuraEventTag.REAL_STEPS_1, OuraEventTag.REAL_STEPS_2).forEach { tag ->
+            val record = OuraRecord(tag.raw, rt, payload)
+            val expected = OuraRealStepsFeatures(rt, tag.raw, fields)
+            assertEquals(expected, OuraDecoders.decodeRealStepsFeatures(record))
+            assertEquals(listOf(OuraEvent.RealStepsFeatures(expected)), driver.ingest(record))
+        }
+    }
+
+    @Test
+    fun testRealStepsFeaturesRejectWrongTagAndNonExactBody() {
+        assertNull(
+            OuraDecoders.decodeRealStepsFeatures(
+                OuraRecord(OuraEventTag.REAL_STEPS_1.raw, rt, IntArray(13)),
+            ),
+        )
+        assertNull(
+            OuraDecoders.decodeRealStepsFeatures(
+                OuraRecord(OuraEventTag.ACTIVITY_INFO.raw, rt, IntArray(14)),
             ),
         )
     }

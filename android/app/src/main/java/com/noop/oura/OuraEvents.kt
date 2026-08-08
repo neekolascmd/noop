@@ -259,6 +259,22 @@ data class OuraTierBSummary(
 }
 
 /**
+ * One structurally decoded `0x74 ehr_acm_intensity_event`: a bounded wire-order series of unsigned
+ * little-endian 16-bit values. Units and cadence are unresolved, so this remains diagnostic only.
+ */
+data class OuraExerciseHRIntensity(val ringTimestamp: Long, val values: List<Int>)
+
+/**
+ * One structurally decoded exact 14-byte `0x7E`/`0x7F real_steps_features` record. Field names and
+ * the stateful relationship between the two parts remain unresolved; this is not a step count.
+ */
+data class OuraRealStepsFeatures(
+    val ringTimestamp: Long,
+    val sourceTag: Int,
+    val fields: List<Int>,
+)
+
+/**
  * One decoded `0x50` activity_info record: an unresolved raw state byte plus a wire-order MET
  * (metabolic-equivalent) series. Real Gen 3 and retained Ring 4 / FW 2.12.3 captures corroborate the
  * low-byte formula, record shape, and physiologic output; the high-byte branch remains prior-art-only.
@@ -312,6 +328,10 @@ sealed class OuraEvent {
      * record anchor; no per-bin timestamps or production activity metrics are invented.
      */
     data class ActivityInfo(val value: OuraActivityInfo) : OuraEvent()
+
+    /** Structurally decoded activity-sensing diagnostics; never production metrics. */
+    data class ExerciseHRIntensity(val value: OuraExerciseHRIntensity) : OuraEvent()
+    data class RealStepsFeatures(val value: OuraRealStepsFeatures) : OuraEvent()
 
     /** True for Tier-B events, so a consumer can assert none leaked into a Tier-A-only sink. */
     val isTierB: Boolean get() = this is TierB

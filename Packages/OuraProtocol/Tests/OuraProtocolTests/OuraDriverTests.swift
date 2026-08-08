@@ -603,6 +603,9 @@ final class OuraDriverTests: XCTestCase {
         XCTAssertEqual(OuraEventTag.motion.tier, .diagnostic)
         XCTAssertEqual(OuraEventTag.sleepAcmPeriod.tier, .diagnostic)
         XCTAssertEqual(OuraEventTag.activityInfo.tier, .diagnostic)
+        XCTAssertEqual(OuraEventTag.exerciseHRIntensity.tier, .diagnostic)
+        XCTAssertEqual(OuraEventTag.realSteps1.tier, .diagnostic)
+        XCTAssertEqual(OuraEventTag.realSteps2.tier, .diagnostic)
         XCTAssertEqual(OuraEventTag.sleepPhaseInfo.tier, .tierB)
         XCTAssertEqual(OuraEventTag.sleepPhaseInfo.name, "SLEEP_PHASE_INFO")
         XCTAssertEqual(OuraEventTag.exerciseHRTrace.tier, .tierB)
@@ -754,6 +757,55 @@ final class OuraDriverTests: XCTestCase {
         // No state byte at all -> honest nil, never a guessed state.
         XCTAssertNil(OuraDecoders.decodeActivityInfo(
             OuraRecord(type: OuraEventTag.activityInfo.rawValue, ringTimestamp: rt, payload: [])))
+    }
+
+    // MARK: - Activity feature diagnostics (0x74 / 0x7E / 0x7F)
+
+    func testExerciseHRIntensityDecodesBoundedLittleEndianSeriesByDefault() {
+        let record = OuraRecord(type: OuraEventTag.exerciseHRIntensity.rawValue,
+                                ringTimestamp: rt, payload: [0x34, 0x12, 0xFF, 0x00])
+        let expected = OuraExerciseHRIntensity(ringTimestamp: rt, values: [0x1234, 0x00FF])
+        XCTAssertEqual(OuraDecoders.decodeExerciseHRIntensity(record), expected)
+        XCTAssertEqual(OuraDriver(ringGen: .gen4, authKey: key).ingest(record: record),
+                       [.exerciseHRIntensity(expected)])
+    }
+
+    func testExerciseHRIntensityRejectsMalformedShapes() {
+        for payload in [[], [0x01], Array(repeating: UInt8(0), count: 16)] {
+            XCTAssertNil(OuraDecoders.decodeExerciseHRIntensity(OuraRecord(
+                type: OuraEventTag.exerciseHRIntensity.rawValue,
+                ringTimestamp: rt,
+                payload: payload
+            )))
+        }
+    }
+
+    func testRealStepsFeaturesMirrorNativeUnpackerWithoutMintingSteps() {
+        let payload: [UInt8] = [
+            0x01, 0x02, 0x03, 0x84, 0x05, 0x06, 0x07, 0x08,
+            0x09, 0x0A, 0x0B, 0x8C, 0x0D, 0x0E,
+        ]
+        let expectedFields = [3, 4, 6, 4, 5, 6, 7, 8, 19, 20, 22, 12, 13, 14]
+        let driver = OuraDriver(ringGen: .gen4, authKey: key)
+        for tag in [OuraEventTag.realSteps1, .realSteps2] {
+            let record = OuraRecord(type: tag.rawValue, ringTimestamp: rt, payload: payload)
+            let expected = OuraRealStepsFeatures(ringTimestamp: rt,
+                                                 sourceTag: tag.rawValue,
+                                                 fields: expectedFields)
+            XCTAssertEqual(OuraDecoders.decodeRealStepsFeatures(record), expected)
+            XCTAssertEqual(driver.ingest(record: record), [.realStepsFeatures(expected)])
+        }
+    }
+
+    func testRealStepsFeaturesRejectWrongTagAndNonExactBody() {
+        XCTAssertNil(OuraDecoders.decodeRealStepsFeatures(OuraRecord(
+            type: OuraEventTag.realSteps1.rawValue, ringTimestamp: rt,
+            payload: Array(repeating: 0, count: 13)
+        )))
+        XCTAssertNil(OuraDecoders.decodeRealStepsFeatures(OuraRecord(
+            type: OuraEventTag.activityInfo.rawValue, ringTimestamp: rt,
+            payload: Array(repeating: 0, count: 14)
+        )))
     }
 
     // MARK: - Live-HR push routing + decode

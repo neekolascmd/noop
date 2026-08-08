@@ -14,7 +14,7 @@ platform-specific; see the [hardware graduation gate](HARDWARE_SUPPORT.md#oura-g
 - **[open_oura-spo2]** - Th0rgal/open_oura `docs/spo2-calibration.md` (no-license; app-side
   calibration facts and Ring 5 overnight evidence, facts only).
 - **[relue]** - relue/oura_ring_reverse `docs/.../heartbeat_replication_guide.md` and `heartbeat_complete_flow.md` (no-license; Ring 3 live-HR).
-- **[oura-rs]** - Th0rgal/open_oura `crates/oura-protocol/src/events.rs` (no-license Rust clean-room decoder; facts cited only, no code copied). Its event tags marked `"_status": "unvalidated"` are treated the same as our Tier B - plausible, not ground-truth-confirmed.
+- **[oura-rs]** - Th0rgal/open_oura `crates/oura-protocol/src/events.rs` (no-license Rust clean-room decoder; facts cited only, no code copied). Its event tags marked `"_status": "unvalidated"` may support a structural diagnostic decoder, but never a production metric without hardware/reference qualification.
 - **[oura-openapi]** - Oura's official API v2
   [OpenAPI schema](https://cloud.ouraring.com/v2/static/json/openapi-1.37.json). Its `sleep_phase_5_min` field defines
   `1=deep, 2=light, 3=REM, 4=awake`; this corroborates the native zero-based codebook, not BLE cadence.
@@ -500,18 +500,31 @@ out-of-range values are withheld rather than allowed to corrupt HRV/recovery. Se
   - The raw state byte and whether the record timestamp names the first or last bin remain unqualified. NOOP therefore retains the whole record atomically as `OURA_ACTIVITY_MET_SERIES` with the anchored record timestamp, `state_raw`, lossless `met_x10`, `sample_interval_seconds=60`, and explicit `timestamp_semantics=record_anchor_only`. It does **not** assign per-bin timestamps or derive steps, calories, workout labels, or scores. Decoder revision 5 recovers the same diagnostics from the bounded raw archive on Apple and Android.
 - **`0x51`,`0x52` activity_summary** remain fully undecoded Tier-B records. Neither appeared in the retained Ring 4 corpus.
   - **Real Steps (feature `0x0B`) server gating [open_oura-feat]:** real_steps is behind the server flag `activity/real_steps` (default **false**; `FeatureDefinitions.ActivityRealSteps`, Gen 3+), the same server-flag-off pattern as SpO2 (§7.1). This explains `0x7E`/`0x7F` never once appearing across the PR #960 live sessions - the ring isn't sending them, it is not a NOOP decode gap. `0x50` itself is an always-on base stream (not feature-gated), matching it appearing in every session.
-- **`0x73` `ehr_trace_event` / `0x74` `ehr_acm_intensity_event`** are the banked outputs associated
-  with Exercise HR feature `0x03`. NOOP recognizes and retains their complete payloads as Tier-B
-  `exercise_hr` diagnostics, but no field layout or workout semantics are promoted without an owned-ring
-  capture. [open_oura-feat]
-- **`0x7E`/`0x7F` real_steps_features 1/2** (18 B each): bit-packed step features merged across the paired events. **(UNVERIFIED - partial)** Neither tag appeared in the retained Ring 4 corpus. [ringverse]
+- **`0x73` `ehr_trace_event`** is a banked output associated with Exercise HR feature `0x03`; its body
+  remains wholly unknown and presence-only Tier B. **`0x74` `ehr_acm_intensity_event`** has a bounded
+  native-parser-backed structural decoder: a non-empty even-length body of at most 14 bytes becomes up
+  to seven unsigned 16-bit little-endian values in wire order. NOOP retains that atomic series as
+  `OURA_EXERCISE_HR_INTENSITY_SERIES` with `unit=raw_u16`, `field_semantics=unvalidated`, and
+  `timestamp_semantics=record_anchor_only`. The physical unit, cadence, and relationship to workout HR
+  remain unknown; it never becomes HR, strain, or a workout metric. Neither tag appeared in the retained
+  Ring 4 corpus. [open_oura-feat][oura-rs]
+- **`0x7E`/`0x7F` real_steps_features 1/2** have an exact 14-byte body (20-byte complete TLV including
+  the six-byte record header). The native-parser-backed unpacker yields 14 ordered unsigned fields:
+  `[(p3>>7)|(p0<<1), p1<<1, p2<<1, p3&0x7f, p4, p5, p6, p7,`
+  `(p11>>7)|(p8<<1), p9<<1, p10<<1, p11&0x7f, p12, p13]`. Field names and the stateful relationship
+  between parts 1 and 2 remain unvalidated. NOOP therefore retains each exact record as
+  `OURA_REAL_STEPS_FEATURES`, including `source_tag`, `feature_fields_u16`, and
+  `part_relationship=stateful_unknown`, but never converts any field into a steps row. Neither tag
+  appeared in the retained Ring 4 corpus. [oura-rs]
   - Apple and Android now expose one explicit **Enable automatic activity tracking** action. After user
     confirmation it writes Real Steps `0x0B` to automatic mode first, then Exercise HR `0x03`, and reads
     both modes back. This is a direct authenticated BLE setting change: it never resets/re-keys the ring,
     never enables Experimental/CVA/raw-research features, and never requires an export/import file.
   - `AUTOMATIC` means the ring computes while worn and banks events for NOOP's automatic history sync; it
     is not a second-by-second live step push. Until a post-enable capture observes and reference-correlates
-    `0x7E`/`0x7F`, NOOP keeps step counts blank rather than interpreting the prior-art layout as ground truth.
+    `0x7E`/`0x7F`, NOOP keeps step counts blank while preserving their structural diagnostics for later
+    reference correlation. Decoder revision 6 can recover both activity diagnostic families from archived
+    TLVs without reconnecting the ring.
 
 ### 6.14 Raw PPG
 - **`0x67` raw_ppg_summary** (12–13 B): start-UTC, type, scale, session header for following data. [ringverse]
@@ -534,7 +547,7 @@ out-of-range values are withheld rather than allowed to corrupt HRV/recovery. Se
 | `0x00` | Background DFU | - |
 | `0x01` | Research Data (RData) | often server-blocked; returns idle status 3 [open_oura-r3] |
 | `0x02` | Daytime HR | Gen3+; **live-HR path (§5.6)** |
-| `0x03` | Exercise HR (AWHR) | Gen3+; cap version ≥ 2. NOOP's explicit activity action enables this only after Real Steps, then re-reads both statuses. `0x73`/`0x74` remain Tier B until captured. |
+| `0x03` | Exercise HR (AWHR) | Gen3+; cap version ≥ 2. NOOP's explicit activity action enables this only after Real Steps, then re-reads both statuses. `0x73` remains Tier B; structurally decoded `0x74` remains a non-metric diagnostic until captured and reference-correlated. |
 | `0x04` | SpO2 | Gen3+; server-gated. `2f 02 20 04` is a read-only feature-status request; NOOP parses the `0x21` reply and reports whether automatic mode (`0x01`) is on. SpO2 never arrives as a live push; it arrives through history (§5), same as skin temp. Changing the sensor mode is an explicit device-setting mutation and is never silently bundled into connect/history setup. The Devices-screen confirmation is the only production entry point for `2f 03 22 04 01` (enable automatic), followed by a status re-read. |
 | `0x05` | Bundling | - |
 | `0x06` | Encrypted API | (Oura's encrypted channel - NOOP does NOT use) |
@@ -570,7 +583,7 @@ out-of-range values are withheld rather than allowed to corrupt HRV/recovery. Se
 ### 7.3 NOOP decoder build guidance
 1. **Single TLV parser** (§2.3) for all generations - the framing is generation-invariant. Branch only on: MTU clamp (203 vs 247) and Gen-4/5 extra-char presence (discover but ignore in v1).
 2. **Generation detection:** read product info (`0x18 03 18 00 10`) → hardware id (`ORE_06` on the tested Ring 4), and firmware (`0x08`). Map to Gen 3/4/5 to set MTU and pick verified-vs-unverified layout confidence.
-3. **Trust tiers in the decoder:** Tier A (hardware-backed, may feed production metrics) = TLV framing, auth, GetEvents cursor, live-HR `0x02`, `0x60` IBI, `0x46`/`0x69`/`0x75` temp, Ring 4 `0x6F` percentage SpO2 plus raw `0x77` DC, `0x6A` raw sleep-period measurements, `0x76` bedtime bounds, `0x42` time-sync, `0x0D` battery, `0x45`/`0x53` state, `0x6B` motion. The corrected `0x80` layout is also Tier A: external real Ring 5 captures contain more than 1,100 coherent beats and validate the split-bitfield layout; a repository-owned capture remains useful corroboration, not a production gate. Diagnostic / explicitly estimated = Ring 4 `0x8B` emission and wire shape are now hardware-backed; raw ratio/PI stays diagnostic, while the qualified Oura Simple result may feed only the separately labelled `oura_simple_gen4` estimate path until reference-sensor comparison is recorded. The atomic `0x4E`/`0x5A` phase series is diagnostic because cadence/direction are not qualified. Ring 4 `0x50` is also diagnostic: its record shape, low-byte MET formula, and cadence are qualified, while the high-byte branch, raw state, and record-anchor direction are not. Tier B (UNVERIFIED, fixture-gate before use) items = sleep summaries, the `0x4B` body layout, sleep-stage cadence, `0x51/0x52` activity summaries, `0x73/0x74` Exercise HR, `0x7E/0x7F` steps, legacy `0x70`/`0x7B` on Ring 4, the protobuf `0x55/0x59` interpretation (do **not** ship).
+3. **Trust tiers in the decoder:** Tier A (hardware-backed, may feed production metrics) = TLV framing, auth, GetEvents cursor, live-HR `0x02`, `0x60` IBI, `0x46`/`0x69`/`0x75` temp, Ring 4 `0x6F` percentage SpO2 plus raw `0x77` DC, `0x6A` raw sleep-period measurements, `0x76` bedtime bounds, `0x42` time-sync, `0x0D` battery, `0x45`/`0x53` state, `0x6B` motion. The corrected `0x80` layout is also Tier A: external real Ring 5 captures contain more than 1,100 coherent beats and validate the split-bitfield layout; a repository-owned capture remains useful corroboration, not a production gate. Diagnostic / explicitly estimated = Ring 4 `0x8B` emission and wire shape are now hardware-backed; raw ratio/PI stays diagnostic, while the qualified Oura Simple result may feed only the separately labelled `oura_simple_gen4` estimate path until reference-sensor comparison is recorded. The atomic `0x4E`/`0x5A` phase series is diagnostic because cadence/direction are not qualified. Ring 4 `0x50` is also diagnostic: its record shape, low-byte MET formula, and cadence are qualified, while the high-byte branch, raw state, and record-anchor direction are not. Native-parser-backed `0x74` and `0x7E/0x7F` shapes are structural diagnostics only: no field semantics or production metric is assigned. Tier B (UNVERIFIED, fixture-gate before use) items = sleep summaries, the `0x4B` body layout, sleep-stage cadence, `0x51/0x52` activity summaries, `0x73` Exercise HR trace, legacy `0x70`/`0x7B` on Ring 4, and the protobuf `0x55/0x59` interpretation (do **not** ship).
 4. **HRV/sleep:** consume `0x5D` HRV, preserve `0x6A` without naming its states, and use `0x76` for stage-less sleep bounds. Preserve `0x4E`/`0x5A` as atomic diagnostic series, but do not timestamp individual codes or stage a night until a real fixture proves cadence/direction. Never read Oura feature `0x06` (encrypted API).
 
 ### 7.4 Passive record inventory and local raw archive
@@ -622,6 +635,10 @@ Decoder revision 4 replays retained Ring 4 `0x8B` records into both the lossless
 qualification, measured-value precedence, provenance labels, and external-export exclusions are applied
 downstream; raw replay alone never turns the estimate into a firmware or clinical measurement.
 
+Decoder revision 5 replays retained `0x50` records as atomic `OURA_ACTIVITY_MET_SERIES` diagnostics.
+Decoder revision 6 adds the structurally decoded `0x74` and `0x7E`/`0x7F` diagnostic series. It preserves
+their real record anchors and raw field order but deliberately creates no HR, steps, strain, or workout row.
+
 The `oura-decode` CLI uses the same inventory while replaying an opt-in capture. It counts reassembled TLVs,
 not capture fragments, so a split record or several records packed into one notification cannot create a
 false tag count. Its values-free inventory is written to stderr; `--json` stdout remains machine-readable.
@@ -631,7 +648,8 @@ false tag count. Its values-free inventory is written to stderr; `--json` stdout
 ## 8. Open Implementation Items (for the team)
 - Confirm Ring-5 `…0004/0005/0006` roles before writing to them (currently unused).
 - Resolve the `0x0D` battery percent-vs-voltage offset per generation via captured fixtures (§6.10).
-- Validate all Tier-B sleep/activity/step layouts against real captures before enabling in scoring.
+- Validate all Tier-B and structurally diagnostic sleep/activity/step layouts against real captures and
+  independent references before enabling any unresolved field in scoring.
 - On the available Ring 4, confirm both activity modes read back automatic, walk a known route/step count,
   wait for NOOP's direct history sync, and capture `0x73`/`0x74` plus `0x7E`/`0x7F` for qualification.
 - Correlate `0x47` motion and `0x72` sleep-ACM diagnostic fields against an official-app or independent
