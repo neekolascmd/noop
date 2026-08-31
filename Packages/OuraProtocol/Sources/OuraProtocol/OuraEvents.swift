@@ -198,17 +198,70 @@ public enum OuraSleepStage: Int, Sendable, Equatable, Codable {
 /// One complete, ordered 0x4E/0x5A sleep-phase record. Keeping the record atomic is important:
 /// individual codes share one ring timestamp and therefore collide under the event store's
 /// `(deviceId, ts, kind)` natural key. Cadence is intentionally absent until hardware qualifies it.
+/// One complete phase envelope in wire order. This atomic value carries no per-code wall time; the
+/// archive assembler applies the externally evidenced 30-second cadence only after pairing a valid
+/// 0x49 window. That staging path remains unqualified on repository-owned Ring 4 hardware.
 public struct OuraSleepPhaseSeries: Equatable, Sendable, Codable {
     public let ringTimestamp: UInt32
     public let sourceTag: UInt8
     public let header: UInt8
     public let stages: [OuraSleepStage]
+    /// One flag per stage slot. An unwritten slot occupies time in the SleepNet sequence but must not
+    /// be emitted as an awake epoch. Older callers can omit this and receive an all-written series.
+    public let unwritten: [Bool]
+
     public init(ringTimestamp: UInt32, sourceTag: UInt8, header: UInt8,
-                stages: [OuraSleepStage]) {
+                stages: [OuraSleepStage], unwritten: [Bool]? = nil) {
+        if let unwritten {
+            precondition(unwritten.count == stages.count,
+                         "Oura sleep-phase unwritten flags must match the stage count")
+        }
         self.ringTimestamp = ringTimestamp
         self.sourceTag = sourceTag
         self.header = header
         self.stages = stages
+        self.unwritten = unwritten ?? Array(repeating: false, count: stages.count)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case ringTimestamp, sourceTag, header, stages, unwritten
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let ringTimestamp = try container.decode(UInt32.self, forKey: .ringTimestamp)
+        let sourceTag = try container.decode(UInt8.self, forKey: .sourceTag)
+        let header = try container.decode(UInt8.self, forKey: .header)
+        let stages = try container.decode([OuraSleepStage].self, forKey: .stages)
+        let unwritten = try container.decodeIfPresent([Bool].self, forKey: .unwritten)
+            ?? Array(repeating: false, count: stages.count)
+        guard unwritten.count == stages.count else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .unwritten,
+                in: container,
+                debugDescription: "unwritten flags must match the stage count"
+            )
+        }
+        self.ringTimestamp = ringTimestamp
+        self.sourceTag = sourceTag
+        self.header = header
+        self.stages = stages
+        self.unwritten = unwritten
+    }
+}
+
+/// One decoded `0x49` SleepNet window. Both values are minute offsets backward from the record's
+/// envelope time: the larger start offset identifies the window onset and the end offset identifies
+/// its end. The mapping layer resolves the envelope ring clock to Unix time.
+public struct OuraSleepWindow: Equatable, Sendable, Codable {
+    public let ringTimestamp: UInt32
+    public let startOffsetMinutes: Int
+    public let endOffsetMinutes: Int
+
+    public init(ringTimestamp: UInt32, startOffsetMinutes: Int, endOffsetMinutes: Int) {
+        self.ringTimestamp = ringTimestamp
+        self.startOffsetMinutes = startOffsetMinutes
+        self.endOffsetMinutes = endOffsetMinutes
     }
 }
 
@@ -464,6 +517,7 @@ public enum OuraEvent: Equatable, Sendable {
     case temp(OuraTemp)
     case battery(OuraBattery)
     case sleepPhase(OuraSleepPhaseSeries)
+    case sleepWindow(OuraSleepWindow)
     case sleepPeriod(OuraSleepPeriod)
     case bedtimePeriod(OuraBedtimePeriod)
     case motion(OuraMotion)

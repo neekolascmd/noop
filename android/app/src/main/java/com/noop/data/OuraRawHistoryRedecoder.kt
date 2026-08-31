@@ -13,7 +13,7 @@ import kotlinx.coroutines.ensureActive
 
 /** Bump only when retained TLVs can yield new durable information; independent of app releases. */
 object OuraRawHistoryDecoderRevision {
-    const val CURRENT = 7
+    const val CURRENT = 8
 }
 
 data class OuraRawHistoryRedecodeReport(
@@ -29,6 +29,118 @@ internal data class OuraRawHistoryPageDecode(
     val sleepWindows: List<Pair<Long, Long>>,
     val withheldEvents: Int,
 )
+
+/** Conservative limits for assigning one verified clock anchor to retained, previously unanchored TLVs. */
+internal object OuraRawHistoryAnchorBackfillPolicy {
+    const val RECEIPT_COHORT_TOLERANCE_MILLISECONDS: Long = 10 * 60 * 1_000
+
+    /**
+     * Carrier and target may arrive in either order within one receipt cohort. Projected UTC may be
+     * arbitrarily before receipt (normal for history) but never materially after it.
+     */
+    fun canBackfill(
+        row: StoredOuraRawHistoryRecord,
+        anchor: OuraTimeAnchor,
+        anchorCarrierFirstSeenAtUnixMs: Long,
+    ): Boolean {
+        val receiptGap = try {
+            if (anchorCarrierFirstSeenAtUnixMs >= row.firstSeenAtUnixMs) {
+                Math.subtractExact(anchorCarrierFirstSeenAtUnixMs, row.firstSeenAtUnixMs)
+            } else {
+                Math.subtractExact(row.firstSeenAtUnixMs, anchorCarrierFirstSeenAtUnixMs)
+            }
+        } catch (_: ArithmeticException) {
+            return false
+        }
+        if (receiptGap > RECEIPT_COHORT_TOLERANCE_MILLISECONDS) return false
+        val projectedSeconds = OuraTimeAnchorMapping.unixSeconds(row.ringTimestamp, anchor)
+            ?: return false
+        return try {
+            val projectedMilliseconds = Math.multiplyExact(projectedSeconds, 1_000L)
+            val latestPermittedMilliseconds = Math.addExact(
+                row.firstSeenAtUnixMs,
+                RECEIPT_COHORT_TOLERANCE_MILLISECONDS,
+            )
+            projectedMilliseconds <= latestPermittedMilliseconds
+        } catch (_: ArithmeticException) {
+            false
+        }
+    }
+}
+
+internal data class OuraRawAnchorRange(val start: Long, val end: Long)
+
+/** Streaming selector for the eligible component directly adjacent to the anchor carrier. */
+internal class OuraRawAnchorAdjacentRangeAccumulator(
+    fromArchiveId: Long,
+    throughArchiveId: Long,
+    carrierArchiveId: Long,
+    private val anchor: OuraTimeAnchor,
+    private val anchorCarrierFirstSeenAtUnixMs: Long,
+) {
+    private enum class Direction { PREFIX, SUFFIX, INVALID }
+
+    private val direction = when {
+        carrierArchiveId < fromArchiveId -> Direction.PREFIX
+        carrierArchiveId >= throughArchiveId -> Direction.SUFFIX
+        else -> Direction.INVALID
+    }
+    private var selectedStart: Long? = null
+    private var selectedEnd: Long? = null
+    private var prefixClosed = false
+    private var prefixBarrierArchiveId: Long? = null
+
+    fun consume(rows: List<StoredOuraRawHistoryRecord>) {
+        when (direction) {
+            Direction.PREFIX -> {
+                if (prefixClosed) return
+                for (row in rows) {
+                    if (!OuraRawHistoryAnchorBackfillPolicy.canBackfill(
+                            row,
+                            anchor,
+                            anchorCarrierFirstSeenAtUnixMs,
+                        )
+                    ) {
+                        prefixClosed = true
+                        prefixBarrierArchiveId = row.archiveId
+                        return
+                    }
+                    if (selectedStart == null) selectedStart = row.archiveId
+                    selectedEnd = row.archiveId
+                }
+            }
+            Direction.SUFFIX -> {
+                for (row in rows) {
+                    if (OuraRawHistoryAnchorBackfillPolicy.canBackfill(
+                            row,
+                            anchor,
+                            anchorCarrierFirstSeenAtUnixMs,
+                        )
+                    ) {
+                        if (selectedStart == null) selectedStart = row.archiveId
+                        selectedEnd = row.archiveId
+                    } else {
+                        selectedStart = null
+                        selectedEnd = null
+                    }
+                }
+            }
+            Direction.INVALID -> Unit
+        }
+    }
+
+    fun result(): OuraRawAnchorRange? {
+        val start = selectedStart ?: return null
+        val end = selectedEnd ?: return null
+        return OuraRawAnchorRange(start, end)
+    }
+
+    val forwardPropagationBlocked: Boolean
+        get() = direction == Direction.PREFIX && prefixClosed
+
+    val forwardBarrierArchiveId: Long?
+        get() = prefixBarrierArchiveId
+}
 
 /** Pure page-bounded decoder used by production replay and JVM parity tests. */
 internal object OuraRawHistoryPageDecoder {
@@ -150,6 +262,7 @@ internal object OuraRawHistoryPageDecoder {
         is OuraEvent.Spo2Ratio -> value.ringTimestamp
         is OuraEvent.Temp -> value.ringTimestamp
         is OuraEvent.SleepPhaseEvent -> value.ringTimestamp
+        is OuraEvent.SleepWindowEvent -> value.ringTimestamp
         is OuraEvent.SleepPeriodEvent -> value.ringTimestamp
         is OuraEvent.BedtimePeriodEvent -> value.ringTimestamp
         is OuraEvent.MotionEvent -> value.ringTimestamp
@@ -182,21 +295,90 @@ suspend fun WhoopRepository.redecodeOuraRawHistory(
     val boundedPageSize = pageSize.coerceIn(1, 10_000)
     var report = OuraRawHistoryRedecodeReport()
     var attemptedAnchorBackfill = false
+    val throughArchiveId = ouraRawHistoryHighWaterArchiveId(deviceId)
+    if (throughArchiveId <= 0) return report
+
+    // A new anchor can make older, previously withheld SleepNet rows decodable even when that new row
+    // is not itself a sleep tag. Repair that relationship before re-evaluating the SleepNet gate.
+    val sleepNetWasPending = hasOuraRawSleepNetRecordsNeedingDecode(
+        deviceId = deviceId,
+        decoderRevision = decoderRevision,
+        throughArchiveId = throughArchiveId,
+    )
+    val anchorEvidenceWasPending = hasOuraRawAnchorEvidenceNeedingDecode(
+        deviceId = deviceId,
+        decoderRevision = decoderRevision,
+        throughArchiveId = throughArchiveId,
+    )
+    if ((sleepNetWasPending || anchorEvidenceWasPending) &&
+        hasOuraRawHistoryRowsWithoutTimeAnchor(deviceId, throughArchiveId)
+    ) {
+        val backfilled = backfillOuraRawHistoryTimeAnchors(
+            deviceId = deviceId,
+            ringGen = ringGen,
+            throughArchiveId = throughArchiveId,
+            pageSize = maxOf(boundedPageSize, 5_000),
+        )
+        report = report.copy(anchorRowsBackfilled = report.anchorRowsBackfilled + backfilled)
+        attemptedAnchorBackfill = true
+    }
+
+    // A phase burst can cross database pages. Rebuild it once from this run's high-water snapshot
+    // before page revisions advance; a concurrent tail remains revision-old for the next run.
+    if (hasOuraRawSleepNetRecordsNeedingDecode(
+            deviceId = deviceId,
+            decoderRevision = decoderRevision,
+            throughArchiveId = throughArchiveId,
+        )
+    ) {
+        if (!attemptedAnchorBackfill &&
+            hasOuraRawHistoryRowsWithoutTimeAnchor(deviceId, throughArchiveId)
+        ) {
+            val backfilled = backfillOuraRawHistoryTimeAnchors(
+                deviceId = deviceId,
+                ringGen = ringGen,
+                throughArchiveId = throughArchiveId,
+                pageSize = maxOf(boundedPageSize, 5_000),
+            )
+            report = report.copy(anchorRowsBackfilled = report.anchorRowsBackfilled + backfilled)
+            attemptedAnchorBackfill = true
+        }
+        val stagedSessions = rebuildOuraSleepNetSessions(
+            deviceId = deviceId,
+            throughArchiveId = throughArchiveId,
+            pageSize = boundedPageSize,
+        )
+        if (stagedSessions.isNotEmpty()) {
+            upsertOuraSleepNetSessions(stagedSessions)
+            report = report.copy(sleepSessions = report.sleepSessions + stagedSessions.size)
+        }
+    }
 
     while (true) {
         currentCoroutineContext().ensureActive()
-        var rows = ouraRawHistoryRecordsNeedingDecode(deviceId, decoderRevision, boundedPageSize)
+        var rows = ouraRawHistoryRecordsNeedingDecode(
+            deviceId = deviceId,
+            decoderRevision = decoderRevision,
+            throughArchiveId = throughArchiveId,
+            limit = boundedPageSize,
+        )
         if (rows.isEmpty()) return report
 
         if (!attemptedAnchorBackfill && rows.any { it.timeAnchor == null }) {
             val backfilled = backfillOuraRawHistoryTimeAnchors(
                 deviceId = deviceId,
                 ringGen = ringGen,
+                throughArchiveId = throughArchiveId,
                 pageSize = maxOf(boundedPageSize, 5_000),
             )
             report = report.copy(anchorRowsBackfilled = report.anchorRowsBackfilled + backfilled)
             attemptedAnchorBackfill = true
-            rows = ouraRawHistoryRecordsNeedingDecode(deviceId, decoderRevision, boundedPageSize)
+            rows = ouraRawHistoryRecordsNeedingDecode(
+                deviceId = deviceId,
+                decoderRevision = decoderRevision,
+                throughArchiveId = throughArchiveId,
+                limit = boundedPageSize,
+            )
             if (rows.isEmpty()) return report
         }
 
@@ -215,10 +397,11 @@ suspend fun WhoopRepository.redecodeOuraRawHistory(
             )
         }
 
-        // Last by design: any exception above leaves the page on its old revision for a safe retry.
-        markOuraRawHistoryDecoded(rows.map { it.archiveId }, decoderRevision)
+        // Last by design: any exception above leaves the page old. The snapshot CAS also refuses to
+        // overwrite an anchor enrichment/reset that raced this decode, so that row is retried safely.
+        val markedDecoded = markOuraRawHistoryDecoded(rows, decoderRevision)
         report = report.copy(
-            decodedRecords = report.decodedRecords + rows.size,
+            decodedRecords = report.decodedRecords + markedDecoded,
             insertedRows = report.insertedRows + inserted,
             sleepSessions = report.sleepSessions + decoded.sleepWindows.size,
             withheldEvents = report.withheldEvents + decoded.withheldEvents,
@@ -229,6 +412,7 @@ suspend fun WhoopRepository.redecodeOuraRawHistory(
 private suspend fun WhoopRepository.backfillOuraRawHistoryTimeAnchors(
     deviceId: String,
     ringGen: OuraRingGen,
+    throughArchiveId: Long,
     pageSize: Int,
 ): Int {
     var afterArchiveId = 0L
@@ -236,13 +420,20 @@ private suspend fun WhoopRepository.backfillOuraRawHistoryTimeAnchors(
     var previousArchiveId = 0L
     var unassignedStart: Long? = null
     var currentAnchor: OuraTimeAnchor? = null
+    var currentAnchorArchiveId: Long? = null
+    var currentAnchorFirstSeenAtUnixMs: Long? = null
     var changed = 0
 
     while (true) {
         currentCoroutineContext().ensureActive()
-        val rows = ouraRawHistoryRecords(deviceId, afterArchiveId, pageSize)
+        val rows = ouraRawHistoryRecords(
+            deviceId = deviceId,
+            afterArchiveId = afterArchiveId,
+            throughArchiveId = throughArchiveId,
+            limit = pageSize,
+        )
         if (rows.isEmpty()) return changed
-        val assignments = mutableListOf<Triple<OuraTimeAnchor, Long, Long>>()
+        val assignments = mutableListOf<OuraRawAnchorAssignment>()
 
         for (row in rows) {
             if (unassignedStart == null) unassignedStart = row.archiveId
@@ -250,12 +441,24 @@ private suspend fun WhoopRepository.backfillOuraRawHistoryTimeAnchors(
                 previousRingTimestamp != 0L && row.ringTimestamp < previousRingTimestamp
             ) {
                 val start = checkNotNull(unassignedStart)
+                val carrierFirstSeen = currentAnchorFirstSeenAtUnixMs
+                val carrierArchiveId = currentAnchorArchiveId
                 currentAnchor?.let { anchor ->
-                    if (start <= previousArchiveId) {
-                        assignments += Triple(anchor, start, previousArchiveId)
+                    if (carrierArchiveId != null && carrierFirstSeen != null &&
+                        start <= previousArchiveId
+                    ) {
+                        assignments += OuraRawAnchorAssignment(
+                            anchor,
+                            start,
+                            previousArchiveId,
+                            carrierArchiveId,
+                            carrierFirstSeen,
+                        )
                     }
                 }
                 currentAnchor = null
+                currentAnchorArchiveId = null
+                currentAnchorFirstSeenAtUnixMs = null
                 unassignedStart = row.archiveId
             }
 
@@ -264,9 +467,19 @@ private suspend fun WhoopRepository.backfillOuraRawHistoryTimeAnchors(
             val nextAnchor = stored ?: discovered
             if (nextAnchor != null) {
                 currentAnchor = nextAnchor
+                currentAnchorArchiveId = row.archiveId
+                currentAnchorFirstSeenAtUnixMs = row.firstSeenAtUnixMs
                 val start = checkNotNull(unassignedStart)
                 val end = if (stored != null) row.archiveId - 1 else row.archiveId
-                if (start <= end) assignments += Triple(nextAnchor, start, end)
+                if (start <= end) {
+                    assignments += OuraRawAnchorAssignment(
+                        nextAnchor,
+                        start,
+                        end,
+                        row.archiveId,
+                        row.firstSeenAtUnixMs,
+                    )
+                }
                 unassignedStart = row.archiveId + 1
             }
 
@@ -275,17 +488,105 @@ private suspend fun WhoopRepository.backfillOuraRawHistoryTimeAnchors(
         }
 
         val start = checkNotNull(unassignedStart)
+        val carrierFirstSeen = currentAnchorFirstSeenAtUnixMs
+        val carrierArchiveId = currentAnchorArchiveId
         currentAnchor?.let { anchor ->
-            if (start <= previousArchiveId) {
-                assignments += Triple(anchor, start, previousArchiveId)
+            if (carrierArchiveId != null && carrierFirstSeen != null &&
+                start <= previousArchiveId
+            ) {
+                assignments += OuraRawAnchorAssignment(
+                    anchor,
+                    start,
+                    previousArchiveId,
+                    carrierArchiveId,
+                    carrierFirstSeen,
+                )
                 unassignedStart = previousArchiveId + 1
             }
         }
-        for ((anchor, from, through) in assignments) {
-            changed += setOuraRawHistoryTimeAnchor(anchor, deviceId, from, through)
+        for (assignment in assignments) {
+            val selection = eligibleOuraRawAnchorAdjacentRange(
+                deviceId = deviceId,
+                fromArchiveId = assignment.start,
+                throughArchiveId = assignment.end,
+                anchor = assignment.anchor,
+                anchorCarrierArchiveId = assignment.carrierArchiveId,
+                anchorCarrierFirstSeenAtUnixMs = assignment.carrierFirstSeenAtUnixMs,
+                pageSize = pageSize,
+            )
+            selection.range?.let { eligibleRange ->
+                changed += setOuraRawHistoryTimeAnchor(
+                    anchor = assignment.anchor,
+                    deviceId = deviceId,
+                    fromArchiveId = eligibleRange.start,
+                    throughArchiveId = eligibleRange.end,
+                )
+            }
+            if (selection.forwardPropagationBlocked &&
+                currentAnchorArchiveId == assignment.carrierArchiveId
+            ) {
+                currentAnchor = null
+                currentAnchorArchiveId = null
+                currentAnchorFirstSeenAtUnixMs = null
+                unassignedStart = selection.forwardBarrierArchiveId
+            }
         }
         afterArchiveId = rows.last().archiveId
     }
+}
+
+private data class OuraRawAnchorAssignment(
+    val anchor: OuraTimeAnchor,
+    val start: Long,
+    val end: Long,
+    val carrierArchiveId: Long,
+    val carrierFirstSeenAtUnixMs: Long,
+)
+
+private data class OuraRawAnchorRangeSelection(
+    val range: OuraRawAnchorRange?,
+    val forwardPropagationBlocked: Boolean,
+    val forwardBarrierArchiveId: Long?,
+)
+
+/**
+ * Return only the eligible component adjacent to the carrier: a prefix for forward propagation from
+ * an earlier carrier, or a suffix for backward propagation from a carrier at/after the range.
+ */
+private suspend fun WhoopRepository.eligibleOuraRawAnchorAdjacentRange(
+    deviceId: String,
+    fromArchiveId: Long,
+    throughArchiveId: Long,
+    anchor: OuraTimeAnchor,
+    anchorCarrierArchiveId: Long,
+    anchorCarrierFirstSeenAtUnixMs: Long,
+    pageSize: Int,
+): OuraRawAnchorRangeSelection {
+    var afterArchiveId = fromArchiveId - 1
+    val accumulator = OuraRawAnchorAdjacentRangeAccumulator(
+        fromArchiveId = fromArchiveId,
+        throughArchiveId = throughArchiveId,
+        carrierArchiveId = anchorCarrierArchiveId,
+        anchor = anchor,
+        anchorCarrierFirstSeenAtUnixMs = anchorCarrierFirstSeenAtUnixMs,
+    )
+    while (afterArchiveId < throughArchiveId) {
+        currentCoroutineContext().ensureActive()
+        val rows = ouraRawHistoryRecords(
+            deviceId = deviceId,
+            afterArchiveId = afterArchiveId,
+            throughArchiveId = throughArchiveId,
+            limit = pageSize,
+        )
+        if (rows.isEmpty()) break
+        accumulator.consume(rows)
+        afterArchiveId = rows.last().archiveId
+    }
+    return OuraRawAnchorRangeSelection(
+        range = accumulator.result(),
+        forwardPropagationBlocked = accumulator.forwardPropagationBlocked,
+        forwardBarrierArchiveId = accumulator.forwardBarrierArchiveId,
+    )
 }
 
 private fun archiveAnchor(record: OuraRecord, ringGen: OuraRingGen): OuraTimeAnchor? = when (record.type) {

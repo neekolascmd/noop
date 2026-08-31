@@ -56,15 +56,16 @@ public enum OuraEventTag: UInt8, Sendable, CaseIterable, Codable {
     // --- Battery (Tier A; carried inline, not a TLV record but routed here for the enum) ---
     // Battery (0x0D) is an OUTER command response, not a TLV inner record; see Decoders.decodeBattery.
 
-    // --- Sleep summaries (Tier B, UNVERIFIED) ---
-    case sleepSummary1    = 0x49   // sleep_summary_1, OURA_PROTOCOL.md s6.12 (UNVERIFIED)
+    // --- Sleep summaries ---
+    // 0x49's two LE-u16 minute offsets are hardware-observed and retained as a diagnostic window.
+    case sleepSummary1    = 0x49   // SleepNet start/end offsets from the record envelope
     case sleepSummaryC    = 0x4C   // sleep summary variant, OURA_PROTOCOL.md s6.12 (UNVERIFIED)
     case sleepSummaryD    = 0x4F   // sleep summary variant, OURA_PROTOCOL.md s6.12 (UNVERIFIED)
     case sleepSummaryE    = 0x57   // sleep summary variant, OURA_PROTOCOL.md s6.12 (UNVERIFIED)
     case sleepSummaryF    = 0x58   // sleep summary variant, OURA_PROTOCOL.md s6.12 (UNVERIFIED)
 
     // --- Sleep phase records ---
-    case sleepPhaseInfo   = 0x4B   // sleep_phase_information; layout remains Tier B without a fixture
+    case sleepPhaseInfo   = 0x4B   // sleep_phase_details alias (same atomic 2-bit-code layout)
     case sleepPhase       = 0x4E   // sleep_phase_details (2-bit codes), OURA_PROTOCOL.md s6.12
     case sleepPhaseAlt    = 0x5A   // sleep_phase_details alias, OURA_PROTOCOL.md s6.12
     case sleepPeriod      = 0x6A   // sleep_period_info_2 (open periodic measurements), s6.12
@@ -90,11 +91,12 @@ public enum OuraEventTag: UInt8, Sendable, CaseIterable, Codable {
     /// behind an explicit allowTierB flag. Per OURA_PROTOCOL.md s7.3 and the brief's TIER DISCIPLINE.
     public var tier: TrustTier {
         switch self {
-        case .alwaysOnHR, .spo2RatioPI, .sleepPhase, .sleepPhaseAlt, .motion, .sleepAcmPeriod, .activityInfo,
+        case .alwaysOnHR, .spo2RatioPI, .sleepSummary1, .sleepPhaseInfo, .sleepPhase, .sleepPhaseAlt,
+             .motion, .sleepAcmPeriod, .activityInfo,
              .exerciseHRIntensity, .realSteps1, .realSteps2:
             return .diagnostic
-        case .sleepSummary1, .sleepPhaseInfo, .sleepSummaryC, .sleepSummaryD, .sleepSummaryE,
-             .sleepSummaryF, .activitySummary1, .activitySummary2,
+        case .sleepSummaryC, .sleepSummaryD, .sleepSummaryE, .sleepSummaryF,
+             .activitySummary1, .activitySummary2,
              .exerciseHRTrace, .spo2Smoothed:
             return .tierB
         default:

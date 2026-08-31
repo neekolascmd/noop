@@ -25,7 +25,7 @@ final class OuraRawHistoryRedecoderTests: XCTestCase {
         _ = try await store.insertOuraRawHistoryRecords(
             [temperature, sync],
             deviceId: "ring-3",
-            firstSeenAtUnixMs: 1
+            firstSeenAtUnixMs: 1_700_000_000_000
         )
 
         let first = try await store.redecodeOuraRawHistory(
@@ -116,8 +116,8 @@ final class OuraRawHistoryRedecoderTests: XCTestCase {
         XCTAssertNil(event.payload["cadence_seconds"])
     }
 
-    func testPageDecoderRevisionSevenRecoversMotionSpO2ActivityAndAlwaysOnHRDiagnostics() {
-        XCTAssertEqual(OuraRawHistoryDecoderRevision.current, 7)
+    func testPageDecoderRevisionEightRecoversMotionSpO2ActivityAndAlwaysOnHRDiagnostics() {
+        XCTAssertEqual(OuraRawHistoryDecoderRevision.current, 8)
         let anchor = OuraTimeAnchor(
             ringTimestamp: 1_000,
             utcMilliseconds: 1_700_000_000_000,
@@ -216,5 +216,472 @@ final class OuraRawHistoryRedecoderTests: XCTestCase {
                 unit: OuraStreamMapping.estimatedSpO2Unit
             ),
         ])
+    }
+
+    func testRevisionEightPersistsSleepNetNightAcrossReplayPages() async throws {
+        let store = try await WhoopStore.inMemory()
+        let eventTime = 1_700_000_000
+        let anchor = OuraTimeAnchor(
+            ringTimestamp: 10_000,
+            utcMilliseconds: Int64(eventTime) * 1_000,
+            factorMillisecondsPerTick: 100
+        )
+        let sleepWindow = OuraRecord(
+            type: OuraEventTag.sleepSummary1.rawValue,
+            ringTimestamp: 10_000,
+            payload: [0xE0, 0x01, 0x00, 0x00] // event-480 min through event-0 min
+        )
+        // 2 x 480 codes = 960 30-second epochs = exactly eight hours. With pageSize=1 the phase
+        // burst necessarily crosses two database pages and must still become one session.
+        let phasePayload = [UInt8(0x07)] + Array(repeating: UInt8(0x1B), count: 120)
+        let firstPhase = OuraRecord(
+            type: OuraEventTag.sleepPhaseInfo.rawValue,
+            ringTimestamp: 9_950,
+            payload: phasePayload
+        )
+        let secondPhase = OuraRecord(
+            type: OuraEventTag.sleepPhase.rawValue,
+            ringTimestamp: 9_951,
+            payload: phasePayload
+        )
+        _ = try await store.insertOuraRawHistoryRecords(
+            [sleepWindow, firstPhase, secondPhase],
+            deviceId: "ring-4",
+            firstSeenAtUnixMs: 1,
+            timeAnchor: anchor
+        )
+
+        let report = try await store.redecodeOuraRawHistory(
+            deviceId: "ring-4",
+            ringGen: .gen4,
+            pageSize: 1
+        )
+        XCTAssertEqual(report.decodedRecords, 3)
+        XCTAssertEqual(report.sleepSessions, 1)
+
+        let sessions = try await store.sleepSessions(
+            deviceId: "ring-4",
+            from: eventTime - 24 * 60 * 60,
+            to: eventTime + 1,
+            limit: 10
+        )
+        let session = try XCTUnwrap(sessions.first)
+        XCTAssertEqual(
+            session.startTs,
+            OuraSleepNetPersistencePolicy.stableStartUnixSeconds(eventTime - 8 * 60 * 60)
+        )
+        XCTAssertEqual(session.endTs, eventTime)
+        XCTAssertEqual(try XCTUnwrap(session.efficiency), 0.75, accuracy: 0.000_001)
+        XCTAssertTrue(session.stagesJSON?.hasPrefix("[{\"start\":") == true)
+        XCTAssertTrue(session.stagesJSON?.contains("\"stage\":\"wake\"") == true)
+
+        let computed = try await store.sleepSessions(
+            deviceId: "ring-4-noop",
+            from: eventTime - 24 * 60 * 60,
+            to: eventTime + 1,
+            limit: 10
+        )
+        XCTAssertTrue(computed.isEmpty, "ring-provided SleepNet staging belongs to the ring namespace")
+        let secondReport = try await store.redecodeOuraRawHistory(
+            deviceId: "ring-4",
+            ringGen: .gen4
+        )
+        XCTAssertEqual(secondReport, OuraRawHistoryRedecodeReport())
+    }
+
+    func testPartialSleepNetDrainWaitsForLaterArchivedTail() async throws {
+        let store = try await WhoopStore.inMemory()
+        let eventTime = 1_700_100_000
+        let anchor = OuraTimeAnchor(
+            ringTimestamp: 20_000,
+            utcMilliseconds: Int64(eventTime) * 1_000,
+            factorMillisecondsPerTick: 100
+        )
+        let sleepWindow = OuraRecord(
+            type: OuraEventTag.sleepSummary1.rawValue,
+            ringTimestamp: 20_000,
+            payload: [0xE0, 0x01, 0x00, 0x00]
+        )
+        let phasePayload = [UInt8(0x07)] + Array(repeating: UInt8(0x1B), count: 120)
+        let firstHalf = OuraRecord(
+            type: OuraEventTag.sleepPhaseInfo.rawValue,
+            ringTimestamp: 19_950,
+            payload: phasePayload
+        )
+        _ = try await store.insertOuraRawHistoryRecords(
+            [sleepWindow, firstHalf],
+            deviceId: "ring-tail",
+            firstSeenAtUnixMs: 1,
+            timeAnchor: anchor
+        )
+
+        let partialReport = try await store.redecodeOuraRawHistory(
+            deviceId: "ring-tail",
+            ringGen: .gen4,
+            pageSize: 1
+        )
+        XCTAssertEqual(partialReport.sleepSessions, 0)
+        let partialSessions = try await store.sleepSessions(
+            deviceId: "ring-tail",
+            from: eventTime - 24 * 60 * 60,
+            to: eventTime + 1,
+            limit: 10
+        )
+        XCTAssertTrue(partialSessions.isEmpty)
+
+        let secondHalf = OuraRecord(
+            type: OuraEventTag.sleepPhase.rawValue,
+            ringTimestamp: 19_951,
+            payload: phasePayload
+        )
+        _ = try await store.insertOuraRawHistoryRecords(
+            [secondHalf],
+            deviceId: "ring-tail",
+            firstSeenAtUnixMs: 2,
+            timeAnchor: anchor
+        )
+        let completedReport = try await store.redecodeOuraRawHistory(
+            deviceId: "ring-tail",
+            ringGen: .gen4,
+            pageSize: 1
+        )
+        XCTAssertEqual(completedReport.sleepSessions, 1)
+        let sessions = try await store.sleepSessions(
+            deviceId: "ring-tail",
+            from: eventTime - 24 * 60 * 60,
+            to: eventTime + 1,
+            limit: 10
+        )
+        XCTAssertEqual(sessions.count, 1)
+        XCTAssertNotNil(sessions.first?.stagesJSON)
+    }
+
+    func testCompleteBurstWithErasedSlotsPersistsGapsWithoutEfficiency() async throws {
+        let store = try await WhoopStore.inMemory()
+        let eventTime = 1_700_200_000
+        let anchor = OuraTimeAnchor(
+            ringTimestamp: 30_000,
+            utcMilliseconds: Int64(eventTime) * 1_000,
+            factorMillisecondsPerTick: 100
+        )
+        let sleepWindow = OuraRecord(
+            type: OuraEventTag.sleepSummary1.rawValue,
+            ringTimestamp: 30_000,
+            payload: [0xE0, 0x01, 0x00, 0x00]
+        )
+        let writtenPage = OuraRecord(
+            type: OuraEventTag.sleepPhaseInfo.rawValue,
+            ringTimestamp: 29_950,
+            payload: [0x07] + Array(repeating: UInt8(0x1B), count: 120)
+        )
+        let erasedPage = OuraRecord(
+            type: OuraEventTag.sleepPhase.rawValue,
+            ringTimestamp: 29_951,
+            payload: [0x07] + Array(repeating: UInt8(0xFF), count: 120)
+        )
+        _ = try await store.insertOuraRawHistoryRecords(
+            [sleepWindow, writtenPage, erasedPage],
+            deviceId: "ring-gaps",
+            timeAnchor: anchor
+        )
+
+        let report = try await store.redecodeOuraRawHistory(
+            deviceId: "ring-gaps",
+            ringGen: .gen4,
+            pageSize: 1
+        )
+        XCTAssertEqual(report.sleepSessions, 1)
+        let sessions = try await store.sleepSessions(
+            deviceId: "ring-gaps",
+            from: eventTime - 24 * 60 * 60,
+            to: eventTime + 1,
+            limit: 10
+        )
+        let session = try XCTUnwrap(sessions.first)
+        XCTAssertNotNil(session.stagesJSON)
+        XCTAssertNil(session.efficiency, "large honest flash gaps must not become a complete metric")
+    }
+
+    func testLaterNonSleepAnchorReopensPreviouslyWithheldSleepNetRows() async throws {
+        let store = try await WhoopStore.inMemory()
+        let eventTime = 1_700_300_000
+        let captureSeenAtUnixMs: Int64 = 1_800_000_000_000
+        let sleepWindow = OuraRecord(
+            type: OuraEventTag.sleepSummary1.rawValue,
+            ringTimestamp: 40_000,
+            payload: [0xE0, 0x01, 0x00, 0x00]
+        )
+        let phasePayload = [UInt8(0x07)] + Array(repeating: UInt8(0x1B), count: 120)
+        let firstPhase = OuraRecord(
+            type: OuraEventTag.sleepPhaseInfo.rawValue,
+            ringTimestamp: 39_950,
+            payload: phasePayload
+        )
+        let secondPhase = OuraRecord(
+            type: OuraEventTag.sleepPhase.rawValue,
+            ringTimestamp: 39_951,
+            payload: phasePayload
+        )
+        _ = try await store.insertOuraRawHistoryRecords(
+            [sleepWindow, firstPhase, secondPhase],
+            deviceId: "ring-late-anchor",
+            firstSeenAtUnixMs: captureSeenAtUnixMs
+        )
+        let withheld = try await store.redecodeOuraRawHistory(
+            deviceId: "ring-late-anchor",
+            ringGen: .gen4,
+            pageSize: 1
+        )
+        XCTAssertEqual(withheld.sleepSessions, 0)
+
+        let anchor = OuraTimeAnchor(
+            ringTimestamp: 40_000,
+            utcMilliseconds: Int64(eventTime) * 1_000,
+            factorMillisecondsPerTick: 100
+        )
+        let anchorCarrier = OuraRecord(
+            type: OuraEventTag.stateChange.rawValue,
+            ringTimestamp: 40_001,
+            payload: [50]
+        )
+        _ = try await store.insertOuraRawHistoryRecords(
+            [anchorCarrier],
+            deviceId: "ring-late-anchor",
+            firstSeenAtUnixMs: captureSeenAtUnixMs + 1_000,
+            timeAnchor: anchor
+        )
+        let recovered = try await store.redecodeOuraRawHistory(
+            deviceId: "ring-late-anchor",
+            ringGen: .gen4,
+            pageSize: 1
+        )
+        XCTAssertEqual(recovered.sleepSessions, 1)
+        let sessions = try await store.sleepSessions(
+            deviceId: "ring-late-anchor",
+            from: eventTime - 24 * 60 * 60,
+            to: eventTime + 1,
+            limit: 10
+        )
+        XCTAssertEqual(sessions.count, 1)
+    }
+
+    func testLateAnchorDoesNotCrossADifferentReceiptCohortWithoutResetMarker() async throws {
+        let store = try await WhoopStore.inMemory()
+        let oldSeenAtUnixMs: Int64 = 1_800_000_000_000
+        let currentEventTime = 1_800_086_400
+        let sleepWindow = OuraRecord(
+            type: OuraEventTag.sleepSummary1.rawValue,
+            ringTimestamp: 40_000,
+            payload: [0xE0, 0x01, 0x00, 0x00]
+        )
+        let phasePayload = [UInt8(0x07)] + Array(repeating: UInt8(0x1B), count: 120)
+        let firstPhase = OuraRecord(
+            type: OuraEventTag.sleepPhaseInfo.rawValue,
+            ringTimestamp: 39_950,
+            payload: phasePayload
+        )
+        let secondPhase = OuraRecord(
+            type: OuraEventTag.sleepPhase.rawValue,
+            ringTimestamp: 39_951,
+            payload: phasePayload
+        )
+        _ = try await store.insertOuraRawHistoryRecords(
+            [sleepWindow, firstPhase, secondPhase],
+            deviceId: "ring-missing-reset",
+            firstSeenAtUnixMs: oldSeenAtUnixMs
+        )
+
+        // The new clock session reused similar raw ticks, but the reset marker was not retained.
+        let currentAnchor = OuraTimeAnchor(
+            ringTimestamp: 40_000,
+            utcMilliseconds: Int64(currentEventTime) * 1_000,
+            factorMillisecondsPerTick: 100
+        )
+        let carrier = OuraRecord(
+            type: OuraEventTag.stateChange.rawValue,
+            ringTimestamp: 40_001,
+            payload: [50]
+        )
+        _ = try await store.insertOuraRawHistoryRecords(
+            [carrier],
+            deviceId: "ring-missing-reset",
+            firstSeenAtUnixMs: oldSeenAtUnixMs + 24 * 60 * 60 * 1_000,
+            timeAnchor: currentAnchor
+        )
+
+        let report = try await store.redecodeOuraRawHistory(
+            deviceId: "ring-missing-reset",
+            ringGen: .gen4,
+            pageSize: 1
+        )
+        XCTAssertEqual(report.sleepSessions, 0)
+        let rows = try await store.ouraRawHistoryRecords(deviceId: "ring-missing-reset")
+        XCTAssertTrue(rows.prefix(3).allSatisfy { $0.timeAnchor == nil })
+    }
+
+    func testAnchorBackfillRejectsProjectionTooFarAfterReceipt() async throws {
+        let store = try await WhoopStore.inMemory()
+        let receiptSeconds: Int64 = 1_800_000_000
+        let receiptMilliseconds = receiptSeconds * 1_000
+        let futureTemperature = OuraRecord(
+            type: OuraEventTag.temp.rawValue,
+            ringTimestamp: 50_000,
+            payload: [0x42, 0x0E]
+        )
+        let sync = OuraRecord(
+            type: OuraEventTag.timeSync.rawValue,
+            ringTimestamp: 40_000,
+            payload: le8(receiptSeconds) + [0]
+        )
+        _ = try await store.insertOuraRawHistoryRecords(
+            [futureTemperature, sync],
+            deviceId: "ring-future-projection",
+            firstSeenAtUnixMs: receiptMilliseconds
+        )
+
+        let report = try await store.redecodeOuraRawHistory(
+            deviceId: "ring-future-projection",
+            ringGen: .gen3,
+            pageSize: 1
+        )
+        XCTAssertEqual(report.anchorRowsBackfilled, 1, "only the anchor carrier is safe")
+        let rows = try await store.ouraRawHistoryRecords(deviceId: "ring-future-projection")
+        XCTAssertNil(rows.first?.timeAnchor)
+        XCTAssertNotNil(rows.last?.timeAnchor)
+        XCTAssertEqual(report.insertedRows, 0)
+        XCTAssertEqual(report.withheldEvents, 1)
+    }
+
+    func testAnchorBackfillPropagatesForwardAcrossSeparateInsertsInSameReceiptCohort() async throws {
+        let store = try await WhoopStore.inMemory()
+        let receiptSeconds: Int64 = 1_800_000_000
+        let receiptMilliseconds = receiptSeconds * 1_000
+        let sync = OuraRecord(
+            type: OuraEventTag.timeSync.rawValue,
+            ringTimestamp: 40_000,
+            payload: le8(receiptSeconds - 3_600) + [0]
+        )
+        _ = try await store.insertOuraRawHistoryRecords(
+            [sync],
+            deviceId: "ring-forward-anchor",
+            firstSeenAtUnixMs: receiptMilliseconds
+        )
+
+        let laterTemperature = OuraRecord(
+            type: OuraEventTag.temp.rawValue,
+            ringTimestamp: 40_001,
+            payload: [0x42, 0x0E]
+        )
+        _ = try await store.insertOuraRawHistoryRecords(
+            [laterTemperature],
+            deviceId: "ring-forward-anchor",
+            firstSeenAtUnixMs: receiptMilliseconds + 1_000
+        )
+
+        let report = try await store.redecodeOuraRawHistory(
+            deviceId: "ring-forward-anchor",
+            ringGen: .gen3,
+            pageSize: 1
+        )
+        XCTAssertEqual(report.anchorRowsBackfilled, 2)
+        XCTAssertEqual(report.insertedRows, 1)
+        let rows = try await store.ouraRawHistoryRecords(deviceId: "ring-forward-anchor")
+        XCTAssertNotNil(rows[0].timeAnchor)
+        XCTAssertNotNil(rows[1].timeAnchor)
+    }
+
+    func testForwardAnchorBackfillKeepsEligiblePrefixBeforeOutOfCohortTail() async throws {
+        let store = try await WhoopStore.inMemory()
+        let receiptSeconds: Int64 = 1_800_000_000
+        let receiptMilliseconds = receiptSeconds * 1_000
+        let sync = OuraRecord(
+            type: OuraEventTag.timeSync.rawValue,
+            ringTimestamp: 40_000,
+            payload: le8(receiptSeconds - 3_600) + [0]
+        )
+        _ = try await store.insertOuraRawHistoryRecords(
+            [sync], deviceId: "ring-forward-boundary", firstSeenAtUnixMs: receiptMilliseconds
+        )
+        let eligible = OuraRecord(
+            type: OuraEventTag.temp.rawValue,
+            ringTimestamp: 40_001,
+            payload: [0x42, 0x0E]
+        )
+        _ = try await store.insertOuraRawHistoryRecords(
+            [eligible],
+            deviceId: "ring-forward-boundary",
+            firstSeenAtUnixMs: receiptMilliseconds + 1_000
+        )
+        let outOfCohort = OuraRecord(
+            type: OuraEventTag.temp.rawValue,
+            ringTimestamp: 40_002,
+            payload: [0x43, 0x0E]
+        )
+        _ = try await store.insertOuraRawHistoryRecords(
+            [outOfCohort],
+            deviceId: "ring-forward-boundary",
+            firstSeenAtUnixMs: receiptMilliseconds + 11 * 60 * 1_000
+        )
+        let afterBoundary = OuraRecord(
+            type: OuraEventTag.temp.rawValue,
+            ringTimestamp: 40_003,
+            payload: [0x44, 0x0E]
+        )
+        _ = try await store.insertOuraRawHistoryRecords(
+            [afterBoundary],
+            deviceId: "ring-forward-boundary",
+            // A local-clock correction cannot make a row beyond the ambiguous boundary safe again.
+            firstSeenAtUnixMs: receiptMilliseconds + 2_000
+        )
+
+        let report = try await store.redecodeOuraRawHistory(
+            deviceId: "ring-forward-boundary", ringGen: .gen3, pageSize: 3
+        )
+        XCTAssertEqual(report.anchorRowsBackfilled, 2, "carrier and eligible prefix only")
+        let rows = try await store.ouraRawHistoryRecords(deviceId: "ring-forward-boundary")
+        XCTAssertNotNil(rows[0].timeAnchor)
+        XCTAssertNotNil(rows[1].timeAnchor)
+        XCTAssertNil(rows[2].timeAnchor)
+        XCTAssertNil(rows[3].timeAnchor)
+    }
+
+    func testSleepNetWindowPairingUsesClosestCandidateWithinTenMinutes() {
+        let candidates = [
+            OuraSleepNetWindowCandidate(
+                ringTimestamp: 1_000,
+                eventUnixSeconds: 100_000,
+                startUnixSeconds: 10,
+                endUnixSeconds: 20
+            ),
+            OuraSleepNetWindowCandidate(
+                ringTimestamp: 1_500,
+                eventUnixSeconds: 200_000,
+                startUnixSeconds: 30,
+                endUnixSeconds: 40
+            ),
+        ]
+        XCTAssertEqual(
+            OuraSleepNetWindowPairing.closest(
+                to: 1_450,
+                envelopeUnixSeconds: 200_010,
+                in: candidates
+            ),
+            candidates[1]
+        )
+        XCTAssertNil(
+            OuraSleepNetWindowPairing.closest(
+                to: 1_000,
+                envelopeUnixSeconds: 200_000,
+                in: [candidates[0]]
+            ),
+            "similar ring ticks from a different clock session must not pair"
+        )
+        XCTAssertNil(
+            OuraSleepNetWindowPairing.closest(
+                to: 10_000,
+                envelopeUnixSeconds: 200_000,
+                in: candidates
+            )
+        )
     }
 }

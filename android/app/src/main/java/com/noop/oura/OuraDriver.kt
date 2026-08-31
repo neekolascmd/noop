@@ -678,9 +678,12 @@ class OuraDriver(
                 OuraDecoders.decodeSleepAcmPeriod(record)
                     ?.let { listOf(OuraEvent.SleepAcmPeriodEvent(it)) } ?: emptyList()
 
-            // --- Diagnostic sleep phase: codebook/order are known; cadence is not production-qualified ---
-            OuraEventTag.SLEEP_PHASE, OuraEventTag.SLEEP_PHASE_ALT ->
+            // --- Diagnostic SleepNet records: codes/window are known; staging remains ring-provided ---
+            OuraEventTag.SLEEP_PHASE_INFO, OuraEventTag.SLEEP_PHASE, OuraEventTag.SLEEP_PHASE_ALT ->
                 OuraDecoders.decodeSleepPhase(record)?.let { listOf(OuraEvent.SleepPhaseEvent(it)) }
+                    ?: emptyList()
+            OuraEventTag.SLEEP_SUMMARY_1 ->
+                OuraDecoders.decodeSleepWindow(record)?.let { listOf(OuraEvent.SleepWindowEvent(it)) }
                     ?: emptyList()
             OuraEventTag.SLEEP_PERIOD ->
                 OuraDecoders.decodeSleepPeriod(record)?.let { listOf(OuraEvent.SleepPeriodEvent(it)) } ?: emptyList()
@@ -754,17 +757,8 @@ class OuraDriver(
                     ?.let { listOf(OuraEvent.RealStepsFeatures(it)) } ?: emptyList()
 
             // --- Tier B (only reached when allowTierB == true; otherwise dropped above) ---
-            OuraEventTag.SLEEP_PHASE_INFO ->
-                listOf(
-                    OuraEvent.TierB(
-                        OuraTierBSummary(
-                            tag = record.type, ringTimestamp = record.ringTimestamp,
-                            rawPayload = record.payload, kind = "sleep_phase_info",
-                        ),
-                    ),
-                )
-            OuraEventTag.SLEEP_SUMMARY_1, OuraEventTag.SLEEP_SUMMARY_C,
-            OuraEventTag.SLEEP_SUMMARY_D, OuraEventTag.SLEEP_SUMMARY_E, OuraEventTag.SLEEP_SUMMARY_F ->
+            OuraEventTag.SLEEP_SUMMARY_C, OuraEventTag.SLEEP_SUMMARY_D,
+            OuraEventTag.SLEEP_SUMMARY_E, OuraEventTag.SLEEP_SUMMARY_F ->
                 listOf(
                     OuraEvent.TierB(
                         OuraTierBSummary(

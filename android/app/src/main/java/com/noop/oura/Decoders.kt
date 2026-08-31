@@ -19,6 +19,13 @@ package com.noop.oura
 
 object OuraDecoders {
 
+    /**
+     * Minimum trailing run of erased-flash `0xFF` code bytes to trim from a partly written SleepNet
+     * page. Six bytes equal 24 stage slots (12 minutes); shorter runs remain genuine awake to avoid
+     * deleting sleep.
+     */
+    const val MIN_TRAILING_UNWRITTEN = 6
+
     // MARK: - Pre-auth identity (0x09 / 0x19)
 
     /**
@@ -507,21 +514,59 @@ object OuraDecoders {
         return String(raw, Charsets.UTF_8)
     }
 
-    // MARK: - Sleep phase, 2-bit codes (0x4E / 0x5A; s6.12)
+    // MARK: - Sleep window + phase codes (0x49 / 0x4B / 0x4E / 0x5A; s6.12)
 
     /**
-     * Decode one complete 0x4E/0x5A sleep_phase record: byte6 = header; phase codes are 2-bit,
+     * Decode `0x49 sleep_summary_1`'s two uint16-LE minute offsets. The offsets are relative to the
+     * record's envelope timestamp: onset = event time - start offset; sleep end = event time - end
+     * offset. Duration/plausibility validation belongs to the UTC-resolving session assembler.
+     */
+    fun decodeSleepWindow(rec: OuraRecord): OuraSleepWindow? {
+        if (rec.type != OuraEventTag.SLEEP_SUMMARY_1.raw) return null
+        val b = rec.payload
+        if (b.size < 4) return null
+        return OuraSleepWindow(
+            ringTimestamp = rec.ringTimestamp,
+            startOffsetMinutes = u16le(b, 0),
+            endOffsetMinutes = u16le(b, 2),
+        )
+    }
+
+    /**
+     * Decode one complete 0x4B/0x4E/0x5A sleep_phase record: byte6 = header; phase codes are 2-bit,
      * 4 per byte (bits [7:6][5:4][3:2][1:0]), with 0=deep,1=light,2=REM,3=awake.
      * The codebook is corroborated by Oura's public API and the native enum recovered by [oura-rs].
      * Cadence/direction are deliberately not inferred. Returns null on a short body.
      */
     fun decodeSleepPhase(rec: OuraRecord): OuraSleepPhaseSeries? {
+        if (rec.type != OuraEventTag.SLEEP_PHASE_INFO.raw &&
+            rec.type != OuraEventTag.SLEEP_PHASE.raw &&
+            rec.type != OuraEventTag.SLEEP_PHASE_ALT.raw
+        ) return null
         val b = rec.payload
         // body[0] is the header (spec offset 6); phase codes begin at body[1].
         if (b.size < 2) return null
+        val codeCount = b.size - 1
+        // A full erased page is indistinguishable byte-for-byte from awake. Hardware captures show
+        // erased pages span multiple code bytes; preserve a lone 0xFF as four genuine awake epochs.
+        val allErased = codeCount >= 2 && (1 until b.size).all { b[it] == 0xFF }
+
+        // Partly written pages fill from the front and can leave a long 0xFF tail. Mark only a tail
+        // at the conservative six-byte floor; leading/interior and shorter runs remain real wake.
+        // Erased codes stay in the series so the assembler can reserve their real time-axis slots.
+        val effectiveFloor = maxOf(2, MIN_TRAILING_UNWRITTEN)
+        var trailingFF = 0
+        var trailingIndex = b.lastIndex
+        while (trailingIndex >= 1 && b[trailingIndex] == 0xFF) {
+            trailingFF += 1
+            trailingIndex -= 1
+        }
+        val trailingStart = if (trailingFF >= effectiveFloor) codeCount - trailingFF else codeCount
         val stages = ArrayList<OuraSleepStage>()
+        val unwritten = ArrayList<Boolean>()
         for (k in 1 until b.size) {
             val byte = b[k]
+            val byteUnwritten = allErased || (k - 1) >= trailingStart
             // MSB-first within the byte: [7:6] is the first code.
             var shift = 6
             while (shift >= 0) {
@@ -529,6 +574,7 @@ object OuraDecoders {
                 val stage = OuraSleepStage.fromRaw(code)
                 if (stage != null) {
                     stages.add(stage)
+                    unwritten.add(byteUnwritten)
                 }
                 shift -= 2
             }
@@ -539,6 +585,7 @@ object OuraDecoders {
             sourceTag = rec.type,
             header = b[0],
             stages = stages,
+            unwritten = unwritten,
         )
     }
 

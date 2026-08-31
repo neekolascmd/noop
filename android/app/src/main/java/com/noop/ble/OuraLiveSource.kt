@@ -106,6 +106,8 @@ class OuraLiveSource(
         suspend (List<OuraRecord>, String, com.noop.oura.OuraTimeAnchor?) -> Boolean = { _, _, _ -> true },
     /** Await a verified 0x76 bedtime-window upsert before acknowledging its history batch. */
     private val persistSleepSession: suspend (Long, Long) -> Boolean = { _, _ -> true },
+    /** Re-decode the bounded raw archive after startup and each caught-up history pull. */
+    private val redecodeArchivedHistory: suspend () -> Unit = {},
     /** Diagnostic sink for the connect/auth/stream lifecycle - the SAME exportable strap log (#421).
      *  Every line is prefixed "Oura: ". Statuses / UUIDs / counts only, NEVER a device address. Default
      *  no-op keeps existing call sites compiling and tests silent. */
@@ -428,6 +430,8 @@ class OuraLiveSource(
     private val persistenceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val durableHistoryWriter = OuraHistoryDurableWriter(persist, persistSleepSession)
     private var historyPersistenceInFlight = false
+    private var archiveRedecodeInFlight = false
+    private var archiveRedecodePending = false
     /** Invalidates completion callbacks from a disconnected/replaced BLE session. Main-handler owned. */
     private var historyPersistenceEpoch = 0L
 
@@ -843,7 +847,9 @@ class OuraLiveSource(
             pendingAnchorEvents.clear()
             resetProvisionalHistorySearch()
         }
-        finishHistoryInventory(if (d.hasFreshAnchorForActiveFetch) "caught-up" else "unanchored")
+        val historyCaughtUp = d.hasFreshAnchorForActiveFetch
+        finishHistoryInventory(if (historyCaughtUp) "caught-up" else "unanchored")
+        if (historyCaughtUp) requestArchiveRedecode()
         advance(OuraTransition.HistoryCursorAdvanced(
             cursor = committedCursor ?: historyCursor,
             moreData = false,
@@ -897,7 +903,39 @@ class OuraLiveSource(
                     resetProvisionalHistorySearch()
                     if (!moreData) log("Oura: history fetch caught up (cursor $historyCursor)")
                     if (!moreData) finishHistoryInventory("caught-up")
+                    if (!moreData) requestArchiveRedecode()
                     advance(OuraTransition.HistoryCursorAdvanced(cursor = committedCursor, moreData = moreData))
+                }
+            }
+        }
+    }
+
+    /** Public startup hook; caught-up history uses the same coalescing gate internally. */
+    fun refreshArchivedHistory() {
+        if (Looper.myLooper() == handler.looper) {
+            requestArchiveRedecode()
+        } else {
+            handler.post { requestArchiveRedecode() }
+        }
+    }
+
+    /** Coalesce a startup replay with a fast history catch-up without losing a newly archived tail. */
+    private fun requestArchiveRedecode() {
+        if (archiveRedecodeInFlight) {
+            archiveRedecodePending = true
+            return
+        }
+        archiveRedecodeInFlight = true
+        persistenceScope.launch {
+            try {
+                redecodeArchivedHistory()
+            } finally {
+                handler.post {
+                    archiveRedecodeInFlight = false
+                    if (archiveRedecodePending) {
+                        archiveRedecodePending = false
+                        requestArchiveRedecode()
+                    }
                 }
             }
         }

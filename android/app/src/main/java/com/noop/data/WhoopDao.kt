@@ -203,25 +203,63 @@ interface WhoopDao : DeviceRegistryDao {
     @Query("DELETE FROM ouraRawHistory WHERE archiveId = :archiveId")
     suspend fun deleteOuraRawHistoryRowId(archiveId: Long): Int
 
+    @Query("SELECT COALESCE(MAX(archiveId), 0) FROM ouraRawHistory WHERE deviceId = :deviceId")
+    suspend fun ouraRawHistoryHighWaterArchiveId(deviceId: String): Long
+
     @Query(
         "SELECT * FROM ouraRawHistory WHERE deviceId = :deviceId AND archiveId > :afterArchiveId " +
+            "AND archiveId <= :throughArchiveId " +
             "ORDER BY archiveId ASC LIMIT :limit"
     )
     suspend fun ouraRawHistoryRows(
         deviceId: String,
         afterArchiveId: Long,
+        throughArchiveId: Long,
         limit: Int,
     ): List<OuraRawHistoryEntity>
 
     @Query(
         "SELECT * FROM ouraRawHistory WHERE deviceId = :deviceId " +
-            "AND decodedRevision < :decoderRevision ORDER BY archiveId ASC LIMIT :limit"
+            "AND decodedRevision < :decoderRevision AND archiveId <= :throughArchiveId " +
+            "ORDER BY archiveId ASC LIMIT :limit"
     )
     suspend fun ouraRawHistoryRowsNeedingDecode(
         deviceId: String,
         decoderRevision: Int,
+        throughArchiveId: Long,
         limit: Int,
     ): List<OuraRawHistoryEntity>
+
+    @Query(
+        "SELECT EXISTS(SELECT 1 FROM ouraRawHistory WHERE deviceId = :deviceId " +
+            "AND decodedRevision < :decoderRevision AND archiveId <= :throughArchiveId " +
+            "AND tag IN (73, 75, 78, 90))"
+    )
+    suspend fun hasOuraRawSleepNetRowsNeedingDecode(
+        deviceId: String,
+        decoderRevision: Int,
+        throughArchiveId: Long,
+    ): Boolean
+
+    @Query(
+        "SELECT EXISTS(SELECT 1 FROM ouraRawHistory WHERE deviceId = :deviceId " +
+            "AND decodedRevision < :decoderRevision AND archiveId <= :throughArchiveId " +
+            "AND (anchorUtcMilliseconds IS NOT NULL OR tag IN (66, 133)))"
+    )
+    suspend fun hasOuraRawAnchorEvidenceNeedingDecode(
+        deviceId: String,
+        decoderRevision: Int,
+        throughArchiveId: Long,
+    ): Boolean
+
+    @Query(
+        "SELECT EXISTS(SELECT 1 FROM ouraRawHistory WHERE deviceId = :deviceId " +
+            "AND archiveId <= :throughArchiveId AND anchorUtcMilliseconds IS NULL)"
+    )
+    suspend fun hasOuraRawHistoryRowsWithoutTimeAnchor(
+        deviceId: String,
+        throughArchiveId: Long,
+    ): Boolean
 
     @Query(
         "UPDATE ouraRawHistory SET anchorUtcMilliseconds = :utcMilliseconds, " +
@@ -241,13 +279,39 @@ interface WhoopDao : DeviceRegistryDao {
 
     @Query(
         "UPDATE ouraRawHistory SET decodedRevision = :decoderRevision " +
-            "WHERE archiveId = :archiveId AND decodedRevision < :decoderRevision"
+            "WHERE archiveId = :archiveId AND decodedRevision = :expectedDecodedRevision " +
+            "AND :decoderRevision > :expectedDecodedRevision " +
+            "AND anchorUtcMilliseconds IS :expectedAnchorUtcMilliseconds " +
+            "AND anchorRingTimestamp IS :expectedAnchorRingTimestamp " +
+            "AND anchorFactorMillisecondsPerTick IS :expectedAnchorFactorMillisecondsPerTick"
     )
-    suspend fun markOuraRawHistoryRowDecoded(archiveId: Long, decoderRevision: Int): Int
+    suspend fun markOuraRawHistoryRowDecoded(
+        archiveId: Long,
+        decoderRevision: Int,
+        expectedDecodedRevision: Int,
+        expectedAnchorUtcMilliseconds: Long?,
+        expectedAnchorRingTimestamp: Long?,
+        expectedAnchorFactorMillisecondsPerTick: Long?,
+    ): Int
 
     @Transaction
-    suspend fun markOuraRawHistoryRowsDecoded(archiveIds: List<Long>, decoderRevision: Int) {
-        for (archiveId in archiveIds) markOuraRawHistoryRowDecoded(archiveId, decoderRevision)
+    suspend fun markOuraRawHistoryRowsDecoded(
+        rows: List<StoredOuraRawHistoryRecord>,
+        decoderRevision: Int,
+    ): Int {
+        var changed = 0
+        for (row in rows) {
+            val anchor = row.timeAnchor
+            changed += markOuraRawHistoryRowDecoded(
+                archiveId = row.archiveId,
+                decoderRevision = decoderRevision,
+                expectedDecodedRevision = row.decodedRevision,
+                expectedAnchorUtcMilliseconds = anchor?.utcMilliseconds,
+                expectedAnchorRingTimestamp = anchor?.ringTimestamp,
+                expectedAnchorFactorMillisecondsPerTick = anchor?.factorMillisecondsPerTick,
+            )
+        }
+        return changed
     }
 
     @Transaction
@@ -292,6 +356,52 @@ interface WhoopDao : DeviceRegistryDao {
 
     @Upsert
     suspend fun upsertSleepSessions(rows: List<SleepSession>)
+
+    /**
+     * Merge a ring-provided SleepNet night without erasing user corrections or analytics populated by
+     * another offline pass. Deliberately does not name motionJSON/sleepStateJSON, so those columns
+     * survive an updated phase reconstruction. Null SleepNet metrics cannot clear known values.
+     */
+    @Query(
+        "UPDATE sleepSession SET " +
+            "endTs = CASE WHEN userEdited = 1 THEN endTs ELSE :endTs END, " +
+            "efficiency = COALESCE(:efficiency, efficiency), " +
+            "restingHr = COALESCE(:restingHr, restingHr), " +
+            "avgHrv = COALESCE(:avgHrv, avgHrv), " +
+            "stagesJSON = CASE WHEN userEdited = 1 THEN stagesJSON ELSE :stagesJSON END, " +
+            "startTsAdjusted = CASE WHEN userEdited = 1 THEN startTsAdjusted ELSE :startTsAdjusted END " +
+            "WHERE deviceId = :deviceId AND startTs = :startTs"
+    )
+    suspend fun updateOuraSleepNetSession(
+        deviceId: String,
+        startTs: Long,
+        endTs: Long,
+        efficiency: Double?,
+        restingHr: Int?,
+        avgHrv: Double?,
+        stagesJSON: String?,
+        startTsAdjusted: Long?,
+    ): Int
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertOuraSleepNetSession(row: SleepSession): Long
+
+    @Transaction
+    suspend fun upsertOuraSleepNetSessions(rows: List<SleepSession>) {
+        for (row in rows) {
+            val updated = updateOuraSleepNetSession(
+                deviceId = row.deviceId,
+                startTs = row.startTs,
+                endTs = row.endTs,
+                efficiency = row.efficiency,
+                restingHr = row.restingHr,
+                avgHrv = row.avgHrv,
+                stagesJSON = row.stagesJSON,
+                startTsAdjusted = row.startTsAdjusted,
+            )
+            if (updated == 0) insertOuraSleepNetSession(row)
+        }
+    }
 
     /** Remove one sleep session by its full primary key (deviceId, startTs) — used by the
      *  bed/wake-time edit, which deletes then re-inserts because startTs is part of the PK. */

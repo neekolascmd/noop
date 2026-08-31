@@ -707,6 +707,8 @@ class OuraDriverTest {
     fun testEvidenceTiersKeepQualifiedIBIProductionAndRatioSpO2Diagnostic() {
         assertEquals(TrustTier.TIER_A, OuraEventTag.GREEN_IBI_QUALITY.tier)
         assertEquals(TrustTier.DIAGNOSTIC, OuraEventTag.SPO2_RATIO_PI.tier)
+        assertEquals(TrustTier.DIAGNOSTIC, OuraEventTag.SLEEP_SUMMARY_1.tier)
+        assertEquals(TrustTier.DIAGNOSTIC, OuraEventTag.SLEEP_PHASE_INFO.tier)
         assertEquals(TrustTier.DIAGNOSTIC, OuraEventTag.SLEEP_PHASE.tier)
         assertEquals(TrustTier.DIAGNOSTIC, OuraEventTag.SLEEP_PHASE_ALT.tier)
         assertEquals(TrustTier.DIAGNOSTIC, OuraEventTag.MOTION.tier)
@@ -716,7 +718,6 @@ class OuraDriverTest {
         assertEquals(TrustTier.DIAGNOSTIC, OuraEventTag.ALWAYS_ON_HR.tier)
         assertEquals(TrustTier.DIAGNOSTIC, OuraEventTag.REAL_STEPS_1.tier)
         assertEquals(TrustTier.DIAGNOSTIC, OuraEventTag.REAL_STEPS_2.tier)
-        assertEquals(TrustTier.TIER_B, OuraEventTag.SLEEP_PHASE_INFO.tier)
         assertEquals("SLEEP_PHASE_INFO", OuraEventTag.SLEEP_PHASE_INFO.tagName)
         assertEquals(TrustTier.TIER_B, OuraEventTag.EXERCISE_HR_TRACE.tier)
         assertEquals("EXERCISE_HR_TRACE", OuraEventTag.EXERCISE_HR_TRACE.tagName)
@@ -767,8 +768,8 @@ class OuraDriverTest {
     @Test
     fun testTierBDroppedByDefault() {
         val d = OuraDriver(ringGen = OuraRingGen.GEN3, authKey = key)   // allowTierB defaults to false
-        // 0x49 sleep_summary_1 is Tier B (UNVERIFIED).
-        val rec = OuraFraming.parseRecord(bytes("49080200010001020304"))!!
+        // 0x4C remains an unverified sleep-summary variant.
+        val rec = OuraFraming.parseRecord(bytes("4c080200010001020304"))!!
         assertEquals(
             "Tier-B must not feed values when not explicitly allowed",
             emptyList<OuraEvent>(),
@@ -779,16 +780,54 @@ class OuraDriverTest {
     @Test
     fun testTierBEmittedOnlyWhenAllowed() {
         val d = OuraDriver(ringGen = OuraRingGen.GEN3, authKey = key, allowTierB = true)
-        val rec = OuraFraming.parseRecord(bytes("49080200010001020304"))!!
+        val rec = OuraFraming.parseRecord(bytes("4c080200010001020304"))!!
         val events = d.ingest(rec)
         assertEquals(1, events.size)
         assertTrue(events[0].isTierB)
         val ev = events[0]
         assertTrue("expected a tierB event", ev is OuraEvent.TierB)
         ev as OuraEvent.TierB
-        assertEquals(0x49, ev.value.tag)
+        assertEquals(0x4C, ev.value.tag)
         assertEquals("sleep_summary", ev.value.kind)
         assertArrayEquals(bytes("01020304"), ev.value.rawPayload)
+    }
+
+    @Test
+    fun testSleepNetWindowAndPhaseAliasesAreTypedDiagnosticsWithoutTierBOptIn() {
+        val d = OuraDriver(ringGen = OuraRingGen.GEN3, authKey = key)
+        val window = OuraFraming.parseRecord(bytes("49080200010058020f00"))!!
+        assertEquals(
+            listOf<OuraEvent>(
+                OuraEvent.SleepWindowEvent(
+                    OuraSleepWindow(
+                        ringTimestamp = rt,
+                        startOffsetMinutes = 600,
+                        endOffsetMinutes = 15,
+                    ),
+                ),
+            ),
+            d.ingest(window),
+        )
+
+        for (tag in listOf(0x4B, 0x4E, 0x5A)) {
+            val events = d.ingest(
+                OuraRecord(type = tag, ringTimestamp = rt, payload = intArrayOf(0x00, 0x1B)),
+            )
+            assertEquals(1, events.size)
+            assertTrue(events.single() is OuraEvent.SleepPhaseEvent)
+            assertTrue(!events.single().isTierB)
+            val phase = (events.single() as OuraEvent.SleepPhaseEvent).value
+            assertEquals(tag, phase.sourceTag)
+            assertEquals(
+                listOf(
+                    OuraSleepStage.DEEP,
+                    OuraSleepStage.LIGHT,
+                    OuraSleepStage.REM,
+                    OuraSleepStage.AWAKE,
+                ),
+                phase.stages,
+            )
+        }
     }
 
     // MARK: - Activity info (0x50, diagnostic) - real Gen 3 + Ring 4 corroboration

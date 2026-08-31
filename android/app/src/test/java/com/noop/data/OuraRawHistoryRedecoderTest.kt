@@ -4,10 +4,146 @@ import com.noop.oura.OuraEventTag
 import com.noop.oura.OuraRingGen
 import com.noop.oura.OuraTimeAnchor
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class OuraRawHistoryRedecoderTest {
+    @Test
+    fun anchorBackfillDoesNotCrossMissingResetReceiptCohortButKeepsLateRecovery() {
+        val oldSeenAtUnixMs = 1_800_000_000_000L
+        val carrierSeenAtUnixMs = oldSeenAtUnixMs + 24 * 60 * 60 * 1_000L
+        val anchor = OuraTimeAnchor(
+            ringTimestamp = 40_000,
+            utcMilliseconds = 1_800_086_400_000L,
+            factorMillisecondsPerTick = 100,
+        )
+        val oldClockSession = StoredOuraRawHistoryRecord(
+            archiveId = 1,
+            tag = OuraEventTag.TEMP.raw,
+            ringTimestamp = 39_950,
+            payload = byteArrayOf(0x42, 0x0E),
+            firstSeenAtUnixMs = oldSeenAtUnixMs,
+        )
+        val sameCohort = oldClockSession.copy(
+            archiveId = 2,
+            firstSeenAtUnixMs = carrierSeenAtUnixMs - 1_000,
+        )
+
+        assertFalse(
+            OuraRawHistoryAnchorBackfillPolicy.canBackfill(
+                oldClockSession,
+                anchor,
+                carrierSeenAtUnixMs,
+            ),
+        )
+        assertTrue(
+            OuraRawHistoryAnchorBackfillPolicy.canBackfill(
+                sameCohort,
+                anchor,
+                carrierSeenAtUnixMs,
+            ),
+        )
+        val backwardRange = OuraRawAnchorAdjacentRangeAccumulator(
+            fromArchiveId = 1,
+            throughArchiveId = 2,
+            carrierArchiveId = 3,
+            anchor = anchor,
+            anchorCarrierFirstSeenAtUnixMs = carrierSeenAtUnixMs,
+        )
+        backwardRange.consume(listOf(oldClockSession, sameCohort))
+        assertEquals(
+            OuraRawAnchorRange(2, 2),
+            backwardRange.result(),
+        )
+    }
+
+    @Test
+    fun anchorBackfillRejectsProjectionAfterReceiptTolerance() {
+        val receiptSeconds = 1_800_000_000L
+        val receiptMilliseconds = receiptSeconds * 1_000
+        val anchor = OuraTimeAnchor(
+            ringTimestamp = 40_000,
+            utcMilliseconds = receiptMilliseconds,
+            factorMillisecondsPerTick = 100,
+        )
+        val atTolerance = StoredOuraRawHistoryRecord(
+            archiveId = 1,
+            tag = OuraEventTag.TEMP.raw,
+            ringTimestamp = 46_000,
+            payload = byteArrayOf(0x42, 0x0E),
+            firstSeenAtUnixMs = receiptMilliseconds,
+        )
+        val tooFarFuture = atTolerance.copy(archiveId = 2, ringTimestamp = 50_000)
+
+        assertTrue(
+            OuraRawHistoryAnchorBackfillPolicy.canBackfill(
+                atTolerance,
+                anchor,
+                receiptMilliseconds,
+            ),
+        )
+        assertFalse(
+            OuraRawHistoryAnchorBackfillPolicy.canBackfill(
+                tooFarFuture,
+                anchor,
+                receiptMilliseconds,
+            ),
+        )
+    }
+
+    @Test
+    fun forwardAssignmentKeepsEligiblePrefixBeforeOutOfCohortRowInSamePage() {
+        val carrierSeenAtUnixMs = 1_800_000_000_000L
+        val anchor = OuraTimeAnchor(
+            ringTimestamp = 40_000,
+            utcMilliseconds = carrierSeenAtUnixMs,
+            factorMillisecondsPerTick = 100,
+        )
+        val separatelyInsertedLater = StoredOuraRawHistoryRecord(
+            archiveId = 2,
+            tag = OuraEventTag.TEMP.raw,
+            ringTimestamp = 40_010,
+            payload = byteArrayOf(0x42, 0x0E),
+            firstSeenAtUnixMs = carrierSeenAtUnixMs + 2_000,
+        )
+        val outOfCohort = separatelyInsertedLater.copy(
+            archiveId = 3,
+            firstSeenAtUnixMs = carrierSeenAtUnixMs + 24 * 60 * 60 * 1_000L,
+        )
+
+        assertTrue(
+            OuraRawHistoryAnchorBackfillPolicy.canBackfill(
+                separatelyInsertedLater,
+                anchor,
+                carrierSeenAtUnixMs,
+            ),
+        )
+        val forwardRange = OuraRawAnchorAdjacentRangeAccumulator(
+            fromArchiveId = 2,
+            throughArchiveId = 3,
+            carrierArchiveId = 1,
+            anchor = anchor,
+            anchorCarrierFirstSeenAtUnixMs = carrierSeenAtUnixMs,
+        )
+        // Both rows are consumed together, matching one proposed assignment/page with pageSize >= 3.
+        forwardRange.consume(listOf(separatelyInsertedLater, outOfCohort))
+        assertEquals(
+            OuraRawAnchorRange(2, 2),
+            forwardRange.result(),
+        )
+        assertTrue(forwardRange.forwardPropagationBlocked)
+        assertEquals(3L, forwardRange.forwardBarrierArchiveId)
+
+        assertFalse(
+            OuraRawHistoryAnchorBackfillPolicy.canBackfill(
+                separatelyInsertedLater.copy(firstSeenAtUnixMs = Long.MIN_VALUE),
+                anchor,
+                Long.MAX_VALUE,
+            ),
+        )
+    }
+
     @Test
     fun pageDecoderMapsTemperatureWithStoredAnchor() {
         val anchor = OuraTimeAnchor(
@@ -96,8 +232,8 @@ class OuraRawHistoryRedecoderTest {
     }
 
     @Test
-    fun pageDecoderRevisionSevenRecoversMotionSpO2ActivityAndAlwaysOnHRDiagnostics() {
-        assertEquals(7, OuraRawHistoryDecoderRevision.CURRENT)
+    fun pageDecoderRevisionEightRecoversMotionSpO2ActivityAndAlwaysOnHRDiagnostics() {
+        assertEquals(8, OuraRawHistoryDecoderRevision.CURRENT)
         val anchor = OuraTimeAnchor(
             ringTimestamp = 1_000L,
             utcMilliseconds = 1_700_000_000_000L,

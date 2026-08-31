@@ -102,6 +102,12 @@ class NoopApplication : Application() {
             straplog = { ble.externalLog(it) },
             // A generic strap's standard battery (0x180F) → the same live battery field the WHOOP uses.
             batterySink = { pct -> ble.publishExternalBattery(pct) },
+            // A newly materialized Oura SleepNet night needs the same immediate on-device scoring/read-model
+            // refresh as a committed WHOOP history chunk. This stays process-owned, so it also works while
+            // the Activity is backgrounded and never requires an import or app restart.
+            onOuraArchiveReplayChanged = { deviceId ->
+                ble.refreshScoresAfterExternalHistory(deviceId, sourceLabel = "Oura")
+            },
         )
     }
 
