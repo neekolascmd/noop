@@ -182,20 +182,85 @@ final class DecoderGoldenTests: XCTestCase {
         )
     }
 
-    // MARK: - 0x4E sleep phase (2-bit codes MSB-first; header byte skipped)
+    // MARK: - 0x49 SleepNet window (LE-u16 minute offsets)
 
-    func testSleepPhase0x4E() {
-        // header 0x00, phase byte 0x1B = bits 00 01 10 11 -> deep, light, rem, awake.
-        let rec = record("4e0602000100001b")
+    func testSleepWindow0x49() {
+        // Start is 0x01e0 = 480 min before the envelope; end is 10 min before it.
+        let rec = record("490802000100e0010a00")
         XCTAssertEqual(
-            OuraDecoders.decodeSleepPhase(rec),
-            OuraSleepPhaseSeries(
-                ringTimestamp: rt,
-                sourceTag: 0x4E,
-                header: 0,
-                stages: [.deep, .light, .rem, .awake]
-            )
+            OuraDecoders.decodeSleepWindow(rec),
+            OuraSleepWindow(ringTimestamp: rt, startOffsetMinutes: 480, endOffsetMinutes: 10)
         )
+    }
+
+    func testSleepWindowRejectsWrongTagAndShortPayload() {
+        XCTAssertNil(OuraDecoders.decodeSleepWindow(
+            OuraRecord(type: OuraEventTag.sleepSummaryC.rawValue,
+                       ringTimestamp: rt, payload: [0xE0, 0x01, 0x0A, 0x00])))
+        XCTAssertNil(OuraDecoders.decodeSleepWindow(
+            OuraRecord(type: OuraEventTag.sleepSummary1.rawValue,
+                       ringTimestamp: rt, payload: [0xE0, 0x01, 0x0A])))
+    }
+
+    // MARK: - 0x4B / 0x4E / 0x5A sleep phase (2-bit codes MSB-first; header skipped)
+
+    func testSleepPhaseKnownAliases() {
+        // header 0x00, phase byte 0x1B = bits 00 01 10 11 -> deep, light, rem, awake.
+        for tag in [OuraEventTag.sleepPhaseInfo, .sleepPhase, .sleepPhaseAlt] {
+            let rec = OuraRecord(type: tag.rawValue, ringTimestamp: rt, payload: [0x00, 0x1B])
+            XCTAssertEqual(
+                OuraDecoders.decodeSleepPhase(rec),
+                OuraSleepPhaseSeries(
+                    ringTimestamp: rt,
+                    sourceTag: tag.rawValue,
+                    header: 0,
+                    stages: [.deep, .light, .rem, .awake]
+                )
+            )
+        }
+    }
+
+    func testSleepPhaseRejectsUnrelatedTagAndShortPayload() {
+        XCTAssertNil(OuraDecoders.decodeSleepPhase(
+            OuraRecord(type: OuraEventTag.motionPeriod.rawValue,
+                       ringTimestamp: rt, payload: [0x00, 0x1B])))
+        XCTAssertNil(OuraDecoders.decodeSleepPhase(
+            OuraRecord(type: OuraEventTag.sleepPhase.rawValue,
+                       ringTimestamp: rt, payload: [0x00])))
+    }
+
+    func testSleepPhaseMarksWholeMultiByteErasedPageUnwritten() {
+        let decoded = OuraDecoders.decodeSleepPhase(
+            OuraRecord(type: OuraEventTag.sleepPhase.rawValue,
+                       ringTimestamp: rt,
+                       payload: [0xA5, 0xFF, 0xFF]))
+        XCTAssertEqual(decoded?.stages, Array(repeating: .awake, count: 8))
+        XCTAssertEqual(decoded?.unwritten, Array(repeating: true, count: 8))
+    }
+
+    func testSleepPhaseMarksSixByteErasedTailWithoutRemovingSlots() {
+        guard let decoded = OuraDecoders.decodeSleepPhase(
+            OuraRecord(type: OuraEventTag.sleepPhaseAlt.rawValue,
+                       ringTimestamp: rt,
+                       payload: [0xA5, 0x1B] + Array(repeating: 0xFF, count: 6))) else {
+            return XCTFail("expected a typed phase series")
+        }
+        XCTAssertEqual(decoded.stages.count, 28, "all seven code bytes retain their four slots")
+        XCTAssertEqual(Array(decoded.stages.prefix(4)), [.deep, .light, .rem, .awake])
+        XCTAssertEqual(Array(decoded.stages.suffix(24)), Array(repeating: .awake, count: 24))
+        XCTAssertEqual(Array(decoded.unwritten.prefix(4)), Array(repeating: false, count: 4))
+        XCTAssertEqual(Array(decoded.unwritten.suffix(24)), Array(repeating: true, count: 24))
+    }
+
+    func testSleepPhaseRetainsLoneFFAsAwakeCodes() {
+        let decoded = OuraDecoders.decodeSleepPhase(
+            OuraRecord(type: OuraEventTag.sleepPhaseInfo.rawValue,
+                       ringTimestamp: rt,
+                       payload: [0xA5, 0x1B, 0xFF]))
+        XCTAssertEqual(decoded?.stages,
+                       [.deep, .light, .rem, .awake, .awake, .awake, .awake, .awake])
+        XCTAssertEqual(decoded?.unwritten, Array(repeating: false, count: 8))
+        XCTAssertEqual(decoded?.header, 0xA5, "padding handling must not reinterpret the header")
     }
 
     // MARK: - 0x6B motion period (2-bit MOTION_STATE codes; 2 header bytes skipped)

@@ -3,18 +3,38 @@
 **Status:** Implemented qualification candidate (2026-07-12). Promotion is generation- and
 platform-specific; see the [hardware graduation gate](HARDWARE_SUPPORT.md#oura-graduation-gate).
 **Scope:** Oura Ring Gen 3 (Horizon), Gen 4, Gen 5. Foundation for NOOP's own Swift (`StrandiOSShared` / `Strand`) and Kotlin decoders.
-**Authorship:** This is NOOP's own original specification. Every protocol *fact* (UUID, opcode, byte layout, tag value) is cited to a reverse-engineering reference read for facts only. No source code was copied from any RE repo. NOOP decodes raw signals plus the ring's own HRV/sleep tags and runs NOOP's own scoring; NOOP never touches Oura's encrypted PyTorch scores.
+**Authorship:** Most of this specification and the underlying Oura transport are NOOP's original
+clean-room work. Every protocol *fact* (UUID, opcode, byte layout, tag value) is cited to a
+reverse-engineering reference read for facts only. The SleepNet archive-replay increment is adapted
+from the compatible NOOP lineage identified as [noop-sleepnet] below; no GPL or unlicensed RE source
+code was copied. NOOP decodes raw signals plus the ring's own HRV/sleep tags and runs NOOP's own
+scoring; NOOP never touches Oura's encrypted PyTorch scores.
 
 **Citation keys used below:**
 - **[open_ring]** - LogosIsLife/open_ring `PROTOCOL.md` (GPL-3.0; byte-for-byte verified vs ~953k records, Ring 4). Treat as the authoritative framing/layout source where repos conflict.
 - **[ringverse]** - ringverse/protocol `oura/BLE.md`, `oura/events/EVENTS.md` (no-license; Ring 4 event-tag dictionary + layouts).
-- **[open_oura-r3]** - Th0rgal/open_oura `docs/horizon-ring3-protocol-cheatsheet.md` (no-license; Ring 3).
+- **[open_oura-r3]** - Th0rgal/open_oura `docs/horizon-ring3-protocol-cheatsheet.md` (workspace
+  Cargo metadata declares MIT, but the repository has no standalone license file; Ring 3).
 - **[open_oura-r5]** - Th0rgal/open_oura `docs/ring-5-observations.md` (Ring 5).
 - **[open_oura-feat]** - Th0rgal/open_oura `docs/ring-features.md` (feature gating).
-- **[open_oura-spo2]** - Th0rgal/open_oura `docs/spo2-calibration.md` (no-license; app-side
+- **[open_oura-spo2]** - Th0rgal/open_oura `docs/spo2-calibration.md` (app-side
   calibration facts and Ring 5 overnight evidence, facts only).
 - **[relue]** - relue/oura_ring_reverse `docs/.../heartbeat_replication_guide.md` and `heartbeat_complete_flow.md` (no-license; Ring 3 live-HR).
-- **[oura-rs]** - Th0rgal/open_oura `crates/oura-protocol/src/events.rs` (no-license Rust clean-room decoder; facts cited only, no code copied). Its event tags marked `"_status": "unvalidated"` may support a structural diagnostic decoder, but never a production metric without hardware/reference qualification.
+- **[oura-rs]** - Th0rgal/open_oura `crates/oura-protocol/src/events.rs` (Rust clean-room decoder in
+  the same Cargo-MIT/no-standalone-license repository; facts cited only, no code copied). Its event
+  tags marked `"_status": "unvalidated"` may support a structural diagnostic decoder, but never a
+  production metric without hardware/reference qualification.
+- **[noop-sleepnet]** - `ryanbr/noop` [PR #773](https://github.com/ryanbr/noop/pull/773) and
+  follow-up commits [`2f2bce5`](https://github.com/ryanbr/noop/commit/2f2bce598f190057c1843b26661ee6d51c8a7802),
+  [`f5e5b15`](https://github.com/ryanbr/noop/commit/f5e5b15d33d4dce47114d4931806ca8de706d00e),
+  [`23a08f9`](https://github.com/ryanbr/noop/commit/23a08f9a681e007bf4dc2cc8174af8bc05eb4ac5),
+  and [`def4627`](https://github.com/ryanbr/noop/commit/def46278de08bd86c059f9ecc99c91ca2cd56eb6).
+  These are prior art from a NOOP fork under the same PolyForm Noncommercial License 1.0.0, covering
+  30-second SleepNet reconstruction,
+  erased-flash gap handling, stable `0x49` onset identity, and incomplete-coverage handling. The latter
+  two designs are adapted here as a nearest-minute session key plus separate structural-completeness and
+  observed-coverage rules. This fork's revision 8 reworks replay around durable archive order and an
+  automatic terminal caught-up pass.
 - **[oura-openapi]** - Oura's official API v2
   [OpenAPI schema](https://cloud.ouraring.com/v2/static/json/openapi-1.37.json). Its `sleep_phase_5_min` field defines
   `1=deep, 2=light, 3=REM, 4=awake`; this corroborates the native zero-based codebook, not BLE cadence.
@@ -456,25 +476,57 @@ out-of-range values are withheld rather than allowed to corrupt HRV/recovery. Se
 - This is the primary UTC anchor (§5.5). [open_ring][ringverse]
 
 ### 6.12 Sleep architecture
-- **`0x4B` is `sleep_phase_information`, not a sleep-summary variant.** Its body layout has no
-  repository-owned fixture, so NOOP inventories/archives it and keeps any typed interpretation Tier B.
-  [ringverse][oura-rs]
-- **`0x4E` / `0x5A` sleep-phase records:** after one header byte, phase codes are **2-bit**, 4 per
+- **`0x4B` / `0x4E` / `0x5A` SleepNet phase records:** after one header byte, phase codes are
+  **2-bit**, 4 per
   byte, MSB-first (`[7:6]`, `[5:4]`, `[3:2]`, `[1:0]`). The native zero-based codebook is
   **0=deep, 1=light, 2=REM, 3=awake**; Oura's official public API independently exposes the same order
-  as characters `1` through `4`. [ringverse][oura-rs][oura-openapi]
+  as characters `1` through `4`. External Gen 3 captures support treating all three tags as
+  chronological **30-second** stage epochs written in transport-arrival order during a compact
+  finalization burst for captured `0x4E`/`0x5A` records. `0x4B` shares the structural decoder in prior
+  art, but no independent captured `0x4B` fixture has been identified. NOOP implements the common
+  interpretation on Apple and Android, but the repository's retained Ring 4 corpus emitted none of
+  these tags, so Ring 4 staging remains Partial/experimental.
+  [ringverse][oura-rs][oura-openapi][noop-sleepnet]
+  - A whole code body of at least two `0xFF` bytes is treated as an erased, unwritten page, not as
+    repeated code 3/awake. A partially written page may likewise have a long trailing `0xFF` run; the
+    current conservative threshold is six code bytes (24 stage slots, or 12 minutes). Each unwritten
+    code still reserves its 30-second slot on the reconstructed time axis, but NOOP omits it from the
+    emitted hypnogram so missing flash remains a gap instead of becoming fake awake time or shifting
+    later epochs. Within an otherwise written page, a lone or shorter trailing `0xFF` run remains
+    genuine awake. [noop-sleepnet]
+  - Phase records are accumulated in durable archive-id/arrival order, never sorted by their nearly
+    simultaneous envelope timestamps. An absolute ring-time gap greater than 600 ticks (60 seconds)
+    closes one burst. Independently anchored envelope times use the same 60-second boundary; a change
+    between anchored and unanchored records also splits conservatively. This prevents similar raw ticks
+    reused after a clock reset from combining stale and current-night slots. Replay scans the whole
+    bounded archive across query-page boundaries before finalizing a night, so storage pagination cannot
+    split one burst into false sessions.
+  - A completed burst is paired only with the nearest validated, UTC-anchored `0x49` window when both
+    clocks indicate the same session: its raw ring timestamp must be within 6,000 ticks (10 minutes),
+    and its envelope Unix time must be within 600 seconds of the burst's final envelope time. Ties choose
+    the earlier `0x49` ring timestamp. Requiring both clocks prevents a similar raw tick after a ring-clock
+    reset from stealing an older night. Epochs are laid backward from the matched window's end at
+    30 seconds per code, then clipped at its start. If no such anchored `0x49` exists, NOOP withholds the
+    staged night. The phase envelope's later write time is pairing evidence only and is never a substitute
+    timestamp for the session.
+  - The nearest-minute `0x49` onset is the durable session key so small anchor jitter on a re-served
+    night updates one row instead of creating twins. Structural completeness is the persistence/EOF
+    gate: all decoded code slots, including unwritten reserved slots, multiplied by 30 seconds must span
+    the complete raw anchored `0x49` window. Unique written epochs are measured separately. A structurally
+    complete night below 95% observed written coverage still persists with its honest gaps, but efficiency
+    is omitted; 95% is a quality threshold, not permission to truncate a missing tail. A later, more
+    complete re-serve wins under the same key, while structurally incomplete rows remain safely archived
+    for another automatic replay.
   - The offline account-export importer decodes the official `sleep_phase_5_min` field separately:
     each character is one chronological five-minute epoch from `bedtime_start`, the last epoch is
     clipped to `bedtime_end`, and adjacent equal stages are merged. This produces an honest imported
-    hypnogram and a future official-app reference timeline; it does **not** qualify direct BLE cadence
-    or direction.
+    hypnogram and an official-app reference timeline; it is not required for direct-BLE archive replay
+    and does **not** qualify a Ring 4 cadence or direction by itself.
   - NOOP preserves each source record atomically as one `OURA_SLEEP_PHASE_SERIES` diagnostic event
-    containing the source tag, header, ring timestamp, and ordered code array. The previous per-code
+    containing the source tag, header, ring timestamp, ordered code array, and unwritten-slot flags.
+    The previous per-code
     representation collided under the event table's `(deviceId, ts, kind)` key and could retain only
     the first code.
-  - **Cadence and chronological direction remain unqualified.** The normalized event deliberately has
-    no `cadence_seconds`, never becomes `sleepSession.stagesJSON`, and cannot feed Rest/recovery. The exact
-    original TLV remains in the bounded local raw archive for later hardware-backed replay.
   - For overnight qualification, **Settings → Diagnostics → Export raw sensor data** now scopes the
     last-24-hour CSV to the registry's active physical device and includes `device_id` on every row.
     An active Oura ring therefore exports its `OURA_SLEEP_PHASE_SERIES` records instead of silently
@@ -490,7 +542,11 @@ out-of-range values are withheld rather than allowed to corrupt HRV/recovery. Se
     the six units-neutral positions into `OURA_SLEEP_ACM_PERIOD` diagnostic events on Swift and Kotlin.
   - These values are retained offline for future local sleep analysis but do not feed staging, Rest, or
     scoring until their positional semantics are correlated with a reference implementation.
-- **`0x49` `sleep_summary_1`**: start/end as uint16 LE minutes-before-event. [ringverse]
+- **`0x49` `sleep_summary_1`:** record offsets `[6...7]` are `start_offset_minutes` and
+  `[8...9]` are `end_offset_minutes`, both uint16 little-endian and both measured backward from the
+  record's UTC-anchored event time. Thus `start = event_time - start_offset × 60` and
+  `end = event_time - end_offset × 60`; NOOP requires `start_offset > end_offset` and a 15-minute to
+  16-hour window before admitting it as a SleepNet anchor. [ringverse][noop-sleepnet]
 - **`0x76` `bedtime_period`** (8-byte body): start/end as uint32 LE ringTimestamps → map to UTC
   (§5.5). NOOP persists plausible 15-minute...16-hour windows as stage-less sleep sessions. [open_ring]
 - Tags `0x48,0x4A–0x4D,0x4F,0x57,0x58` are additional sleep summary/feature variants in the dictionary; layouts **(UNVERIFIED)** - decode only after fixtures. [ringverse]
@@ -592,8 +648,8 @@ out-of-range values are withheld rather than allowed to corrupt HRV/recovery. Se
 ### 7.3 NOOP decoder build guidance
 1. **Single TLV parser** (§2.3) for all generations - the framing is generation-invariant. Branch only on: MTU clamp (203 vs 247) and Gen-4/5 extra-char presence (discover but ignore in v1).
 2. **Generation detection:** read product info (`0x18 03 18 00 10`) → hardware id (`ORE_06` on the tested Ring 4), and firmware (`0x08`). Map to Gen 3/4/5 to set MTU and pick verified-vs-unverified layout confidence.
-3. **Trust tiers in the decoder:** Tier A (hardware-backed, may feed production metrics) = TLV framing, auth, GetEvents cursor, live-HR `0x02`, `0x60` IBI, `0x46`/`0x69`/`0x75` temp, Ring 4 `0x6F` percentage SpO2 plus raw `0x77` DC, `0x6A` raw sleep-period measurements, `0x76` bedtime bounds, `0x42` time-sync, `0x0D` battery, `0x45`/`0x53` state, `0x6B` motion. The corrected `0x80` layout is also Tier A: external real Ring 5 captures contain more than 1,100 coherent beats and validate the split-bitfield layout; a repository-owned capture remains useful corroboration, not a production gate. Diagnostic / explicitly estimated = Ring 4 `0x8B` emission and wire shape are now hardware-backed; raw ratio/PI stays diagnostic, while the qualified Oura Simple result may feed only the separately labelled `oura_simple_gen4` estimate path until reference-sensor comparison is recorded. The atomic `0x4E`/`0x5A` phase series is diagnostic because cadence/direction are not qualified. Ring 4 `0x50` is also diagnostic: its record shape, low-byte MET formula, and cadence are qualified, while the high-byte branch, raw state, and record-anchor direction are not. Native-parser-backed `0x74`, `0x7E/0x7F`, and `0x86` shapes are structural diagnostics only: no unqualified field is assigned to a production metric. Tier B (UNVERIFIED, fixture-gate before use) items = sleep summaries, the `0x4B` body layout, sleep-stage cadence, `0x51/0x52` activity summaries, `0x73` Exercise HR trace, legacy `0x70`/`0x7B` on Ring 4, and the protobuf `0x55/0x59` interpretation (do **not** ship).
-4. **HRV/sleep:** consume `0x5D` HRV, preserve `0x6A` without naming its states, and use `0x76` for stage-less sleep bounds. Preserve `0x4E`/`0x5A` as atomic diagnostic series, but do not timestamp individual codes or stage a night until a real fixture proves cadence/direction. Never read Oura feature `0x06` (encrypted API).
+3. **Trust tiers in the decoder:** Tier A (hardware-backed, may feed production metrics) = TLV framing, auth, GetEvents cursor, live-HR `0x02`, `0x60` IBI, `0x46`/`0x69`/`0x75` temp, Ring 4 `0x6F` percentage SpO2 plus raw `0x77` DC, `0x6A` raw sleep-period measurements, `0x76` bedtime bounds, `0x42` time-sync, `0x0D` battery, `0x45`/`0x53` state, `0x6B` motion. The corrected `0x80` layout is also Tier A: external real Ring 5 captures contain more than 1,100 coherent beats and validate the split-bitfield layout; a repository-owned capture remains useful corroboration, not a production gate. Diagnostic / explicitly estimated = Ring 4 `0x8B` emission and wire shape are now hardware-backed; raw ratio/PI stays diagnostic, while the qualified Oura Simple result may feed only the separately labelled `oura_simple_gen4` estimate path until reference-sensor comparison is recorded. SleepNet `0x4B`/`0x4E`/`0x5A` reconstruction is implemented from external Gen 3 evidence and may create an honestly labelled ring-provided staged session, but remains Partial/experimental for Ring 4 until owned-ring evidence confirms emission, cadence, order, padding, and the `0x49` pairing. Ring 4 `0x50` is also diagnostic: its record shape, low-byte MET formula, and cadence are qualified, while the high-byte branch, raw state, and record-anchor direction are not. Native-parser-backed `0x74`, `0x7E/0x7F`, and `0x86` shapes are structural diagnostics only: no unqualified field is assigned to a production metric. Tier B (UNVERIFIED, fixture-gate before use) items = other sleep-summary layouts, `0x51/0x52` activity summaries, `0x73` Exercise HR trace, legacy `0x70`/`0x7B` on Ring 4, and the protobuf `0x55/0x59` interpretation (do **not** ship).
+4. **HRV/sleep:** consume `0x5D` HRV, preserve `0x6A` without naming its states, and use `0x76` for stage-less sleep bounds. Revision 8 may reconstruct `0x4B`/`0x4E`/`0x5A` stages only through the bounded archive and an anchored `0x49` window; never stamp them from write/arrival time. Never read Oura feature `0x06` (encrypted API).
 
 ### 7.4 Passive record inventory and local raw archive
 
@@ -623,8 +679,14 @@ idempotent paths, and advances a page's revision **only after** every write succ
 retries rather than skipping partially processed data. Rows migrated from v25 recover anchors from their
 own verified `0x42`/`0x85` records; a regressing `0x41` ring-start opens a new segment so an anchor is never
 carried across a proven clock reset. Records that still lack safe UTC remain raw and are withheld rather
-than stamped with arrival time. Bump the decoder revision—not the app version—when a new clean-room mapping
-can recover additional retained data.
+than stamped with arrival time. Revision advancement compare-and-sets the snapshot's prior revision and
+anchor fields, so a concurrent in-place anchor enrichment remains pending instead of being overwritten by
+a stale decoder pass. Anchor propagation in either direction is also limited to one ten-minute local-receipt
+cohort; the projected event may be arbitrarily older than receipt, as history normally is, but never more
+than ten minutes later. Only the contiguous eligible prefix or suffix adjacent to the anchor carrier is
+updated, and the old carrier is retired at a forward boundary. An ambiguous gap therefore stays unanchored
+rather than silently crossing a missing reset marker. Bump the decoder revision—not the app version—when a
+new clean-room mapping can recover additional retained data.
 
 Schema v27 adds nullable `dailyMetric.spo2Method` provenance. Existing rows remain nil
 (measured/imported/unknown); only the qualified Ring 4 local estimate is stamped
@@ -650,6 +712,28 @@ their real record anchors and raw field order but deliberately creates no HR, st
 Decoder revision 7 adds `0x86` as an atomic `OURA_ALWAYS_ON_HR_SERIES`; it retains parser-declared cadence
 and raw BPM/quality pairs without promoting them to heart rate before owned-ring qualification.
 
+Decoder revision 8 reconstructs staged SleepNet sessions from retained `0x4B`/`0x4E`/`0x5A` records.
+It performs a two-pass, insertion-ordered scan across every archive page: first collecting only plausible,
+UTC-anchored `0x49` windows, then assembling phase bursts and pairing only when both raw ring-tick and
+envelope Unix-time proximity identify the same clock session. Whole and conservative trailing erased-flash
+`0xFF` regions reserve time but become gaps rather than awake. The nearest-minute `0x49` onset provides a
+stable natural key across small re-serve jitter. Persistence requires the burst's total 30-second slot span,
+including unwritten slots, to cover the complete raw `0x49` window. Observed written coverage is evaluated
+separately: below 95%, the session keeps its honest gaps and omits efficiency rather than being discarded
+or mistaken for a complete-quality night. There is deliberately no phase-write-time fallback.
+
+Each replay snapshots a per-run archive-id high-water and constrains reconstruction and revision advancement
+to that snapshot. Records appended concurrently remain pending for the next pass instead of being marked
+current without assembly. Later safely anchored non-SleepNet evidence also reopens previously withheld
+SleepNet rows for UTC backfill and replay. Revision-gated replay runs automatically on Oura source activation
+and after each terminal caught-up history pull, coalescing overlapping requests and using natural-key writes
+so a retry is idempotent. When replay persists at least one night, the app immediately refreshes and
+re-scores its local read model; the new session does not wait for a restart, import, or periodic analysis
+tick. It needs no file import, Oura app, cloud account, cursor reset, or ring reconnect.
+This software increment does not promote Ring 4 staging beyond Partial: its evidence is external Gen 3,
+there is no independent captured `0x4B` fixture, and the repository-owned Ring 4 archive contained no phase
+records.
+
 The `oura-decode` CLI uses the same inventory while replaying an opt-in capture. It counts reassembled TLVs,
 not capture fragments, so a split record or several records packed into one notification cannot create a
 false tag count. Its values-free inventory is written to stderr; `--json` stdout remains machine-readable.
@@ -665,6 +749,9 @@ false tag count. Its values-free inventory is written to stderr; `--json` stdout
   wait for NOOP's direct history sync, and capture `0x73`/`0x74` plus `0x7E`/`0x7F` for qualification.
 - Correlate `0x47` motion and `0x72` sleep-ACM diagnostic fields against an official-app or independent
   accelerometer reference before using them in sleep staging or activity scoring.
+- Capture `0x4B`/`0x4E`/`0x5A` plus their nearby anchored `0x49` on the available Ring 4, and compare the
+  automatically replayed 30-second timeline and erased-flash gaps with a same-night reference before
+  promoting Ring 4 sleep staging.
 - Confirm live-HR `0x02` path on actual Gen-4/Gen-5 hardware (only Gen-3 is verified in the corpus).
 - Compare the passive inventory from each hardware tuple before adding a decoder; an online reference's
   tag list is not evidence that a particular ring/firmware emitted that tag.

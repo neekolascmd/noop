@@ -14,6 +14,10 @@ import Foundation
 // Platform-pure value types. All facts cited tersely per OURA_PROTOCOL.md s6.
 
 public enum OuraDecoders {
+    /// Minimum trailing run of erased-flash `0xFF` code bytes treated as unwritten padding in a
+    /// partly written SleepNet page. Six bytes are 24 stage slots at 30 seconds each.
+    public static let minTrailingUnwritten = 6
+
     // MARK: - Pre-auth identity (0x09 / 0x19)
 
     /// Decode the non-sensitive portion of a GetFirmwareVersion response body:
@@ -464,24 +468,57 @@ public enum OuraDecoders {
         return String(bytes: rec.payload, encoding: .utf8)
     }
 
-    // MARK: - Sleep phase, 2-bit codes (0x4E / 0x5A; s6.12)
+    // MARK: - Sleep window (0x49; s6.12)
 
-    /// Decode one complete 0x4E/0x5A sleep_phase record: byte6 = header; phase codes are 2-bit,
+    /// Decode the hardware-observed 0x49 SleepNet window. The first two LE-u16 values are minute
+    /// offsets backward from the record envelope to the sleep-window start and end. Additional bytes,
+    /// when present on another firmware, are deliberately ignored rather than assigned guessed fields.
+    public static func decodeSleepWindow(_ rec: OuraRecord) -> OuraSleepWindow? {
+        let b = rec.payload
+        guard rec.type == OuraEventTag.sleepSummary1.rawValue, b.count >= 4 else { return nil }
+        return OuraSleepWindow(ringTimestamp: rec.ringTimestamp,
+                               startOffsetMinutes: u16le(b, 0),
+                               endOffsetMinutes: u16le(b, 2))
+    }
+
+    // MARK: - Sleep phase, 2-bit codes (0x4B / 0x4E / 0x5A; s6.12)
+
+    /// Decode one complete 0x4B/0x4E/0x5A sleep_phase record: byte6 = header; phase codes are 2-bit,
     /// 4 per byte (bits [7:6][5:4][3:2][1:0]), with 0=deep,1=light,2=REM,3=awake.
     /// The codebook is corroborated by Oura's public API and the native enum recovered by [oura-rs].
     /// Cadence/direction are deliberately not inferred. Returns nil on a short body.
     public static func decodeSleepPhase(_ rec: OuraRecord) -> OuraSleepPhaseSeries? {
         let b = rec.payload
         // body[0] is the header (spec offset 6); phase codes begin at body[1].
-        guard b.count >= 2 else { return nil }
+        guard rec.type == OuraEventTag.sleepPhaseInfo.rawValue
+                || rec.type == OuraEventTag.sleepPhase.rawValue
+                || rec.type == OuraEventTag.sleepPhaseAlt.rawValue,
+              b.count >= 2 else { return nil }
+
+        // Hardware recovery captures show that an entirely multi-byte 0xFF code body is erased flash,
+        // while a long trailing 0xFF run is a partly-written page's padding. Retain every decoded slot
+        // and mark padding as unwritten: the assembler needs those slots to preserve the time axis.
+        // A lone/short 0xFF run remains written code 3 (awake), and the header is never inspected here.
+        let codeBytes = Array(b.dropFirst())
+        let allUnwritten = codeBytes.count >= 2 && codeBytes.allSatisfy { $0 == 0xFF }
+        let effectiveFloor = max(2, Self.minTrailingUnwritten)
+        let trailingFFCount = codeBytes.reversed().prefix { $0 == 0xFF }.count
+        let trailingStart = trailingFFCount >= effectiveFloor
+            ? codeBytes.count - trailingFFCount
+            : codeBytes.count
+
         var stages: [OuraSleepStage] = []
-        for k in 1..<b.count {
-            let byte = b[k]
+        var unwritten: [Bool] = []
+        stages.reserveCapacity(codeBytes.count * 4)
+        unwritten.reserveCapacity(codeBytes.count * 4)
+        for (byteIndex, byte) in codeBytes.enumerated() {
+            let byteUnwritten = allUnwritten || byteIndex >= trailingStart
             // MSB-first within the byte: [7:6] is the first code.
             for shift in stride(from: 6, through: 0, by: -2) {
                 let code = Int((byte >> UInt8(shift)) & 0x03)
                 if let stage = OuraSleepStage(rawValue: code) {
                     stages.append(stage)
+                    unwritten.append(byteUnwritten)
                 }
             }
         }
@@ -489,7 +526,8 @@ public enum OuraDecoders {
         return OuraSleepPhaseSeries(ringTimestamp: rec.ringTimestamp,
                                     sourceTag: rec.type,
                                     header: b[0],
-                                    stages: stages)
+                                    stages: stages,
+                                    unwritten: unwritten)
     }
 
     // MARK: - Sleep period measurements (0x6A; s6.12)

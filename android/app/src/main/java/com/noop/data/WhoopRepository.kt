@@ -340,11 +340,19 @@ class WhoopRepository(private val dao: WhoopDao) {
     suspend fun ouraRawHistoryRecords(
         deviceId: String,
         afterArchiveId: Long = 0,
+        throughArchiveId: Long = Long.MAX_VALUE,
         limit: Int = 20_000,
     ): List<StoredOuraRawHistoryRecord> {
         val boundedLimit = limit.coerceIn(0, 50_000)
-        if (deviceId.isEmpty() || afterArchiveId < 0 || boundedLimit == 0) return emptyList()
-        return dao.ouraRawHistoryRows(deviceId, afterArchiveId, boundedLimit).map {
+        if (deviceId.isEmpty() || afterArchiveId < 0 || throughArchiveId <= afterArchiveId ||
+            boundedLimit == 0
+        ) return emptyList()
+        return dao.ouraRawHistoryRows(
+            deviceId,
+            afterArchiveId,
+            throughArchiveId,
+            boundedLimit,
+        ).map {
             StoredOuraRawHistoryRecord(
                 archiveId = it.archiveId,
                 tag = it.tag,
@@ -360,11 +368,19 @@ class WhoopRepository(private val dao: WhoopDao) {
     suspend fun ouraRawHistoryRecordsNeedingDecode(
         deviceId: String,
         decoderRevision: Int,
+        throughArchiveId: Long = Long.MAX_VALUE,
         limit: Int = 2_000,
     ): List<StoredOuraRawHistoryRecord> {
         val boundedLimit = limit.coerceIn(0, 10_000)
-        if (deviceId.isEmpty() || decoderRevision <= 0 || boundedLimit == 0) return emptyList()
-        return dao.ouraRawHistoryRowsNeedingDecode(deviceId, decoderRevision, boundedLimit).map {
+        if (deviceId.isEmpty() || decoderRevision <= 0 || throughArchiveId <= 0 ||
+            boundedLimit == 0
+        ) return emptyList()
+        return dao.ouraRawHistoryRowsNeedingDecode(
+            deviceId,
+            decoderRevision,
+            throughArchiveId,
+            boundedLimit,
+        ).map {
             StoredOuraRawHistoryRecord(
                 archiveId = it.archiveId,
                 tag = it.tag,
@@ -376,6 +392,43 @@ class WhoopRepository(private val dao: WhoopDao) {
             )
         }
     }
+
+    suspend fun hasOuraRawSleepNetRecordsNeedingDecode(
+        deviceId: String,
+        decoderRevision: Int,
+        throughArchiveId: Long = Long.MAX_VALUE,
+    ): Boolean {
+        if (deviceId.isEmpty() || decoderRevision <= 0 || throughArchiveId <= 0) return false
+        return dao.hasOuraRawSleepNetRowsNeedingDecode(
+            deviceId,
+            decoderRevision,
+            throughArchiveId,
+        )
+    }
+
+    suspend fun hasOuraRawAnchorEvidenceNeedingDecode(
+        deviceId: String,
+        decoderRevision: Int,
+        throughArchiveId: Long = Long.MAX_VALUE,
+    ): Boolean {
+        if (deviceId.isEmpty() || decoderRevision <= 0 || throughArchiveId <= 0) return false
+        return dao.hasOuraRawAnchorEvidenceNeedingDecode(
+            deviceId,
+            decoderRevision,
+            throughArchiveId,
+        )
+    }
+
+    suspend fun hasOuraRawHistoryRowsWithoutTimeAnchor(
+        deviceId: String,
+        throughArchiveId: Long = Long.MAX_VALUE,
+    ): Boolean {
+        if (deviceId.isEmpty() || throughArchiveId <= 0) return false
+        return dao.hasOuraRawHistoryRowsWithoutTimeAnchor(deviceId, throughArchiveId)
+    }
+
+    suspend fun ouraRawHistoryHighWaterArchiveId(deviceId: String): Long =
+        if (deviceId.isEmpty()) 0 else dao.ouraRawHistoryHighWaterArchiveId(deviceId)
 
     suspend fun setOuraRawHistoryTimeAnchor(
         anchor: OuraTimeAnchor,
@@ -395,9 +448,15 @@ class WhoopRepository(private val dao: WhoopDao) {
         )
     }
 
-    suspend fun markOuraRawHistoryDecoded(archiveIds: List<Long>, decoderRevision: Int) {
-        require(decoderRevision > 0 && archiveIds.all { it > 0 })
-        if (archiveIds.isNotEmpty()) dao.markOuraRawHistoryRowsDecoded(archiveIds, decoderRevision)
+    suspend fun markOuraRawHistoryDecoded(
+        rows: List<StoredOuraRawHistoryRecord>,
+        decoderRevision: Int,
+    ): Int {
+        require(
+            decoderRevision > 0 &&
+                rows.all { it.archiveId > 0 && it.decodedRevision < decoderRevision },
+        )
+        return if (rows.isEmpty()) 0 else dao.markOuraRawHistoryRowsDecoded(rows, decoderRevision)
     }
 
     suspend fun ouraRawHistoryWireBytes(deviceId: String): Long =
@@ -412,6 +471,8 @@ class WhoopRepository(private val dao: WhoopDao) {
 
     suspend fun upsertDailyMetrics(days: List<DailyMetric>) = dao.upsertDailyMetrics(days)
     suspend fun upsertSleepSessions(sessions: List<SleepSession>) = dao.upsertSleepSessions(sessions)
+    suspend fun upsertOuraSleepNetSessions(sessions: List<SleepSession>) =
+        dao.upsertOuraSleepNetSessions(sessions)
 
     /** Delete the computed source's cached daily rows whose day-key is in [from, to] (inclusive,
      *  yyyy-MM-dd). The #277 local-day re-bucketing migration clears the computed UTC-keyed rows over

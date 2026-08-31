@@ -60,15 +60,15 @@ enum class OuraEventTag(val raw: Int) {
 
     // Battery (0x0D) is an OUTER command response, not a TLV inner record; see Decoders.decodeBattery.
 
-    // --- Sleep summaries (Tier B, UNVERIFIED) ---
-    SLEEP_SUMMARY_1(0x49),    // sleep_summary_1, OURA_PROTOCOL.md s6.12 (UNVERIFIED)
+    // --- Sleep summaries ---
+    SLEEP_SUMMARY_1(0x49),    // sleep_summary_1 window offsets; diagnostic until locally qualified
     SLEEP_SUMMARY_C(0x4C),    // sleep summary variant, OURA_PROTOCOL.md s6.12 (UNVERIFIED)
     SLEEP_SUMMARY_D(0x4F),    // sleep summary variant, OURA_PROTOCOL.md s6.12 (UNVERIFIED)
     SLEEP_SUMMARY_E(0x57),    // sleep summary variant, OURA_PROTOCOL.md s6.12 (UNVERIFIED)
     SLEEP_SUMMARY_F(0x58),    // sleep summary variant, OURA_PROTOCOL.md s6.12 (UNVERIFIED)
 
     // --- Sleep phase records ---
-    SLEEP_PHASE_INFO(0x4B),   // sleep_phase_information; layout remains Tier B without a fixture
+    SLEEP_PHASE_INFO(0x4B),   // sleep_phase_details alias (2-bit codes), OURA_PROTOCOL.md s6.12
     SLEEP_PHASE(0x4E),        // sleep_phase_details (2-bit codes), OURA_PROTOCOL.md s6.12
     SLEEP_PHASE_ALT(0x5A),    // sleep_phase_details alias, OURA_PROTOCOL.md s6.12
     SLEEP_PERIOD(0x6A),       // sleep_period_info_2 (open periodic measurements), s6.12
@@ -96,11 +96,12 @@ enum class OuraEventTag(val raw: Int) {
      */
     val tier: TrustTier
         get() = when (this) {
-            ALWAYS_ON_HR, SPO2_RATIO_PI, SLEEP_PHASE, SLEEP_PHASE_ALT, MOTION, SLEEP_ACM_PERIOD, ACTIVITY_INFO,
+            ALWAYS_ON_HR, SPO2_RATIO_PI, SLEEP_SUMMARY_1, SLEEP_PHASE_INFO, SLEEP_PHASE, SLEEP_PHASE_ALT,
+            MOTION, SLEEP_ACM_PERIOD, ACTIVITY_INFO,
             EXERCISE_HR_INTENSITY, REAL_STEPS_1, REAL_STEPS_2 ->
                 TrustTier.DIAGNOSTIC
-            SLEEP_SUMMARY_1, SLEEP_PHASE_INFO, SLEEP_SUMMARY_C, SLEEP_SUMMARY_D, SLEEP_SUMMARY_E,
-            SLEEP_SUMMARY_F, ACTIVITY_SUMMARY_1, ACTIVITY_SUMMARY_2,
+            SLEEP_SUMMARY_C, SLEEP_SUMMARY_D, SLEEP_SUMMARY_E, SLEEP_SUMMARY_F,
+            ACTIVITY_SUMMARY_1, ACTIVITY_SUMMARY_2,
             EXERCISE_HR_TRACE, SPO2_SMOOTHED -> TrustTier.TIER_B
             else -> TrustTier.TIER_A
         }

@@ -135,7 +135,7 @@ final class OuraRawHistoryStoreTests: XCTestCase {
         XCTAssertEqual(rows[0].decodedRevision, 0)
 
         try await store.markOuraRawHistoryDecoded(
-            archiveIds: [rows[0].archiveId],
+            records: [rows[0]],
             decoderRevision: 3
         )
         rows = try await store.ouraRawHistoryRecords(deviceId: "oura")
@@ -150,5 +150,62 @@ final class OuraRawHistoryStoreTests: XCTestCase {
             decoderRevision: 4
         )
         XCTAssertEqual(nextRevisionRows.count, 1)
+    }
+
+    func testDecoderHighWaterLeavesConcurrentTailForNextPass() async throws {
+        let store = try await WhoopStore.inMemory()
+        let first = record(ringTimestamp: 10, payload: [1])
+        let tail = record(ringTimestamp: 11, payload: [2])
+        _ = try await store.insertOuraRawHistoryRecords([first], deviceId: "oura-race")
+        let highWater = try await store.ouraRawHistoryHighWaterArchiveId(deviceId: "oura-race")
+        _ = try await store.insertOuraRawHistoryRecords([tail], deviceId: "oura-race")
+
+        let bounded = try await store.ouraRawHistoryRecordsNeedingDecode(
+            deviceId: "oura-race",
+            decoderRevision: 8,
+            throughArchiveId: highWater
+        )
+        XCTAssertEqual(bounded.map(\.record), [first])
+        try await store.markOuraRawHistoryDecoded(
+            records: bounded,
+            decoderRevision: 8
+        )
+
+        let remaining = try await store.ouraRawHistoryRecordsNeedingDecode(
+            deviceId: "oura-race",
+            decoderRevision: 8
+        )
+        XCTAssertEqual(remaining.map(\.record), [tail])
+    }
+
+    func testStaleDecoderSnapshotCannotOverwriteConcurrentAnchorEnrichment() async throws {
+        let store = try await WhoopStore.inMemory()
+        let value = record(ringTimestamp: 10, payload: [3])
+        _ = try await store.insertOuraRawHistoryRecords([value], deviceId: "oura-enrich-race")
+        let stale = try await store.ouraRawHistoryRecordsNeedingDecode(
+            deviceId: "oura-enrich-race",
+            decoderRevision: 8
+        )
+        XCTAssertNil(stale.first?.timeAnchor)
+
+        let anchor = OuraTimeAnchor(
+            ringTimestamp: 10,
+            utcMilliseconds: 1_700_000_000_000,
+            factorMillisecondsPerTick: 100
+        )
+        _ = try await store.insertOuraRawHistoryRecords(
+            [value],
+            deviceId: "oura-enrich-race",
+            timeAnchor: anchor
+        )
+        try await store.markOuraRawHistoryDecoded(records: stale, decoderRevision: 8)
+
+        let pending = try await store.ouraRawHistoryRecordsNeedingDecode(
+            deviceId: "oura-enrich-race",
+            decoderRevision: 8
+        )
+        XCTAssertEqual(pending.count, 1)
+        XCTAssertEqual(pending.first?.timeAnchor, anchor)
+        XCTAssertEqual(pending.first?.decodedRevision, 0)
     }
 }

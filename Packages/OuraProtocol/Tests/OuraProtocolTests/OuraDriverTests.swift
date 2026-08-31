@@ -598,6 +598,8 @@ final class OuraDriverTests: XCTestCase {
     func testEvidenceTiersKeepQualifiedIBIProductionAndRatioSpO2Diagnostic() {
         XCTAssertEqual(OuraEventTag.greenIbiQuality.tier, .tierA)
         XCTAssertEqual(OuraEventTag.spo2RatioPI.tier, .diagnostic)
+        XCTAssertEqual(OuraEventTag.sleepSummary1.tier, .diagnostic)
+        XCTAssertEqual(OuraEventTag.sleepPhaseInfo.tier, .diagnostic)
         XCTAssertEqual(OuraEventTag.sleepPhase.tier, .diagnostic)
         XCTAssertEqual(OuraEventTag.sleepPhaseAlt.tier, .diagnostic)
         XCTAssertEqual(OuraEventTag.motion.tier, .diagnostic)
@@ -607,7 +609,6 @@ final class OuraDriverTests: XCTestCase {
         XCTAssertEqual(OuraEventTag.alwaysOnHR.tier, .diagnostic)
         XCTAssertEqual(OuraEventTag.realSteps1.tier, .diagnostic)
         XCTAssertEqual(OuraEventTag.realSteps2.tier, .diagnostic)
-        XCTAssertEqual(OuraEventTag.sleepPhaseInfo.tier, .tierB)
         XCTAssertEqual(OuraEventTag.sleepPhaseInfo.name, "SLEEP_PHASE_INFO")
         XCTAssertEqual(OuraEventTag.exerciseHRTrace.tier, .tierB)
         XCTAssertEqual(OuraEventTag.exerciseHRTrace.name, "EXERCISE_HR_TRACE")
@@ -640,23 +641,44 @@ final class OuraDriverTests: XCTestCase {
 
     func testTierBDroppedByDefault() {
         let d = OuraDriver(ringGen: .gen3, authKey: key)   // allowTierB defaults to false
-        // 0x49 sleep_summary_1 is Tier B (UNVERIFIED).
-        let rec = OuraFraming.parseRecord(bytes("49080200010001020304"))!
+        // 0x4C sleep summary remains Tier B (UNVERIFIED).
+        let rec = OuraFraming.parseRecord(bytes("4c080200010001020304"))!
         XCTAssertEqual(d.ingest(record: rec), [], "Tier-B must not feed values when not explicitly allowed")
     }
 
     func testTierBEmittedOnlyWhenAllowed() {
         let d = OuraDriver(ringGen: .gen3, authKey: key, allowTierB: true)
-        let rec = OuraFraming.parseRecord(bytes("49080200010001020304"))!
+        let rec = OuraFraming.parseRecord(bytes("4c080200010001020304"))!
         let events = d.ingest(record: rec)
         XCTAssertEqual(events.count, 1)
         XCTAssertTrue(events[0].isTierB)
         if case .tierB(let summary) = events[0] {
-            XCTAssertEqual(summary.tag, 0x49)
+            XCTAssertEqual(summary.tag, 0x4C)
             XCTAssertEqual(summary.kind, "sleep_summary")
             XCTAssertEqual(summary.rawPayload, bytes("01020304"))
         } else {
             XCTFail("expected a tierB event")
+        }
+    }
+
+    func testSleepWindowAndAllPhaseAliasesEmitTypedDiagnosticsWithoutTierBFlag() {
+        let d = OuraDriver(ringGen: .gen3, authKey: key)
+        let window = OuraRecord(type: OuraEventTag.sleepSummary1.rawValue,
+                                ringTimestamp: rt, payload: [0xE0, 0x01, 0x0A, 0x00])
+        XCTAssertEqual(d.ingest(record: window), [
+            .sleepWindow(OuraSleepWindow(ringTimestamp: rt,
+                                         startOffsetMinutes: 480,
+                                         endOffsetMinutes: 10)),
+        ])
+
+        for tag in [OuraEventTag.sleepPhaseInfo, .sleepPhase, .sleepPhaseAlt] {
+            let record = OuraRecord(type: tag.rawValue, ringTimestamp: rt, payload: [0xA5, 0x1B])
+            XCTAssertEqual(d.ingest(record: record), [
+                .sleepPhase(OuraSleepPhaseSeries(ringTimestamp: rt,
+                                                 sourceTag: tag.rawValue,
+                                                 header: 0xA5,
+                                                 stages: [.deep, .light, .rem, .awake])),
+            ])
         }
     }
 

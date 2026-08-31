@@ -129,6 +129,40 @@ extension WhoopStore {
         }
     }
 
+    /// Upsert ring-provided Oura SleepNet stages without erasing richer metadata that may already be
+    /// attached to the same night. SleepNet replay has no resting-HR/HRV values of its own and may omit
+    /// efficiency when archive coverage is sparse, so nil values here mean "no new observation" rather
+    /// than "clear the existing value". User-edited bounds/stages and the auxiliary motion/sleep-state
+    /// columns are deliberately left untouched on conflict.
+    @discardableResult
+    public func upsertOuraSleepNetSessions(
+        _ sessions: [CachedSleepSession],
+        deviceId: String
+    ) async throws -> Int {
+        try syncWrite { db in
+            var n = 0
+            for s in sessions {
+                try db.execute(sql: """
+                    INSERT INTO sleepSession
+                        (deviceId, startTs, endTs, efficiency, restingHr, avgHrv, stagesJSON,
+                         userEdited, startTsAdjusted)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(deviceId, startTs) DO UPDATE SET
+                        endTs = CASE WHEN sleepSession.userEdited THEN sleepSession.endTs ELSE excluded.endTs END,
+                        efficiency = COALESCE(excluded.efficiency, sleepSession.efficiency),
+                        restingHr = COALESCE(excluded.restingHr, sleepSession.restingHr),
+                        avgHrv = COALESCE(excluded.avgHrv, sleepSession.avgHrv),
+                        stagesJSON = CASE WHEN sleepSession.userEdited THEN sleepSession.stagesJSON ELSE excluded.stagesJSON END,
+                        startTsAdjusted = CASE WHEN sleepSession.userEdited THEN sleepSession.startTsAdjusted ELSE excluded.startTsAdjusted END,
+                        userEdited = sleepSession.userEdited
+                    """, arguments: [deviceId, s.startTs, s.endTs, s.efficiency,
+                                     s.restingHr, s.avgHrv, s.stagesJSON, s.userEdited, s.startTsAdjusted])
+                n += db.changesCount
+            }
+            return n
+        }
+    }
+
     /// Hand-correct a sleep session's bed (onset) and/or wake (end) time. Sets `userEdited = 1` so the
     /// next recompute/import `upsertSleepSessions` preserves the corrected bounds instead of overwriting
     /// them with the strap-detected values. Keyed by the stable detected natural key

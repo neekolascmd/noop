@@ -57,6 +57,9 @@ final class SourceCoordinator: ObservableObject {
     /// previously invisible). Passed straight into `StandardHRSource`. Defaults to a no-op so existing
     /// call sites (and tests) compile unchanged.
     private let straplog: (String) -> Void
+    /// Refreshes the app read model after archive replay materializes one or more Oura SleepNet nights.
+    /// This is injected so the BLE coordinator remains independent of dashboard and scoring types.
+    private let onOuraArchiveReplayChanged: () async -> Void
 
     // MARK: - State
 
@@ -114,6 +117,8 @@ final class SourceCoordinator: ObservableObject {
     ///   - connectedPeripheralUUID: the BLE engine's last-connected WHOOP uuid, for identity adoption.
     ///   - straplog: connect-lifecycle diagnostics for the isolated `StandardHRSource`, wired to the same
     ///     strap log `BLEManager` uses (issue #421). Defaults to no-op so existing call sites compile.
+    ///   - onOuraArchiveReplayChanged: refreshes/re-scores after replay persists a night. Defaults to
+    ///     no-op so tests and isolated call sites do not acquire an app-model dependency.
     init(registry: DeviceRegistry,
          live: LiveState,
          storeHandle: @escaping () async -> WhoopStore?,
@@ -122,7 +127,8 @@ final class SourceCoordinator: ObservableObject {
          setWhoopPreferredPeripheral: @escaping (String?) -> Void,
          setWhoopActiveDeviceId: @escaping (String) -> Void,
          connectedPeripheralUUID: AnyPublisher<String?, Never>,
-         straplog: @escaping (String) -> Void = { _ in }) {
+         straplog: @escaping (String) -> Void = { _ in },
+         onOuraArchiveReplayChanged: @escaping () async -> Void = {}) {
         self.registry = registry
         self.live = live
         self.storeHandle = storeHandle
@@ -132,6 +138,7 @@ final class SourceCoordinator: ObservableObject {
         self.setWhoopActiveDeviceId = setWhoopActiveDeviceId
         self.connectedPeripheralUUID = connectedPeripheralUUID
         self.straplog = straplog
+        self.onOuraArchiveReplayChanged = onOuraArchiveReplayChanged
     }
 
     // MARK: - Wiring
@@ -390,6 +397,7 @@ final class SourceCoordinator: ObservableObject {
                                           key: Data?,
                                           keyStatus: OSStatus,
                                           adoptIntent: Bool) {
+        let onArchiveReplayChanged = onOuraArchiveReplayChanged
         let source = OuraLiveSource(
             live: live,
             deviceId: id,
@@ -430,31 +438,36 @@ final class SourceCoordinator: ObservableObject {
                     return false
                 }
             },
+            redecodeArchivedHistory: { [storeHandle, straplog, onArchiveReplayChanged] in
+                guard let store = await storeHandle() else { return }
+                do {
+                    let report = try await store.redecodeOuraRawHistory(
+                        deviceId: id,
+                        ringGen: ringGen
+                    )
+                    if report.decodedRecords > 0 {
+                        straplog(
+                            "Oura: offline archive replay decoded \(report.decodedRecords) record(s), " +
+                            "inserted \(report.insertedRows) row(s), " +
+                            "persisted \(report.sleepSessions) sleep session(s), " +
+                            "withheld \(report.withheldEvents)"
+                        )
+                    }
+                    if report.sleepSessions > 0 {
+                        await onArchiveReplayChanged()
+                    }
+                } catch is CancellationError {
+                    // Unmarked pages remain retryable on the next activation/caught-up history pull.
+                } catch {
+                    straplog("Oura: offline archive replay paused; retained records will retry")
+                }
+            },
             log: straplog,
             onBattery: { [live] pct in live.setBattery(Double(pct)) },
             adoptIntent: adoptIntent)
-        // Decoder revisions are independent of BLE and app releases. Re-run retained TLVs in the
-        // background on every Oura activation; already-current rows make this a cheap no-op, while a
-        // new revision backfills old local data without requiring the ring or an Oura account.
-        Task { [storeHandle, straplog] in
-            guard let store = await storeHandle() else { return }
-            do {
-                let report = try await store.redecodeOuraRawHistory(
-                    deviceId: id,
-                    ringGen: ringGen
-                )
-                if report.decodedRecords > 0 {
-                    straplog(
-                        "Oura: offline archive replay decoded \(report.decodedRecords) record(s), " +
-                        "inserted \(report.insertedRows) row(s), withheld \(report.withheldEvents)"
-                    )
-                }
-            } catch is CancellationError {
-                // Unmarked pages remain retryable on the next Oura activation.
-            } catch {
-                straplog("Oura: offline archive replay paused; retained records will retry")
-            }
-        }
+        // Decoder revisions are independent of BLE and app releases. The source coalesces this startup
+        // pass with the post-history pass, so new SleepNet rows are picked up without a restart/import.
+        source.refreshArchivedHistory()
         if adoptIntent { straplog("Oura: adopt consent granted - this session may install NOOP's key") }
         if let pid = peripheralId(for: id), let uuid = UUID(uuidString: pid) {
             source.connect(uuid)

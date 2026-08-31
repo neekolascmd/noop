@@ -3,6 +3,7 @@ package com.noop.ble
 import android.content.Context
 import android.util.Log
 import com.noop.data.DeviceRegistry
+import com.noop.data.OuraRawHistoryRedecodeReport
 import com.noop.data.PairedDeviceRow
 import com.noop.data.SourceKind
 import com.noop.data.StreamBatch
@@ -17,6 +18,24 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+
+/** Publish one completed archive pass and invalidate the read model only when it materialized sleep. */
+internal fun publishOuraArchiveReplayReport(
+    report: OuraRawHistoryRedecodeReport,
+    deviceId: String,
+    log: (String) -> Unit,
+    onSleepChanged: (String) -> Unit,
+) {
+    if (report.decodedRecords > 0) {
+        log(
+            "Oura: offline archive replay decoded ${report.decodedRecords} record(s), " +
+                "inserted ${report.insertedRows} row(s), " +
+                "persisted ${report.sleepSessions} sleep session(s), " +
+                "withheld ${report.withheldEvents}",
+        )
+    }
+    if (report.sleepSessions > 0) onSleepChanged(deviceId)
+}
 
 /**
  * Runs exactly ONE device's live BLE at a time, driven by [DeviceRegistry]'s active device id.
@@ -101,6 +120,10 @@ class SourceCoordinator(
      *  generic-HR strap path (a footpod / bike sensor / power meter rides StandardHrSource). Default no-op
      *  keeps existing call sites + JVM tests compiling unchanged. */
     private val sensorSink: (StandardHrSource.SensorMetrics) -> Unit = {},
+    /** Schedule the normal on-device read-model refresh after archive replay materializes at least one
+     *  Oura sleep session. The callback is injected by the composition root so this BLE router stays
+     *  independent of analytics/UI types. Default no-op keeps isolated JVM tests unchanged. */
+    private val onOuraArchiveReplayChanged: (deviceId: String) -> Unit = {},
 ) {
 
     /** Latest instantaneous speed/cadence/power from the active standard fitness sensor (RSC/CSC/CPS),
@@ -401,6 +424,21 @@ class SourceCoordinator(
                         true
                     }.getOrDefault(false)
                 },
+                redecodeArchivedHistory = {
+                    try {
+                        val report = repo.redecodeOuraRawHistory(id, ringGen)
+                        publishOuraArchiveReplayReport(
+                            report = report,
+                            deviceId = id,
+                            log = straplog,
+                            onSleepChanged = onOuraArchiveReplayChanged,
+                        )
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Throwable) {
+                        straplog("Oura: offline archive replay paused; retained records will retry")
+                    }
+                },
                 log = straplog,           // Oura connect/auth/stream lifecycle → the SAME exported strap log (#421)
                 onBattery = batterySink,  // ring battery → the same live state the WHOOP strap battery uses
             )
@@ -414,24 +452,9 @@ class SourceCoordinator(
                 source.setAdoptIntent(true)
                 straplog("Oura: adopt consent granted - this session may install NOOP's key")
             }
-            // Fully local, revision-gated replay. Already-current archives return immediately; decoder
-            // improvements recover new typed rows without reconnecting the ring or using an Oura account.
-            scope.launch {
-                try {
-                    val report = repo.redecodeOuraRawHistory(id, ringGen)
-                    if (report.decodedRecords > 0) {
-                        straplog(
-                            "Oura: offline archive replay decoded ${report.decodedRecords} record(s), " +
-                                "inserted ${report.insertedRows} row(s), " +
-                                "withheld ${report.withheldEvents}",
-                        )
-                    }
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (_: Throwable) {
-                    straplog("Oura: offline archive replay paused; retained records will retry")
-                }
-            }
+            // The source coalesces startup and post-history replay so a new SleepNet burst becomes a
+            // staged night automatically, without an import button or app restart.
+            source.refreshArchivedHistory()
             // Mirror this source's live adopt outcome + honest needs-pairing message so the wizard can leave
             // its Adopting step on a confirmed streaming (success) or an honest Failed. Reset on teardown.
             ouraStateJob?.cancel()

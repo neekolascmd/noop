@@ -258,7 +258,7 @@ public enum OuraStreamMapping {
                     mv: v.voltageMv,
                     charging: v.charging))
 
-            case .bedtimePeriod, .motion, .state, .timeSync, .rtcBeacon, .debugText, .tierB:
+            case .sleepWindow, .bedtimePeriod, .motion, .state, .timeSync, .rtcBeacon, .debugText, .tierB:
                 // Not a durable per-device stream row (timeSync/rtcBeacon anchor the transport's clock;
                 // packed motion/state/debug remain non-durable; Tier-B must never feed scoring).
                 continue

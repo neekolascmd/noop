@@ -576,8 +576,11 @@ public final class OuraDriver {
             guard let value = OuraDecoders.decodeSleepAcmPeriod(record) else { return [] }
             return [.sleepAcmPeriod(value)]
 
-        // --- Diagnostic sleep phase: codebook/order are known; cadence is not production-qualified ---
-        case .sleepPhase, .sleepPhaseAlt:
+        // --- Diagnostic SleepNet records: typed for offline whole-night reconstruction ---
+        case .sleepSummary1:
+            guard let window = OuraDecoders.decodeSleepWindow(record) else { return [] }
+            return [.sleepWindow(window)]
+        case .sleepPhaseInfo, .sleepPhase, .sleepPhaseAlt:
             guard let series = OuraDecoders.decodeSleepPhase(record) else { return [] }
             return [.sleepPhase(series)]
         case .sleepPeriod:
@@ -675,10 +678,7 @@ public final class OuraDriver {
             return [.realStepsFeatures(value)]
 
         // --- Tier B (only reached when allowTierB == true; otherwise dropped above) ---
-        case .sleepPhaseInfo:
-            return [.tierB(OuraTierBSummary(tag: record.type, ringTimestamp: record.ringTimestamp,
-                                            rawPayload: record.payload, kind: "sleep_phase_info"))]
-        case .sleepSummary1, .sleepSummaryC, .sleepSummaryD, .sleepSummaryE, .sleepSummaryF:
+        case .sleepSummaryC, .sleepSummaryD, .sleepSummaryE, .sleepSummaryF:
             return [.tierB(OuraTierBSummary(tag: record.type, ringTimestamp: record.ringTimestamp,
                                             rawPayload: record.payload, kind: "sleep_summary"))]
         case .activitySummary1, .activitySummary2:

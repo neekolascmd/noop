@@ -164,10 +164,12 @@ extension WhoopStore {
     public func ouraRawHistoryRecords(
         deviceId: String,
         afterArchiveId: Int64 = 0,
+        throughArchiveId: Int64 = .max,
         limit: Int = 20_000
     ) async throws -> [StoredOuraRawHistoryRecord] {
         let boundedLimit = min(max(limit, 0), 50_000)
-        guard !deviceId.isEmpty, afterArchiveId >= 0, boundedLimit > 0 else { return [] }
+        guard !deviceId.isEmpty, afterArchiveId >= 0,
+              throughArchiveId > afterArchiveId, boundedLimit > 0 else { return [] }
         return try syncRead { db in
             try Row.fetchAll(
                 db,
@@ -176,12 +178,26 @@ extension WhoopStore {
                            anchorUtcMilliseconds, anchorRingTimestamp,
                            anchorFactorMillisecondsPerTick, decodedRevision
                     FROM ouraRawHistory
-                    WHERE deviceId = ? AND archiveId > ?
+                    WHERE deviceId = ? AND archiveId > ? AND archiveId <= ?
                     ORDER BY archiveId ASC
                     LIMIT ?
                     """,
-                arguments: [deviceId, afterArchiveId, boundedLimit]
+                arguments: [deviceId, afterArchiveId, throughArchiveId, boundedLimit]
             ).compactMap(Self.decodeOuraRawHistoryRow)
+        }
+    }
+
+    /// Snapshot boundary for one decoder pass. Rows inserted after this value remain revision-old and
+    /// are therefore guaranteed to trigger the coalesced/future pass instead of being marked without
+    /// participating in the corresponding whole-archive reconstruction.
+    public func ouraRawHistoryHighWaterArchiveId(deviceId: String) async throws -> Int64 {
+        guard !deviceId.isEmpty else { return 0 }
+        return try syncRead { db in
+            try Int64.fetchOne(
+                db,
+                sql: "SELECT COALESCE(MAX(archiveId), 0) FROM ouraRawHistory WHERE deviceId = ?",
+                arguments: [deviceId]
+            ) ?? 0
         }
     }
 
@@ -189,10 +205,12 @@ extension WhoopStore {
     public func ouraRawHistoryRecordsNeedingDecode(
         deviceId: String,
         decoderRevision: Int,
+        throughArchiveId: Int64 = .max,
         limit: Int = 2_000
     ) async throws -> [StoredOuraRawHistoryRecord] {
         let boundedLimit = min(max(limit, 0), 10_000)
-        guard !deviceId.isEmpty, decoderRevision > 0, boundedLimit > 0 else { return [] }
+        guard !deviceId.isEmpty, decoderRevision > 0,
+              throughArchiveId > 0, boundedLimit > 0 else { return [] }
         return try syncRead { db in
             try Row.fetchAll(
                 db,
@@ -201,12 +219,95 @@ extension WhoopStore {
                            anchorUtcMilliseconds, anchorRingTimestamp,
                            anchorFactorMillisecondsPerTick, decodedRevision
                     FROM ouraRawHistory
-                    WHERE deviceId = ? AND decodedRevision < ?
+                    WHERE deviceId = ? AND decodedRevision < ? AND archiveId <= ?
                     ORDER BY archiveId ASC
                     LIMIT ?
                     """,
-                arguments: [deviceId, decoderRevision, boundedLimit]
+                arguments: [deviceId, decoderRevision, throughArchiveId, boundedLimit]
             ).compactMap(Self.decodeOuraRawHistoryRow)
+        }
+    }
+
+    /// Cheap gate for the whole-archive SleepNet pass. Ordinary HR/temperature history revisions must
+    /// not rescan a potentially large raw archive every periodic fetch; only a newly-decodable 0x49
+    /// window or 0x4B/0x4E/0x5A phase record can change a staged night.
+    public func hasOuraRawSleepNetRecordsNeedingDecode(
+        deviceId: String,
+        decoderRevision: Int,
+        throughArchiveId: Int64 = .max
+    ) async throws -> Bool {
+        guard !deviceId.isEmpty, decoderRevision > 0, throughArchiveId > 0 else { return false }
+        return try syncRead { db in
+            try Bool.fetchOne(
+                db,
+                sql: """
+                    SELECT EXISTS(
+                        SELECT 1 FROM ouraRawHistory
+                        WHERE deviceId = ? AND decodedRevision < ? AND archiveId <= ?
+                          AND tag IN (?, ?, ?, ?)
+                    )
+                    """,
+                arguments: [
+                    deviceId,
+                    decoderRevision,
+                    throughArchiveId,
+                    Int(OuraEventTag.sleepSummary1.rawValue),
+                    Int(OuraEventTag.sleepPhaseInfo.rawValue),
+                    Int(OuraEventTag.sleepPhase.rawValue),
+                    Int(OuraEventTag.sleepPhaseAlt.rawValue),
+                ]
+            ) ?? false
+        }
+    }
+
+    /// A newly decodable row that can supply UTC to older unresolved rows. Stored anchor metadata is
+    /// sufficient even on an ordinary tag; raw 0x42/0x85 records can also reveal an anchor themselves.
+    /// This re-opens previously withheld SleepNet rows without rescanning on every activation forever.
+    public func hasOuraRawAnchorEvidenceNeedingDecode(
+        deviceId: String,
+        decoderRevision: Int,
+        throughArchiveId: Int64 = .max
+    ) async throws -> Bool {
+        guard !deviceId.isEmpty, decoderRevision > 0, throughArchiveId > 0 else { return false }
+        return try syncRead { db in
+            try Bool.fetchOne(
+                db,
+                sql: """
+                    SELECT EXISTS(
+                        SELECT 1 FROM ouraRawHistory
+                        WHERE deviceId = ? AND decodedRevision < ? AND archiveId <= ?
+                          AND (anchorUtcMilliseconds IS NOT NULL OR tag IN (?, ?))
+                    )
+                    """,
+                arguments: [
+                    deviceId,
+                    decoderRevision,
+                    throughArchiveId,
+                    Int(OuraEventTag.timeSync.rawValue),
+                    Int(OuraEventTag.rtcBeacon.rawValue),
+                ]
+            ) ?? false
+        }
+    }
+
+    /// Lets a new decoder decide whether the insertion-ordered anchor repair is necessary without first
+    /// loading every retained row into memory.
+    public func hasOuraRawHistoryRowsWithoutTimeAnchor(
+        deviceId: String,
+        throughArchiveId: Int64 = .max
+    ) async throws -> Bool {
+        guard !deviceId.isEmpty, throughArchiveId > 0 else { return false }
+        return try syncRead { db in
+            try Bool.fetchOne(
+                db,
+                sql: """
+                    SELECT EXISTS(
+                        SELECT 1 FROM ouraRawHistory
+                        WHERE deviceId = ? AND archiveId <= ? AND anchorUtcMilliseconds IS NULL
+                    )
+                    """,
+                arguments: [deviceId, throughArchiveId]
+            ) ?? false
         }
     }
 
@@ -250,24 +351,38 @@ extension WhoopStore {
         }
     }
 
-    /// Advance only rows whose typed writes completed. Per-row updates avoid SQLite variable limits and
-    /// keep the operation atomic for each replay page.
+    /// Advance only rows whose typed writes completed *and* whose anchor/revision metadata still matches
+    /// the snapshot that was decoded. An exact refetch may enrich an existing row in place and reset its
+    /// revision while replay is running; this compare-and-set leaves that changed row pending instead of
+    /// letting stale work mark the new anchor current. Per-row updates avoid SQLite variable limits.
     public func markOuraRawHistoryDecoded(
-        archiveIds: [Int64],
+        records: [StoredOuraRawHistoryRecord],
         decoderRevision: Int
     ) async throws {
-        guard decoderRevision > 0, archiveIds.allSatisfy({ $0 > 0 }) else {
+        guard decoderRevision > 0, records.allSatisfy({ $0.archiveId > 0 }) else {
             throw OuraRawHistoryStoreError.invalid("decoder revision")
         }
-        guard !archiveIds.isEmpty else { return }
+        guard !records.isEmpty else { return }
         try syncWrite { db in
             let update = try db.cachedStatement(sql: """
                 UPDATE ouraRawHistory
                 SET decodedRevision = ?
-                WHERE archiveId = ? AND decodedRevision < ?
+                WHERE archiveId = ?
+                  AND decodedRevision = ? AND decodedRevision < ?
+                  AND anchorUtcMilliseconds IS ?
+                  AND anchorRingTimestamp IS ?
+                  AND anchorFactorMillisecondsPerTick IS ?
                 """)
-            for archiveId in archiveIds {
-                try update.execute(arguments: [decoderRevision, archiveId, decoderRevision])
+            for record in records {
+                try update.execute(arguments: [
+                    decoderRevision,
+                    record.archiveId,
+                    record.decodedRevision,
+                    decoderRevision,
+                    record.timeAnchor?.utcMilliseconds,
+                    record.timeAnchor.map { Int64($0.ringTimestamp) },
+                    record.timeAnchor?.factorMillisecondsPerTick,
+                ])
             }
         }
     }

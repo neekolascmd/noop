@@ -172,6 +172,11 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     private let persistRawHistory: ([OuraRecord], OuraTimeAnchor?) async -> Bool
     /// Persists a verified 0x76 bedtime window as a stage-less sleep session.
     private let persistSleepSession: (Int, Int) async -> Bool
+    /// Re-decodes the bounded raw archive after a caught-up pull. This is how cross-page SleepNet bursts
+    /// become staged nights without a manual import or an app restart.
+    private let redecodeArchivedHistory: () async -> Void
+    private var archiveRedecodeRunning = false
+    private var archiveRedecodePending = false
     private let log: (String) -> Void
     private let onBattery: (Int) -> Void
     /// The ring generation (carried on `PairedDevice.model`, recovered via `OuraRingGen.from(model:)`).
@@ -679,7 +684,9 @@ public final class OuraLiveSource: NSObject, ObservableObject {
             resetProvisionalHistorySearch()
         }
         let terminalCursor = committedCursor ?? historyCursor
-        finishHistoryInventory(outcome: driver.hasFreshAnchorForActiveFetch ? "caught-up" : "unanchored")
+        let historyCaughtUp = driver.hasFreshAnchorForActiveFetch
+        finishHistoryInventory(outcome: historyCaughtUp ? "caught-up" : "unanchored")
+        if historyCaughtUp { refreshArchivedHistory() }
         advance(.historyCursorAdvanced(cursor: terminalCursor, moreData: false))
     }
 
@@ -748,6 +755,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 persist: @escaping (Streams) async -> Bool = { _ in true },
                 persistRawHistory: @escaping ([OuraRecord], OuraTimeAnchor?) async -> Bool = { _, _ in true },
                 persistSleepSession: @escaping (Int, Int) async -> Bool = { _, _ in true },
+                redecodeArchivedHistory: @escaping () async -> Void = {},
                 log: @escaping (String) -> Void = { _ in },
                 onBattery: @escaping (Int) -> Void = { _ in },
                 feedsLive: Bool = true,
@@ -762,6 +770,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         self.persist = persist
         self.persistRawHistory = persistRawHistory
         self.persistSleepSession = persistSleepSession
+        self.redecodeArchivedHistory = redecodeArchivedHistory
         self.log = log
         self.onBattery = onBattery
         self.feedsLive = feedsLive
@@ -769,6 +778,25 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         super.init()
         // Dedicated queue-less central -> callbacks arrive on the main queue, matching @MainActor.
         self.central = CBCentralManager(delegate: self, queue: nil)
+    }
+
+    /// Request a revision-gated archive replay. Concurrent startup/caught-up requests coalesce, while a
+    /// request arriving during a pass is remembered and rerun once so newly archived tail records cannot
+    /// be missed. The store's revision query makes the second pass a cheap no-op when nothing changed.
+    public func refreshArchivedHistory() {
+        if archiveRedecodeRunning {
+            archiveRedecodePending = true
+            return
+        }
+        archiveRedecodeRunning = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            repeat {
+                self.archiveRedecodePending = false
+                await self.redecodeArchivedHistory()
+            } while self.archiveRedecodePending
+            self.archiveRedecodeRunning = false
+        }
     }
 
     /// Prefer the last valid in-process key, then retry Keychain. A missing/short value is never cached.

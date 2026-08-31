@@ -207,26 +207,108 @@ class DecoderGoldenTest {
         )
     }
 
-    // MARK: - 0x4E sleep phase (2-bit codes MSB-first; header byte skipped)
+    // MARK: - 0x49 sleep window + 0x4B/0x4E/0x5A phase aliases
 
     @Test
-    fun testSleepPhase0x4E() {
-        // header 0x00, phase byte 0x1B = bits 00 01 10 11 -> deep, light, rem, awake.
-        val rec = record("4e0602000100001b")
+    fun testSleepWindow0x49UsesLittleEndianMinuteOffsets() {
+        // 600 minutes before the event is onset; 15 minutes before it is sleep end.
+        val rec = record("49080200010058020f00")
         assertEquals(
-            OuraSleepPhaseSeries(
+            OuraSleepWindow(
                 ringTimestamp = rt,
-                sourceTag = 0x4E,
-                header = 0,
-                stages = listOf(
-                    OuraSleepStage.DEEP,
-                    OuraSleepStage.LIGHT,
-                    OuraSleepStage.REM,
-                    OuraSleepStage.AWAKE,
-                ),
+                startOffsetMinutes = 600,
+                endOffsetMinutes = 15,
             ),
-            OuraDecoders.decodeSleepPhase(rec),
+            OuraDecoders.decodeSleepWindow(rec),
         )
+        assertNull(
+            OuraDecoders.decodeSleepWindow(
+                OuraRecord(type = 0x49, ringTimestamp = rt, payload = intArrayOf(0x58, 0x02, 0x0F)),
+            ),
+        )
+        assertNull(
+            OuraDecoders.decodeSleepWindow(
+                OuraRecord(type = 0x4E, ringTimestamp = rt, payload = intArrayOf(0x58, 0x02, 0x0F, 0x00)),
+            ),
+        )
+    }
+
+    @Test
+    fun testSleepPhaseAliasesDecodeTheSameCodebook() {
+        // header 0x00, phase byte 0x1B = bits 00 01 10 11 -> deep, light, rem, awake.
+        for (tag in listOf(0x4B, 0x4E, 0x5A)) {
+            val rec = OuraRecord(type = tag, ringTimestamp = rt, payload = intArrayOf(0x00, 0x1B))
+            assertEquals(
+                OuraSleepPhaseSeries(
+                    ringTimestamp = rt,
+                    sourceTag = tag,
+                    header = 0,
+                    stages = listOf(
+                        OuraSleepStage.DEEP,
+                        OuraSleepStage.LIGHT,
+                        OuraSleepStage.REM,
+                        OuraSleepStage.AWAKE,
+                    ),
+                ),
+                OuraDecoders.decodeSleepPhase(rec),
+            )
+        }
+        assertNull(
+            OuraDecoders.decodeSleepPhase(
+                OuraRecord(type = 0x47, ringTimestamp = rt, payload = intArrayOf(0x00, 0x1B)),
+            ),
+        )
+    }
+
+    @Test
+    fun testSleepPhaseAllErasedPageKeepsUnwrittenSlotsButLoneFFRemainsAwake() {
+        val erased = OuraDecoders.decodeSleepPhase(
+            OuraRecord(type = 0x4E, ringTimestamp = rt, payload = intArrayOf(0x00, 0xFF, 0xFF)),
+        )
+        assertEquals(8, erased?.stages?.size)
+        assertEquals(true, erased?.stages?.all { it == OuraSleepStage.AWAKE })
+        assertEquals(true, erased?.unwritten?.all { it })
+
+        val lone = OuraDecoders.decodeSleepPhase(
+            OuraRecord(type = 0x4E, ringTimestamp = rt, payload = intArrayOf(0x00, 0xFF)),
+        )
+        assertEquals(4, lone?.stages?.size)
+        assertEquals(true, lone?.stages?.all { it == OuraSleepStage.AWAKE })
+        assertEquals(true, lone?.unwritten?.none { it })
+    }
+
+    @Test
+    fun testSleepPhaseTrimsOnlyATrailingRunAtTheSixByteFloor() {
+        val atFloor = OuraDecoders.decodeSleepPhase(
+            OuraRecord(
+                type = 0x4E,
+                ringTimestamp = rt,
+                payload = intArrayOf(0x00, 0x1B, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF),
+            ),
+        )
+        assertEquals(28, atFloor?.stages?.size)
+        assertEquals(
+            listOf(
+                OuraSleepStage.DEEP,
+                OuraSleepStage.LIGHT,
+                OuraSleepStage.REM,
+                OuraSleepStage.AWAKE,
+            ),
+            atFloor?.stages?.take(4),
+        )
+        assertEquals(true, atFloor?.unwritten?.take(4)?.none { it })
+        assertEquals(true, atFloor?.unwritten?.takeLast(24)?.all { it })
+
+        val belowFloor = OuraDecoders.decodeSleepPhase(
+            OuraRecord(
+                type = 0x4E,
+                ringTimestamp = rt,
+                payload = intArrayOf(0x00, 0x1B, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF),
+            ),
+        )
+        assertEquals(24, belowFloor?.stages?.size)
+        assertEquals(true, belowFloor?.stages?.takeLast(20)?.all { it == OuraSleepStage.AWAKE })
+        assertEquals(true, belowFloor?.unwritten?.none { it })
     }
 
     // MARK: - 0x6B motion period (2-bit MOTION_STATE codes; 2 header bytes skipped)

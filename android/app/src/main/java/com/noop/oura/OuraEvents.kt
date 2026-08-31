@@ -132,15 +132,37 @@ enum class OuraSleepStage(val raw: Int) {
 }
 
 /**
- * One complete, ordered 0x4E/0x5A sleep-phase record. Individual codes share one ring timestamp and
- * would collide under the event store's `(deviceId, ts, kind)` natural key. Cadence stays absent until
- * a hardware capture qualifies it.
+ * One complete, ordered 0x4B/0x4E/0x5A sleep-phase record. Individual codes share one envelope ring
+ * timestamp and would collide under the event store's `(deviceId, ts, kind)` natural key. The archive
+ * assembler applies the externally evidenced 30-second cadence only after pairing a valid 0x49 window;
+ * that staging path remains unqualified on repository-owned Ring 4 hardware.
  */
 data class OuraSleepPhaseSeries(
     val ringTimestamp: Long,
     val sourceTag: Int,
     val header: Int,
     val stages: List<OuraSleepStage>,
+    /**
+     * One flag per stage code. True means the slot came from hardware-observed erased-flash padding:
+     * it must keep its place on the 30-second time axis but must not be emitted as an awake epoch.
+     */
+    val unwritten: List<Boolean> = List(stages.size) { false },
+) {
+    init {
+        require(unwritten.size == stages.size) { "unwritten flags must match stage count" }
+    }
+}
+
+/**
+ * One `0x49` SleepNet window relative to the event's envelope ring time. The offsets are unsigned
+ * little-endian minutes before the event: the larger start offset names sleep onset and the smaller
+ * end offset names sleep end. Wall-clock resolution belongs to the caller's qualified ring-time
+ * anchor; this protocol value deliberately carries no guessed UTC.
+ */
+data class OuraSleepWindow(
+    val ringTimestamp: Long,
+    val startOffsetMinutes: Int,
+    val endOffsetMinutes: Int,
 )
 
 /** One verified `0x6A` sleep-period record. Open on-device measurements, not encrypted Oura scores. */
@@ -321,6 +343,7 @@ sealed class OuraEvent {
     data class Temp(val value: OuraTemp) : OuraEvent()
     data class Battery(val value: OuraBattery) : OuraEvent()
     data class SleepPhaseEvent(val value: OuraSleepPhaseSeries) : OuraEvent()
+    data class SleepWindowEvent(val value: OuraSleepWindow) : OuraEvent()
     data class SleepPeriodEvent(val value: OuraSleepPeriod) : OuraEvent()
     data class BedtimePeriodEvent(val value: OuraBedtimePeriod) : OuraEvent()
     data class MotionEvent(val value: OuraMotion) : OuraEvent()

@@ -70,6 +70,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -317,6 +318,16 @@ class RealGattOps(private val gatt: BluetoothGatt) : GattOps {
     override fun discoverServicesCompat(): Boolean = gatt.discoverServices()
 }
 
+/** Coalesces one device's history pages without dropping a different device's refresh request. */
+internal class PerDeviceHistoryAnalysisGate {
+    private val scheduled = ConcurrentHashMap.newKeySet<String>()
+
+    fun begin(deviceId: String): Boolean = scheduled.add(deviceId)
+    fun finish(deviceId: String) {
+        scheduled.remove(deviceId)
+    }
+}
+
 class WhoopBleClient(
     private val context: Context,
     /**
@@ -493,8 +504,8 @@ class WhoopBleClient(
         /** 5/MG zero-frame retry: pause before re-requesting history when a session timed out having
          *  produced nothing (the first request after connect can go entirely unanswered). */
         private const val WHOOP5_HISTORY_RETRY_DELAY_MS = 700L
-        /** Debounce between a committed backfill chunk and the on-device scoring pass it schedules. */
-        private const val POST_BACKFILL_ANALYZE_DELAY_MS = 1_500L
+        /** Debounce between committed wearable history and the on-device scoring pass it schedules. */
+        private const val POST_HISTORY_ANALYZE_DELAY_MS = 1_500L
         /** #174: window after the last offload frame/HISTORY_COMPLETE during which a type-0x2F frame is
          *  treated as trailing-historical, not live. Mirrors macOS deepPacketLiveCooldownSeconds (10s). */
         private const val DEEP_PACKET_LIVE_COOLDOWN_MS = 10_000L
@@ -1198,7 +1209,7 @@ class WhoopBleClient(
         deviceId = deviceId,
         cursorStore = cursorStore,
         ackTrim = { trim, endData -> ackHistoricalChunk(trim, endData) },
-        onChunkCommitted = { batch -> onBackfillChunkCommitted(batch) },
+        onChunkCommitted = { onBackfillChunkCommitted() },
         onConsoleChunk = { consoleChunksThisSession += 1 },
         // #77/#91: archive undecodable frames before the ack. append() returns ok=true (written, or
         // archive-full → still safe to ack) and THROWS only on a genuine write failure → return false
@@ -1229,12 +1240,27 @@ class WhoopBleClient(
      * UI's 15-min analysis tick (which also doesn't run at all with the app UI closed and only the
      * foreground service alive). Mirrors the AppViewModel loop's profile + writeback behaviour. (#78 fork)
      */
-    private fun onBackfillChunkCommitted(batch: StreamBatch) {
+    private fun onBackfillChunkCommitted() {
         decodedChunksThisSession += 1   // invoked once per non-empty decoded chunk (#77 family tally)
-        if (!analyzeAfterBackfillScheduled.compareAndSet(false, true)) return
+        refreshScoresAfterExternalHistory(deviceId, sourceLabel = "Backfill")
+    }
+
+    /**
+     * Fresh wearable history has landed durably outside the WHOOP backfiller (currently Oura SleepNet).
+     * Reuse the exact process-owned post-history scoring path so the Room daily flows observed by Today and
+     * Sleep republish immediately, even with no Activity-owned ViewModel loop running. The per-device gate
+     * coalesces a burst of archive pages into one pass without dropping another wearable's request.
+     */
+    internal fun refreshScoresAfterExternalHistory(
+        historyDeviceId: String,
+        sourceLabel: String = "History",
+    ) {
+        // Coalesce pages for the SAME device only. A WHOOP pass must never swallow an Oura refresh (or
+        // vice versa); IntelligenceEngine's own analyzeGate serializes the actual cross-device scoring.
+        if (!historyAnalysisGate.begin(historyDeviceId)) return
         ioScope.launch {
             try {
-                delay(POST_BACKFILL_ANALYZE_DELAY_MS) // let trailing chunks of the same session land
+                delay(POST_HISTORY_ANALYZE_DELAY_MS) // let trailing chunks/replay pages from one session land
                 val profileStore = ProfileStore.from(context)
                 val profile = UserProfile(
                     weightKg = profileStore.weightKg,
@@ -1247,7 +1273,7 @@ class WhoopBleClient(
                     IntelligenceEngine.analyzeRecent(
                         repo = repository,
                         profile = profile,
-                        importedDeviceId = deviceId,
+                        importedDeviceId = historyDeviceId,
                         maxHROverride = profileStore.hrMaxOverride.takeIf { it > 0 }?.toDouble(),
                         // Steps-estimate calibration: honor the user's manual override and persist the fit
                         // after a backfill too, so the Settings/Steps screen reflects the latest data.
@@ -1305,30 +1331,30 @@ class WhoopBleClient(
                             else null,
                     )
                 }.onSuccess {
-                    log("Backfill: post-sync scoring pass done")
+                    log("$sourceLabel: post-sync scoring pass done")
                     // #277 diagnostic: surface the day-key the dashboard treats as "today" against the
                     // newest banked row, so a UTC-bucket vs local-day split (rows persist but Today
                     // freezes) shows up plainly in the shared strap log. Best-effort — a diagnostic read
                     // must never break scoring.
                     runCatching {
-                        val merged = repository.daysMerged(deviceId)
+                        val merged = repository.daysMerged(historyDeviceId)
                         val newest = merged.maxByOrNull { it.day }?.day ?: "—"
                         val todayKey = com.noop.ui.logicalDayKeyNow()
                         val present = if (merged.any { it.day == todayKey }) "present" else "MISSING"
-                        log("Backfill: ${merged.size} day(s) banked; newest=$newest, dashboard-today=$todayKey ($present)")
+                        log("$sourceLabel: ${merged.size} day(s) banked; newest=$newest, dashboard-today=$todayKey ($present)")
                     }
                 }.onFailure {
                     // The scoring pass now hops to Dispatchers.Default; shutdown() cancels it, which is
                     // not a scoring failure — rethrow so the cancellation isn't swallowed/mis-logged. (#125)
                     if (it is kotlin.coroutines.cancellation.CancellationException) throw it
-                    log("Backfill: post-sync scoring failed: ${it.message}")
+                    log("$sourceLabel: post-sync scoring failed: ${it.message}")
                 }
                 // Keep the opt-in Health Connect writeback fresh in background-only operation too.
                 if (NoopPrefs.hcWriteback(context)) {
                     runCatching { HealthConnectWriter.write(context, repository) }
                 }
             } finally {
-                analyzeAfterBackfillScheduled.set(false)
+                historyAnalysisGate.finish(historyDeviceId)
             }
         }
     }
@@ -1398,8 +1424,8 @@ class WhoopBleClient(
     private var historicalKickSent = false
     /** 5/MG zero-frame retries used this CONNECTION (max 2 — then the 900s periodic timer owns it). */
     private var whoop5HistoryAttempts = 0
-    /** One-shot debounce: a post-backfill scoring pass is already scheduled/running. */
-    private val analyzeAfterBackfillScheduled = java.util.concurrent.atomic.AtomicBoolean(false)
+    /** Per-device debounce for scheduled/running post-history passes. Cross-device work is retained. */
+    private val historyAnalysisGate = PerDeviceHistoryAnalysisGate()
 
     /** Guards the once-per-connect initial offload kick (Swift `backfillStarted`). */
     private var backfillStarted = false
