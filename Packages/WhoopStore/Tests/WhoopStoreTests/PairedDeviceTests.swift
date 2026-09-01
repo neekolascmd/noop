@@ -6,4 +6,9 @@ final class PairedDeviceSourceKindTests: XCTestCase {
         XCTAssertEqual(SourceKind(rawValue: "liveAppleWatch"), .liveAppleWatch)
         XCTAssertTrue(SourceKind.allCases.contains(.liveAppleWatch))
     }
+
+    func testGarminLocalSyncSourceKindIsDistinctFromBroadcastHR() {
+        XCTAssertEqual(SourceKind(rawValue: "garmin"), .garmin)
+        XCTAssertNotEqual(SourceKind.garmin, .liveBLE)
+    }
 }

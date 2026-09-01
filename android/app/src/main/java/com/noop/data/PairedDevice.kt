@@ -63,14 +63,19 @@ enum class DeviceStatus { active, paired, archived }
  *  [ftms] = a live FTMS gym machine (treadmill / indoor bike / rower / cross-trainer).
  *  [huami] = an EXPERIMENTAL Huami-family live HR source (Amazfit / Zepp incl. Helio, Xiaomi Mi Band):
  *  standard 0x180D when exposed, else the documented Huami custom HR characteristic, else an honest
- *  "needs pairing" message. (Garmin uses [liveBLE] — its live HR is the standard broadcast-HR path.)
+ *  "needs pairing" message. Garmin Broadcast HR uses [liveBLE]; the separate proprietary local-sync
+ *  option uses [garmin].
  *  [oura] = an EXPERIMENTAL Oura ring live BLE source. Owns its OWN scanner/GATT (never touches the
  *  WHOOP client); decodes the ring's own raw signals + open HRV/sleep-phase tags and runs NOOP's own
  *  scoring, and surfaces an honest "needs pairing" state when the install key is absent (never Oura's
  *  encrypted readiness/sleep scores). Carried on string rawValue "oura"; no DB migration (the column is
  *  free-text and existing rows never carry it).
- *  Additive: existing rows never carry [ftms]/[huami]/[oura]; only the respective wizard paths write them. */
-enum class SourceKind { liveBLE, historyBLE, cloudImport, fileImport, ftms, huami, oura }
+ *  [garmin] = an EXPERIMENTAL Garmin Multi-Link v2 local source. It is deliberately separate from a
+ *  Garmin row using [liveBLE], which remains the standard Broadcast Heart Rate path. The string column
+ *  needs no migration; only the explicit Garmin local-sync wizard path writes it.
+ *  Additive: existing rows never carry [ftms]/[huami]/[oura]/[garmin]; only the respective wizard paths
+ *  write them. */
+enum class SourceKind { liveBLE, historyBLE, cloudImport, fileImport, ftms, huami, oura, garmin }
 
 /** A canonical metric a source can provide — drives capability-aware UI + the day-owner resolver.
  *  Stored as the enum name (Swift `Metric` rawValue) inside the comma-joined `capabilities` string. */

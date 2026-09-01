@@ -48,7 +48,7 @@ public enum SourceKind: String, Sendable, CaseIterable {
     /// Reads the standard 0x180D HR service when exposed, else the documented Huami custom HR
     /// characteristic, else surfaces an honest "needs pairing we can't do" message. Best-effort, shipped
     /// behind the experimental add-device tier. Additive: only the experimental wizard writes it.
-    /// (Garmin uses `liveBLE` — its live HR is the standard broadcast-HR path, no proprietary protocol.)
+    /// (Garmin Broadcast HR uses `liveBLE`; proprietary local sync uses the distinct `garmin` case.)
     case huami
     /// Apple Watch streamed via HealthKit (live HealthKit observer + background delivery). Apple-only,
     /// no Android twin. Additive: only the Apple Watch device registration writes it.
@@ -60,6 +60,9 @@ public enum SourceKind: String, Sendable, CaseIterable {
     /// signal can't be read it stays "-" (Huami precedent), never faked. Additive (no DB migration): only
     /// the experimental add-device wizard's Oura path writes it.
     case oura
+    /// Experimental Garmin Multi-Link v2 local sync. Android has the first live transport; Apple keeps
+    /// the raw value distinct from standard Broadcast HR and never silently routes it through 0x180D.
+    case garmin
 }
 
 /// Canonical metric a source can provide. Drives capability-aware UI + the day-owner resolver.

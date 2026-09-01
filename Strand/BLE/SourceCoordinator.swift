@@ -277,6 +277,11 @@ final class SourceCoordinator: ObservableObject {
         case .ftms:  startFTMSSource(id: id)
         case .huami: startHuamiSource(id: id)
         case .oura:  startOuraSource(id: id)
+        case .garmin:
+            // Preserve the distinct source kind on Apple instead of silently using standard Broadcast
+            // HR. The platform-pure GarminProtocol package exists, but CoreBluetooth routing remains a
+            // separate milestone and is not represented as working here.
+            straplog("Garmin local sync: Apple live transport is not implemented yet")
         default:     startStandardSource(id: id)
         }
         activeStrapId = id

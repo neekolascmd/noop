@@ -56,6 +56,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.noop.ble.OuraLiveSource
+import com.noop.ble.GarminLiveSource
 import com.noop.ble.StandardHrSource
 import com.noop.ble.WhoopBleClient
 import com.noop.ble.WhoopModel
@@ -88,7 +89,7 @@ private enum class DeviceType {
     Whoop5MG, Whoop4, HrStrap, GymEquipment,
     // EXPERIMENTAL tier - best-effort, clean-room, can't be hardware-verified here. Each fails to an
     // honest message and never fabricates data.
-    Amazfit, MiBand, Garmin, Oura;
+    Amazfit, MiBand, Garmin, GarminLocalSync, Oura;
 
     val isWhoop: Boolean get() = this == Whoop4 || this == Whoop5MG
     val whoopModel: WhoopModel?
@@ -99,7 +100,8 @@ private enum class DeviceType {
         }
 
     /** True for the EXPERIMENTAL tier (shown under a clearly-labelled "Experimental" heading). */
-    val isExperimental: Boolean get() = this == Amazfit || this == MiBand || this == Garmin || this == Oura
+    val isExperimental: Boolean
+        get() = this == Amazfit || this == MiBand || this == Garmin || this == GarminLocalSync || this == Oura
 
     val title: String
         get() = when (this) {
@@ -109,7 +111,8 @@ private enum class DeviceType {
             GymEquipment -> "Gym equipment"
             Amazfit -> "Amazfit / Zepp"
             MiBand -> "Xiaomi Mi Band"
-            Garmin -> "Garmin watch"
+            Garmin -> "Garmin broadcast HR"
+            GarminLocalSync -> "Garmin local sync"
             Oura -> "Oura ring"
         }
 }
@@ -163,6 +166,7 @@ fun AddDeviceWizard(
     var pickedStrap by remember { mutableStateOf<StandardHrSource.DiscoveredStrap?>(null) }
     var pickedMachine by remember { mutableStateOf<com.noop.ble.FtmsSource.DiscoveredMachine?>(null) }
     var pickedHuami by remember { mutableStateOf<com.noop.ble.HuamiHrSource.DiscoveredDevice?>(null) }
+    var pickedGarmin by remember { mutableStateOf<GarminLiveSource.DiscoveredDevice?>(null) }
 
     var nameDraft by remember { mutableStateOf("") }
     var askMakeActive by remember { mutableStateOf(false) }
@@ -178,6 +182,9 @@ fun AddDeviceWizard(
     // GATT, never the WHOOP client; no-op persist/live, null key). The wizard reads only its `discovered` /
     // `scanning` flows; the SourceCoordinator owns the real connect once the adopted ring becomes active.
     val ouraScanner = remember { viewModel.makeOuraScanner() }
+    // Discovery-only Garmin Multi-Link scanner. It does not bond or connect until the user selects the
+    // watch and registers the separate local-sync source.
+    val garminScanner = remember { viewModel.makeGarminScanner() }
 
     fun startScan(t: DeviceType) {
         when {
@@ -185,7 +192,8 @@ fun AddDeviceWizard(
             t == DeviceType.GymEquipment -> ftmsScanner.scan()
             t == DeviceType.Amazfit || t == DeviceType.MiBand -> huamiScanner.scan()
             t == DeviceType.Oura -> ouraScanner.scan()
-            else -> hrScanner.scan()   // HrStrap AND Garmin (Broadcast HR is the standard 0x180D path)
+            t == DeviceType.GarminLocalSync -> garminScanner.scan()
+            else -> hrScanner.scan()   // HrStrap AND Garmin Broadcast HR use standard 0x180D.
         }
     }
 
@@ -195,6 +203,7 @@ fun AddDeviceWizard(
         ftmsScanner.stopScan()
         huamiScanner.stopScan()
         ouraScanner.stop()
+        garminScanner.stop()
     }
 
     // Belt-and-braces: stop whichever scan is live whenever the wizard leaves composition.
@@ -228,7 +237,7 @@ fun AddDeviceWizard(
             WizardStep.Confirm -> {
                 // Re-enter the pick step and restart its scan so the user can choose a different device.
                 type?.let { startScan(it) }
-                pickedWhoop = null; pickedStrap = null; pickedMachine = null; pickedHuami = null
+                pickedWhoop = null; pickedStrap = null; pickedMachine = null; pickedHuami = null; pickedGarmin = null
                 step = WizardStep.Pick
             }
         }
@@ -239,6 +248,7 @@ fun AddDeviceWizard(
         pickedStrap?.let { return@run it.name }
         pickedMachine?.let { return@run it.name }
         pickedHuami?.let { return@run it.name }
+        pickedGarmin?.let { return@run it.name }
         type?.title ?: "Device"
     }
     val confirmName = nameDraft.trim().ifEmpty { confirmAdvertisedName }
@@ -247,11 +257,12 @@ fun AddDeviceWizard(
         type == DeviceType.GymEquipment -> "Gym equipment"
         type == DeviceType.Amazfit -> "Amazfit"
         type == DeviceType.MiBand -> "Mi Band"
-        type == DeviceType.Garmin -> "Garmin"
+        type == DeviceType.Garmin || type == DeviceType.GarminLocalSync -> "Garmin"
         pickedStrap != null -> brandGuess(pickedStrap!!.name)
         else -> "Heart-rate strap"
     }
-    val confirmRssi = pickedWhoop?.rssi ?: pickedStrap?.rssi ?: pickedMachine?.rssi ?: pickedHuami?.rssi ?: -70
+    val confirmRssi = pickedWhoop?.rssi ?: pickedStrap?.rssi ?: pickedMachine?.rssi ?: pickedHuami?.rssi
+        ?: pickedGarmin?.rssi ?: -70
 
     fun finishAdd(makeActive: Boolean) {
         stopAllScans()
@@ -260,6 +271,7 @@ fun AddDeviceWizard(
         val ps = pickedStrap
         val pm = pickedMachine
         val ph = pickedHuami
+        val pg = pickedGarmin
         val isGarmin = type == DeviceType.Garmin
         val device: PairedDeviceRow? = when {
             pw != null && type?.whoopModel != null -> {
@@ -274,6 +286,23 @@ fun AddDeviceWizard(
                     peripheralId = pw.address,
                     sourceKind = SourceKind.liveBLE.name,
                     capabilities = "hr,hrv,spo2,skinTemp,sleep,strainLoad",
+                    status = DeviceStatus.paired.name,
+                    addedAt = now,
+                    lastSeenAt = now,
+                )
+            }
+            pg != null && type == DeviceType.GarminLocalSync -> {
+                // Proprietary Multi-Link v2 is a separate opt-in source. These capabilities are only the
+                // conservative decoders/persistence paths currently implemented; hardware remains
+                // unqualified and missing packets stay absent rather than becoming estimates.
+                PairedDeviceRow(
+                    id = "garmin-sync-${pg.address}",
+                    brand = "Garmin",
+                    model = pg.name,
+                    nickname = if (confirmName == pg.name) null else confirmName,
+                    peripheralId = pg.address,
+                    sourceKind = SourceKind.garmin.name,
+                    capabilities = "hr,hrv,spo2,steps",
                     status = DeviceStatus.paired.name,
                     addedAt = now,
                     lastSeenAt = now,
@@ -501,6 +530,7 @@ fun AddDeviceWizard(
                                 viewModel = viewModel,
                                 onSelect = { strap ->
                                     pickedWhoop = strap; pickedStrap = null; pickedMachine = null; pickedHuami = null
+                                    pickedGarmin = null
                                     nameDraft = strap.name?.takeIf { it.isNotBlank() } ?: t.title
                                     viewModel.stopWhoopScan()
                                     step = WizardStep.Confirm
@@ -511,7 +541,7 @@ fun AddDeviceWizard(
                                 scanner = ftmsScanner,
                                 onSelect = { machine ->
                                     pickedMachine = machine
-                                    pickedWhoop = null; pickedStrap = null; pickedHuami = null
+                                    pickedWhoop = null; pickedStrap = null; pickedHuami = null; pickedGarmin = null
                                     nameDraft = machine.name
                                     ftmsScanner.stopScan()
                                     step = WizardStep.Confirm
@@ -522,19 +552,30 @@ fun AddDeviceWizard(
                                 scanner = huamiScanner,
                                 onSelect = { dev ->
                                     pickedHuami = dev
-                                    pickedWhoop = null; pickedStrap = null; pickedMachine = null
+                                    pickedWhoop = null; pickedStrap = null; pickedMachine = null; pickedGarmin = null
                                     nameDraft = dev.name
                                     huamiScanner.stopScan()
                                     step = WizardStep.Confirm
                                 },
                                 onRescan = { huamiScanner.scan() },
                             )
+                            t == DeviceType.GarminLocalSync -> GarminPickStep(
+                                scanner = garminScanner,
+                                onSelect = { watch ->
+                                    pickedGarmin = watch
+                                    pickedWhoop = null; pickedStrap = null; pickedMachine = null; pickedHuami = null
+                                    nameDraft = watch.name
+                                    garminScanner.stopScan()
+                                    step = WizardStep.Confirm
+                                },
+                                onRescan = { garminScanner.scan() },
+                            )
                             else -> HrPickStep(
                                 // Heart-rate strap AND Garmin (Broadcast HR is the standard 0x180D path).
                                 scanner = hrScanner,
                                 onSelect = { strap ->
                                     pickedStrap = strap
-                                    pickedWhoop = null; pickedMachine = null; pickedHuami = null
+                                    pickedWhoop = null; pickedMachine = null; pickedHuami = null; pickedGarmin = null
                                     nameDraft = strap.name
                                     hrScanner.stopScan()
                                     step = WizardStep.Confirm
@@ -704,8 +745,15 @@ private fun TypeStep(onPick: (DeviceType) -> Unit) {
         TypeRow(Icons.Filled.GraphicEq, DeviceType.MiBand.title, "Live heart rate on bands that don't need pairing. Help us test.") {
             onPick(DeviceType.MiBand)
         }
-        TypeRow(Icons.Filled.Watch, DeviceType.Garmin.title, "Uses the watch's Broadcast Heart Rate. We'll show you how.") {
+        TypeRow(Icons.Filled.Watch, DeviceType.Garmin.title, "Stable standard profile. Live HR and HRV only.") {
             onPick(DeviceType.Garmin)
+        }
+        TypeRow(
+            Icons.Filled.Watch,
+            DeviceType.GarminLocalSync.title,
+            "Experimental direct watch sync. No Garmin account or cloud. Hardware qualification needed.",
+        ) {
+            onPick(DeviceType.GarminLocalSync)
         }
 
         WhoopFirstNote()
@@ -827,7 +875,7 @@ private fun PrepStep(type: DeviceType, onScan: () -> Unit) {
         Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(
                 when {
-                    type.isWhoop || type == DeviceType.Garmin -> Icons.Filled.Watch
+                    type.isWhoop || type == DeviceType.Garmin || type == DeviceType.GarminLocalSync -> Icons.Filled.Watch
                     type == DeviceType.GymEquipment -> Icons.AutoMirrored.Filled.DirectionsRun
                     type == DeviceType.Amazfit || type == DeviceType.MiBand -> Icons.Filled.GraphicEq
                     type == DeviceType.Oura -> Icons.Filled.FileDownload
@@ -930,6 +978,12 @@ private fun prepInstructions(type: DeviceType): List<String> = when (type) {
         "Experimental: if your band needs pairing, we'll tell you honestly rather than show a fake reading.",
     )
     DeviceType.Garmin -> com.noop.ble.GarminBroadcast.broadcastHint
+    DeviceType.GarminLocalSync -> listOf(
+        "Close Garmin Connect so it does not hold the watch's Bluetooth connection.",
+        "On the watch, open Pair Phone or the phone-connect setup and keep the watch awake nearby.",
+        "Android will show its own secure-pairing prompt after you select the watch. Confirm it on the phone and watch.",
+        "This direct Multi-Link path is experimental and not hardware-qualified yet. If the watch or a stream is unsupported, NOOP leaves the value blank.",
+    )
     // Oura runs the factory-reset-and-adopt prep inside OuraFlow (ouraPrepInstructions), so this generic
     // branch is unreached for Oura; kept for the exhaustive when.
     DeviceType.Oura -> ouraPrepInstructions
@@ -981,6 +1035,26 @@ private fun HrPickStep(
                 subtitle = brandGuess(strap.name),
                 rssi = strap.rssi,
                 onTap = { onSelect(strap) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun GarminPickStep(
+    scanner: GarminLiveSource,
+    onSelect: (GarminLiveSource.DiscoveredDevice) -> Unit,
+    onRescan: () -> Unit,
+) {
+    val discovered by scanner.discovered.collectAsStateWithLifecycle()
+    val scanning by scanner.scanning.collectAsStateWithLifecycle()
+    PickList(searching = scanning, isEmpty = discovered.isEmpty(), onRescan = onRescan) {
+        discovered.sortedByDescending { it.rssi }.forEach { watch ->
+            DiscoveredRow(
+                name = watch.name,
+                subtitle = "Experimental Garmin local sync",
+                rssi = watch.rssi,
+                onTap = { onSelect(watch) },
             )
         }
     }

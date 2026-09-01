@@ -144,8 +144,11 @@ class SourceCoordinator(
      *  touches the WHOOP BLE client; surfaces only the ring's OWN raw signals + open event tags (NOOP
      *  computes its own Charge/Rest), never Oura's encrypted readiness/sleep scores. */
     private var ouraSource: OuraLiveSource? = null
-    /** The deviceId the active non-WHOOP source ([standardSource]/[ftmsSource]/[huamiSource]/[ouraSource])
-     *  runs for. */
+    /** The lazily-created EXPERIMENTAL Garmin Multi-Link v2 source. This is distinct from a Garmin
+     *  Broadcast-HR row, which still runs through [standardSource]. */
+    private var garminSource: GarminLiveSource? = null
+    /** The deviceId the active non-WHOOP source
+     *  ([standardSource]/[ftmsSource]/[huamiSource]/[ouraSource]/[garminSource]) runs for. */
     private var activeStrapId: String? = null
     /** The WHOOP registry id we last pointed the connection at, so a WHOOP→WHOOP switch is detected and a
      *  repeat activation of the SAME WHOOP is a no-op. null until the first WHOOP activation. (MW-3) */
@@ -327,8 +330,8 @@ class SourceCoordinator(
 
         // Route by sourceKind: an FTMS gym machine runs the FtmsSource; an EXPERIMENTAL Huami device
         // (Amazfit / Zepp / Mi Band) runs the HuamiHrSource; an EXPERIMENTAL Oura ring runs the
-        // OuraLiveSource; everything else is a generic HR strap on StandardHrSource. All are non-WHOOP
-        // live sources sharing this same strap edge.
+        // OuraLiveSource; an explicit Garmin local-sync row runs GarminLiveSource; everything else is a
+        // generic HR strap on StandardHrSource. All are non-WHOOP live sources sharing this same edge.
         if (row?.sourceKind == SourceKind.ftms.name) {
             val source = FtmsSource(
                 context = ctx,
@@ -357,7 +360,7 @@ class SourceCoordinator(
             // The ring generation is carried on the row's model ("Oura Ring 3/4/5"); recover it so the
             // transport clamps the MTU + picks the gen-appropriate live-HR enable command set. Defaults to
             // gen3 if the model is missing/unrecognised (OuraRingGen.from).
-            val ringGen = OuraRingGen.from(row?.model ?: "")
+            val ringGen = OuraRingGen.from(row.model)
             val source = OuraLiveSource(
                 context = ctx,
                 deviceId = id,
@@ -408,6 +411,19 @@ class SourceCoordinator(
             }
             if (!address.isNullOrEmpty()) source.connect(address) else source.scan()
             ouraSource = source
+        } else if (row?.sourceKind == SourceKind.garmin.name) {
+            val repo = requireNotNull(repository) { "SourceCoordinator.repository is required to persist Garmin samples" }
+            val source = GarminLiveSource(
+                context = ctx,
+                deviceId = id,
+                liveSink = liveSink,
+                persist = { batch: StreamBatch, deviceId: String ->
+                    scope.launch { runCatching { repo.insert(batch, deviceId) } }
+                },
+                log = straplog,
+            )
+            if (!address.isNullOrEmpty()) source.connect(address) else source.scan()
+            garminSource = source
         } else {
             val repo = requireNotNull(repository) { "SourceCoordinator.repository is required to persist strap samples" }
             val source = StandardHrSource(
@@ -442,13 +458,14 @@ class SourceCoordinator(
         ouraSource?.requestAutomaticSpO2Enable()
     }
 
-    /** Stop whichever non-WHOOP source (standard strap, FTMS machine, Huami device, or Oura ring) is live,
-     *  and drop the reference. Idempotent. Exactly one is ever live, but we stop all defensively. */
+    /** Stop whichever non-WHOOP source is live and drop the reference. Idempotent. Exactly one is live,
+     *  but we stop all defensively. */
     private fun tearDownNonWhoopSource() {
         standardSource?.stop(); standardSource = null
         ftmsSource?.stop(); ftmsSource = null
         huamiSource?.stop(); huamiSource = null
         ouraSource?.stop(); ouraSource = null
+        garminSource?.stop(); garminSource = null
         // Stop mirroring the (now torn-down) Oura source and clear the mirrors so a stale adopt outcome /
         // needs-pairing message never outlives the source or drives a later wizard transition.
         ouraStateJob?.cancel(); ouraStateJob = null

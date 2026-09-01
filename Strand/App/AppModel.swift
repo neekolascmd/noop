@@ -84,6 +84,7 @@ final class AppModel: ObservableObject {
         case .liveAppleWatch: return String(localized: "watch")
         case .ftms:           return String(localized: "machine")
         case .huami:          return String(localized: "band")
+        case .garmin:         return String(localized: "watch")
         default:              return activeDeviceIsWhoop ? String(localized: "band") : String(localized: "device")
         }
     }
