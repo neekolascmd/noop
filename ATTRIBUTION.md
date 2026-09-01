@@ -45,6 +45,17 @@ own Charge/Rest, and **never** reads or displays Oura's encrypted readiness or s
 documented Oura file-import lane (`Packages/StrandImport/Sources/StrandImport/OuraExportParser.swift`)
 remains available as a fallback.
 
+## Garmin Multi-Link v2 protocol
+NOOP's Garmin protocol core and Android transport are original, independently written interoperability
+work. The project consulted published wire facts from
+[Gadgetbridge's Garmin protocol documentation](https://gadgetbridge.org/internals/specifics/garmin-protocol/)
+and its [current Codeberg source](https://codeberg.org/Freeyourgadget/Gadgetbridge/src/commit/cc0b7700816cda6c408043b7ba9113445be55a78/app/src/main/java/nodomain/freeyourgadget/gadgetbridge/service/devices/garmin/), plus the
+independent [garmin-bridge implementation](https://github.com/wh1le/garmin-bridge), to corroborate
+observed UUIDs, service identifiers, handle-management messages, COBS/GFDI framing, and conservative
+realtime packet layouts. Gadgetbridge and garmin-bridge are AGPL-3.0 projects. NOOP incorporates none
+of their source, class structure, tests, or binaries; synthetic protocol vectors are not hardware proof.
+See [`docs/GARMIN_PROTOCOL.md`](docs/GARMIN_PROTOCOL.md) for the exact implemented boundary.
+
 ## Other
 - **GRDB.swift** (`groue/GRDB.swift`) — SQLite persistence (via Swift Package Manager).
 - **MarkdownUI** (`gonzalezreal/swift-markdown-ui`) — renders the AI Coach's Markdown

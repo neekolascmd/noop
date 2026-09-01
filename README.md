@@ -85,6 +85,7 @@ Everything runs **offline**. The only feature that ever uses the network is the 
 | **Standard BLE HR devices** (Polar, Wahoo, Garmin HRM, Coospo, Amazfit broadcast) | Live HR + R-R via standard `0x180D` / `0x2A37` since v3.8.0; automatic reconnect after link drops; serialized Android GATT setup for reliable HR, battery, and optional fitness-sensor subscriptions | No per-model firmware matrix recorded. Report each model. |
 | **Bluetooth FTMS gym equipment** | Live treadmill, bike, rower, or cross-trainer metrics; Android setup is serialized and automatically reconnects | No per-model hardware report yet. |
 | **Amazfit / Zepp / Mi Band live HR** | Experimental standard-HR or auth-free Huami-characteristic streaming on Android; serialized setup and automatic reconnect | Encrypted Huami pairing/history still needs clean-room implementation and hardware captures. |
+| **Garmin v2 local sync** | Experimental Android Multi-Link transport plus independent Swift/Kotlin COBS, GFDI, handle-management, and conservative realtime HR/HRV/steps/SpO₂/respiration decoders | Software vectors pass, but no owned Garmin model/firmware/GATT tuple has completed pairing and end-to-end stream qualification. Existing Garmin Broadcast HR remains the stable standard-profile option. |
 | **Xiaomi Smart Band 8 / 9 / 10** | Offline Mi Fitness SQLite import (one real Band 10 export verified) | Bands 8/9 need own exports; live BLE sync planned. |
 | **Oura / Fitbit / Garmin exports** | Offline wellness-export import with shared Swift/Kotlin fixtures | Capture fresh exports per vendor app version. |
 
@@ -93,7 +94,7 @@ Everything runs **offline**. The only feature that ever uses the network is the 
 | Device | Status |
 |---|---|
 | **Polar H10 / Verity Sense / OH1 deep BLE** (PMD ECG / PPG / ACC / PPI) | Protocol documented, production decoder not built |
-| **Garmin / Amazfit deep BLE** | Needs owned hardware and clean-room captures |
+| **Amazfit deep BLE** | Needs owned hardware and clean-room captures |
 | **Fitbit / Google** Google Health import | Needs registered API path |
 
 See [`docs/DEVICE_SUPPORT_ROADMAP.md`](docs/DEVICE_SUPPORT_ROADMAP.md) for protocol research and future lanes.
@@ -146,6 +147,7 @@ Platform-pure Swift packages plus a macOS app target. All packages declare `.iOS
 Strand/                  macOS SwiftUI reference app
 Packages/
   WhoopProtocol/         BLE frame parsing, CRC, command/event/packet decode
+  GarminProtocol/        Experimental Garmin v2 framing, GFDI, handles, and conservative realtime decode
   WhoopStore/            GRDB/SQLite persistence (v22 migration)
   StrandAnalytics/       HRV / recovery / strain / sleep / correlation math
   StrandImport/          WHOOP CSV + Apple Health + nutrition importers

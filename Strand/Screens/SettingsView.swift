@@ -875,6 +875,7 @@ struct SettingsView: View {
         case .oura: return "circle.circle"
         case .liveAppleWatch: return "applewatch"
         case .ftms: return "figure.run.treadmill"
+        case .garmin: return "applewatch"
         default: return "antenna.radiowaves.left.and.right"
         }
     }

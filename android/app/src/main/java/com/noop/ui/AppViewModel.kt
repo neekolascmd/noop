@@ -164,6 +164,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         )
 
     /**
+     * Discovery-only scanner for the separate, experimental Garmin Multi-Link v2 path. Existing Garmin
+     * Broadcast HR continues to use [makeStrapScanner]. This object never bonds, connects or persists in
+     * the wizard; the SourceCoordinator owns those steps only after the user selects and adds a watch.
+     */
+    fun makeGarminScanner(): com.noop.ble.GarminLiveSource =
+        com.noop.ble.GarminLiveSource(
+            context = appContext,
+            deviceId = "scan-preview",
+            liveSink = { _, _ -> },
+            persist = { _, _ -> },
+            log = { ble.externalLog(it) },
+        )
+
+    /**
      * A DISCOVERY-ONLY [com.noop.ble.FtmsSource] for the Add-gym-equipment wizard. Runs its OWN scan and
      * never connects here — the [SourceCoordinator] owns connection once an FTMS machine becomes active.
      * The sinks are no-ops; the wizard only reads its `discovered` / `scanning` StateFlows. Mirrors the

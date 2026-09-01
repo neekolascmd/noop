@@ -107,7 +107,7 @@ class ExperimentalDriversTest {
         assertTrue(ExperimentalBrand.GARMIN.canStreamLiveHR)
     }
 
-    // MARK: - Garmin is the standard path, not a proprietary one
+    // MARK: - Garmin Broadcast HR stays standard; local sync is separate
 
     @Test
     fun garminUsesStandardRecognitionHelper() {
@@ -137,8 +137,12 @@ class ExperimentalDriversTest {
     /// A Garmin row is a plain `liveBLE` device (standard broadcast HR), branded "Garmin", non-WHOOP.
     @Test
     fun garminSourceKindIsLiveBleNonWhoop() {
-        val garmin = row("garmin-1", "Garmin", SourceKind.liveBLE)
-        assertFalse(SourceCoordinator.isWhoop(garmin))
-        assertFalse(SourceCoordinator.isWhoop("garmin-1", listOf(garmin)))
+        val broadcast = row("garmin-1", "Garmin", SourceKind.liveBLE)
+        val localSync = row("garmin-sync-1", "Garmin", SourceKind.garmin)
+        assertFalse(SourceCoordinator.isWhoop(broadcast))
+        assertFalse(SourceCoordinator.isWhoop("garmin-1", listOf(broadcast)))
+        assertFalse(SourceCoordinator.isWhoop(localSync))
+        assertFalse(SourceCoordinator.isWhoop("garmin-sync-1", listOf(localSync)))
+        assertEquals("garmin", SourceKind.garmin.name)
     }
 }

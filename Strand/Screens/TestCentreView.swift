@@ -46,7 +46,7 @@ struct TestCentreView: View {
         switch device.sourceKind {
         case .liveBLE, .historyBLE, .huami, .oura:
             domains.insert(.battery)
-        case .cloudImport, .fileImport, .ftms, .liveAppleWatch:
+        case .cloudImport, .fileImport, .ftms, .liveAppleWatch, .garmin:
             break
         }
         return domains
